@@ -227,13 +227,17 @@ function Link-Addons ($proj) {
         }
 
         # Capture WHY rather than swallowing it. -ErrorAction SilentlyContinue
-        # here cost a debugging session: every junction on an F: drive failed,
-        # the script said only "junction failed", and the symptom the user saw
-        # was 37 GDScript parse errors in files that were perfectly fine.
+        # said only "junction failed" and threw the reason away, which is the
+        # wrong thing to do about a failure whose symptom is dozens of GDScript
+        # parse errors in files nobody touched.
         #
-        # The most likely reason is the filesystem. A junction is an NTFS
-        # reparse point: on exFAT or FAT32 -- which plenty of secondary and
-        # external drives are -- it cannot be created at all.
+        # A junction is an NTFS reparse point, so on exFAT or FAT32 -- which
+        # plenty of second and external drives are -- it cannot be made at all.
+        #
+        # Note that a junction being MADE is not the same as Godot following it.
+        # On the setup this was written for the eight junctions existed and were
+        # traversable in Explorer, and Godot still registered no class_name from
+        # any of them. That is what -Copy is for.
         $problem = $null
         New-Item -ItemType Junction -Path $link -Target $target -ErrorAction SilentlyContinue -ErrorVariable problem | Out-Null
 
