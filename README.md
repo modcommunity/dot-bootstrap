@@ -18,13 +18,13 @@ on. `--https` / `-Https` skips straight to HTTPS.
 
 
 ```bash
-git clone git@github.com:gamemann/tmc-dot-bootstrap.git
+git clone https://github.com/gamemann/tmc-dot-bootstrap.git
 cd tmc-dot-bootstrap
 ./bootstrap.sh
 ```
 
 ```powershell
-git clone git@github.com:gamemann/tmc-dot-bootstrap.git
+git clone https://github.com/gamemann/tmc-dot-bootstrap.git
 cd tmc-dot-bootstrap
 Set-ExecutionPolicy RemoteSigned -Scope CurrentUser   # once, if PowerShell refuses
 .\bootstrap.ps1
