@@ -68,6 +68,7 @@ param(
     [switch]$Check,
     [switch]$List,
     [switch]$Copy,
+    [switch]$Junction,
     [string]$Play
 )
 
@@ -75,6 +76,24 @@ $ErrorActionPreference = 'Continue'
 $repoDir = $PSScriptRoot
 $script:failed = $false
 $script:junctionFailures = 0
+$script:linksMade = 0
+$script:linkedProjects = 0
+
+# Copy the addon folders rather than junctioning them, unless -Junction is asked
+# for explicitly.
+#
+# Junctions were the original design and the reasoning was sound -- no elevation,
+# no Developer Mode, and the filesystem resolves them before Godot sees them.
+# Measured, the last clause is false. On Windows 11 with Godot 4.7.2 the eight
+# junctions in game-arena\addons existed, Explorer walked them, and Godot
+# registered not one class_name from any of them: every Dot* identifier came back
+# "not declared in the current scope" and seventy-odd scripts failed to parse.
+# Copying the same folders fixed it outright.
+#
+# A link that the engine will not follow is not a link, so the default is the one
+# that works. It is also what this family's own documentation says a consumer
+# does: "consumers copy the addon folders into their own project instead".
+$useCopy = -not $Junction
 
 # The directory holding the project repositories, in order of preference.
 if ($Projects) {
@@ -181,11 +200,25 @@ function Sync-Repo ($proj, $url) {
 # --- Links -----------------------------------------------------------------
 
 function Link-Addons ($proj) {
-    $addons = @(Get-LinksFor $proj)
-    if ($addons.Count -eq 0) { return }
-
+    # NOTHING here returns silently. The version this replaces began with
+    # `if ($addons.Count -eq 0) { return }` before it had even looked at the
+    # project, so a run in which not one link was made printed not one line and
+    # then said "ok" -- and the first thing the user saw was seventy GDScript
+    # parse errors. Silence must never be how success looks.
     $dir = Join-Path $projectsDir $proj
-    if (-not (Test-Path $dir)) { return }
+    if (-not (Test-Path $dir)) { Warn $proj 'not cloned, so nothing to link'; return }
+
+    $gi = Join-Path $dir '.gitignore'
+    if (-not (Test-Path $gi)) {
+        Warn $proj 'no .gitignore, so no addon list -- cannot link anything'
+        return
+    }
+
+    $addons = @(Get-LinksFor $proj)
+    if ($addons.Count -eq 0) {
+        Say $proj 'needs no addons' 'DarkGray'
+        return
+    }
 
     $addonDir = Join-Path $dir 'addons'
     New-Item -ItemType Directory -Force -Path $addonDir | Out-Null
@@ -219,7 +252,7 @@ function Link-Addons ($proj) {
         # The cost is that a copy does not track its source, so -Links -Copy has
         # to be re-run after pulling. That is why it is a switch and not the
         # default.
-        if ($Copy) {
+        if ($useCopy) {
             Copy-Item -Path $target -Destination $link -Recurse -Force -ErrorAction SilentlyContinue
             if (Test-Path (Join-Path $link 'plugin.cfg')) { $made++ }
             else { Err $proj "copy failed: $addon" }
@@ -249,7 +282,10 @@ function Link-Addons ($proj) {
             $script:junctionFailures++
         }
     }
-    Say $proj "linked $made addon(s)" 'DarkGray'
+    $script:linksMade += $made
+    $script:linkedProjects++
+    $verb = if ($useCopy) { 'copied' } else { 'linked' }
+    Say $proj "$verb $made addon(s)" 'DarkGray'
 }
 
 # --- Reporting -------------------------------------------------------------
@@ -396,6 +432,11 @@ else {
 }
 
 Write-Host ''
+
+if ($script:linkedProjects -gt 0 -or $script:linksMade -gt 0) {
+    $verb = if ($useCopy) { 'copied' } else { 'linked' }
+    Write-Host "$script:linksMade addon(s) $verb across $script:linkedProjects project(s)."
+}
 
 # A junction is an NTFS reparse point. If every one of them failed, the drive is
 # the reason far more often than anything in this script -- and the symptom is

@@ -80,14 +80,30 @@ So neither list lives in the scripts:
   repository that gains a dependency is the repository that has to ignore the
   link, and Godot will not open without it.
 
-## Windows uses junctions, not symlinks
+## Windows copies the addons; Linux links them
 
-A symlink on Windows needs Developer Mode or an elevated prompt, and Git for
-Windows will not create one unless `core.symlinks` is true. When it cannot, it
-checks the link out as a **text file containing the path** — so Godot finds a
-30-byte file where an addon should be, every `class_name` in it fails to resolve,
-and every script mentioning those names fails to parse too. The symptom is dozens
-of unrelated parse errors in files you did not touch.
+`bootstrap.ps1` copies each addon folder into the project. `bootstrap.sh` makes
+relative symlinks, which Godot follows.
 
-`bootstrap.ps1` uses directory junctions, which need no elevation and which Godot
-follows transparently.
+Junctions were the original Windows design and the reasoning was good — no
+elevation, no Developer Mode, and the filesystem resolves them before Godot ever
+sees them. **The last part turned out to be false.** Measured on Windows 11 with
+Godot 4.7.2: the eight junctions in `game-arena\addons` existed and Explorer
+walked them, and Godot registered not one `class_name` from any of them. Every
+`Dot*` identifier came back *"not declared in the current scope"* and seventy-odd
+scripts failed to parse. Copying the same folders fixed it outright.
+
+A link the engine will not follow is not a link, so the default is the one that
+works — and copying is what this family's own documentation says a consumer does
+anyway. `-Junction` opts back in if you want to test it; `--copy` on Linux copies
+there too.
+
+**The cost of copying is that it does not track its source**, so re-run
+`.\bootstrap.ps1 -Links` after a `git pull`. On Linux the symlinks need no such
+thing.
+
+Related, and the reason the links matter at all: if Git checks a symlink out as a
+regular file — which is what it does on Windows when `core.symlinks` is false —
+then `addons\dot_core` is a ~30 byte text file containing a path. Godot finds no
+scripts, every `class_name` fails to resolve, and every script mentioning one
+fails to parse too. Same symptom, different cause.

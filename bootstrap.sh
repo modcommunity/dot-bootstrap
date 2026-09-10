@@ -187,13 +187,28 @@ sync_repo() {
 # `--links --copy` has to be re-run after pulling; that is why it is not the
 # default.
 COPY_ADDONS=0
+LINKS_MADE=0
+LINKED_PROJECTS=0
 
 link_addons() {
     local proj="$1"; local dir="$PROJECTS_DIR/$proj"
-    [ -d "$dir" ] || return 0
+    [ -d "$dir" ] || { warn "$proj" "not cloned, so nothing to link"; return 0; }
+
+    # NOTHING here returns silently. The version this replaces bailed out before
+    # printing anything when a project yielded no addons, so a run in which not
+    # one link was made printed not one line and then said "ok" -- and the first
+    # thing the user saw was seventy GDScript parse errors. Silence must never be
+    # how success looks.
+    if [ ! -f "$dir/.gitignore" ]; then
+        warn "$proj" "no .gitignore, so no addon list -- cannot link anything"
+        return 0
+    fi
 
     local addons; addons="$(links_for "$proj")"
-    [ -n "$addons" ] || return 0
+    if [ -z "$addons" ]; then
+        say "$proj" "${DIM}needs no addons${OFF}"
+        return 0
+    fi
 
     mkdir -p "$dir/addons"
     local made=0 addon src
@@ -219,7 +234,9 @@ link_addons() {
         fi
         made=$((made + 1))
     done <<< "$addons"
-    say "$proj" "${DIM}linked $made addon(s)${OFF}"
+    LINKS_MADE=$((LINKS_MADE + made))
+    LINKED_PROJECTS=$((LINKED_PROJECTS + 1))
+    say "$proj" "${DIM}$([ "$COPY_ADDONS" = "1" ] && echo copied || echo linked) $made addon(s)${OFF}"
 }
 
 # --- Reporting -------------------------------------------------------------
@@ -393,5 +410,6 @@ case "$mode" in
 esac
 
 echo
+[ "$LINKED_PROJECTS" -gt 0 ] && echo "$LINKS_MADE addon(s) $([ "$COPY_ADDONS" = "1" ] && echo copied || echo linked) across $LINKED_PROJECTS project(s)."
 [ "$fail" -eq 0 ] && echo "${GRN}ok${OFF}" || echo "${RED}finished with errors${OFF}"
 exit "$fail"
