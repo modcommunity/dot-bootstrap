@@ -27,6 +27,8 @@ dot-chat	git@github.com:modcommunity/dot-chat.git
 dot-cloud	git@github.com:modcommunity/dot-cloud.git
 dot-combat	git@github.com:modcommunity/dot-combat.git
 dot-core	git@github.com:modcommunity/dot-core.git
+dot-economy	git@github.com:modcommunity/dot-economy.git
+dot-effects	git@github.com:modcommunity/dot-effects.git
 dot-fps-controller	git@github.com:modcommunity/dot-fps-controller.git
 dot-leaderboard	git@github.com:modcommunity/dot-leaderboard.git
 dot-loadout	git@github.com:modcommunity/dot-loadout.git
@@ -37,11 +39,13 @@ dot-net	git@github.com:modcommunity/dot-net.git
 dot-npc	git@github.com:modcommunity/dot-npc.git
 dot-npc-ai	git@github.com:modcommunity/dot-npc-ai.git
 dot-npc-ai-director	git@github.com:modcommunity/dot-npc-ai-director.git
+dot-objective	git@github.com:modcommunity/dot-objective.git
 dot-platform	git@github.com:modcommunity/dot-platform.git
 dot-props	git@github.com:modcommunity/dot-props.git
 dot-serve	git@github.com:modcommunity/dot-serve.git
 dot-server	git@github.com:modcommunity/dot-server.git
 dot-server-setup-test	git@github.com:gamemann/tmc-dot-deployment.git
+dot-spectate	git@github.com:modcommunity/dot-spectate.git
 dot-stats	git@github.com:modcommunity/dot-stats
 dot-timer	git@github.com:modcommunity/dot-timer.git
 dot-ui	git@github.com:modcommunity/dot-ui.git
