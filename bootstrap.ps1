@@ -72,6 +72,7 @@ param(
 $ErrorActionPreference = 'Continue'
 $repoDir = $PSScriptRoot
 $script:failed = $false
+$script:junctionFailures = 0
 
 # The directory holding the project repositories, in order of preference.
 if ($Projects) {
@@ -207,8 +208,24 @@ function Link-Addons ($proj) {
             else                { Remove-Item $link -Recurse -Force }
         }
 
-        New-Item -ItemType Junction -Path $link -Target $target -ErrorAction SilentlyContinue | Out-Null
-        if (Test-Path $link) { $made++ } else { Err $proj "junction failed: $addon" }
+        # Capture WHY rather than swallowing it. -ErrorAction SilentlyContinue
+        # here cost a debugging session: every junction on an F: drive failed,
+        # the script said only "junction failed", and the symptom the user saw
+        # was 37 GDScript parse errors in files that were perfectly fine.
+        #
+        # The most likely reason is the filesystem. A junction is an NTFS
+        # reparse point: on exFAT or FAT32 -- which plenty of secondary and
+        # external drives are -- it cannot be created at all.
+        $problem = $null
+        New-Item -ItemType Junction -Path $link -Target $target -ErrorAction SilentlyContinue -ErrorVariable problem | Out-Null
+
+        if (Test-Path $link) {
+            $made++
+        } else {
+            $why = if ($problem) { $problem[0].Exception.Message } else { 'no error reported' }
+            Err $proj "junction failed: $addon -- $why"
+            $script:junctionFailures++
+        }
     }
     Say $proj "linked $made addon(s)" 'DarkGray'
 }
@@ -357,5 +374,29 @@ else {
 }
 
 Write-Host ''
+
+# A junction is an NTFS reparse point. If every one of them failed, the drive is
+# the reason far more often than anything in this script -- and the symptom is
+# not "no addons", it is dozens of GDScript parse errors about class names that
+# exist, in files nobody touched. Say so here rather than leaving it to be
+# rediscovered in the Godot editor.
+if ($script:junctionFailures -gt 0) {
+    # NOT `$fs = try {...} catch {...}`: assigning from a try/catch statement is
+    # PowerShell 7 only and is a PARSE error on the 5.1 that ships with Windows,
+    # which would take this whole script down rather than report anything.
+    $fs = 'unknown'
+    try {
+        $letter = (Split-Path $projectsDir -Qualifier).TrimEnd(':')
+        $fs = (Get-Volume -DriveLetter $letter -ErrorAction Stop).FileSystemType
+    } catch { }
+    Write-Host "$script:junctionFailures addon link(s) could not be made. $projectsDir is $fs." -ForegroundColor Yellow
+    if ($fs -and $fs -ne 'NTFS') {
+        Write-Host "Junctions need NTFS. Put the projects on an NTFS drive, or pass -Projects <path on NTFS>." -ForegroundColor Yellow
+    }
+    Write-Host "Until they exist Godot cannot resolve any addon class_name, and every" -ForegroundColor Yellow
+    Write-Host "script that mentions one fails to parse -- which looks like broken code." -ForegroundColor Yellow
+    Write-Host ''
+}
+
 if ($script:failed) { Write-Host 'finished with errors' -ForegroundColor Red; exit 1 }
 else                { Write-Host 'ok' -ForegroundColor Green; exit 0 }
