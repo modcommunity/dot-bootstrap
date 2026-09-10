@@ -10,6 +10,7 @@
 #   ./bootstrap.sh --list          what can be played
 #   ./bootstrap.sh --play arena    play one, offline, no server needed
 #   ./bootstrap.sh --links --copy  copy the addons instead of linking them
+#   ./bootstrap.sh --https         reach GitHub over HTTPS rather than SSH
 #
 # WHERE IT PUTS THINGS
 #
@@ -107,6 +108,42 @@ LIST="$REPO_DIR/projects.tsv"
 GIT_BASE="${DOT_GIT_BASE:-git@github.com:modcommunity}"
 HUB="${DOTHUB:-}"
 
+# Whether to reach GitHub over HTTPS instead of SSH. Set by --https, or latched
+# on automatically the first time an SSH clone fails and the HTTPS one works.
+#
+# SSH is still tried first, deliberately: a machine with a key can PUSH, and
+# rewriting everything to HTTPS would quietly take that away. The fallback is
+# for the read-only case -- a laptop, a fresh Windows box, anywhere the key is
+# not -- and the assets are public, so HTTPS needs no credentials to read.
+USE_HTTPS=0
+HTTPS_NOTED=0
+
+# git@host:path  ->  https://host/path
+# ssh://git@host/path -> https://host/path
+# Anything else is returned unchanged, so a local path or an existing https URL
+# passes straight through.
+to_https() {
+    local u="$1" host path
+    case "$u" in
+        ssh://*) u="${u#ssh://}"; printf 'https://%s\n' "${u#*@}" ;;
+        *@*:*)   host="${u%%:*}"; host="${host#*@}"; path="${u#*:}"
+                 printf 'https://%s/%s\n' "$host" "$path" ;;
+        *)       printf '%s\n' "$u" ;;
+    esac
+}
+
+note_https() {
+    [ "$HTTPS_NOTED" = "1" ] && return 0
+    HTTPS_NOTED=1
+    echo
+    echo "${YLW}SSH to GitHub is not available here, so this is falling back to HTTPS.${OFF}"
+    echo "${YLW}The Dot assets are public, so cloning and pulling need no credentials.${OFF}"
+    echo "${YLW}Pushing does: these clones get an https:// origin, and a push over it${OFF}"
+    echo "${YLW}wants a personal access token rather than your key. Add an SSH key to${OFF}"
+    echo "${YLW}GitHub and re-run without --https to get one you can push from.${OFF}"
+    echo
+}
+
 RED=$'\033[31m'; GRN=$'\033[32m'; YLW=$'\033[33m'; CYN=$'\033[36m'; DIM=$'\033[2m'; OFF=$'\033[0m'
 fail=0
 
@@ -141,7 +178,22 @@ sync_repo() {
             err "$proj" "has no remote -- it exists only on the machine that made it"
             return
         fi
-        if git clone -q "$url" "$dir" 2>/dev/null; then
+        local effective="$url"
+        [ "$USE_HTTPS" = "1" ] && effective="$(to_https "$url")"
+
+        # One retry over HTTPS, then latch it on for every remaining project so
+        # this costs one failed connection rather than thirty-six.
+        if [ "$USE_HTTPS" != "1" ]; then
+            local alt; alt="$(to_https "$url")"
+            if [ "$alt" != "$url" ] && ! git ls-remote --exit-code -h "$url" >/dev/null 2>&1 \
+               && git ls-remote --exit-code -h "$alt" >/dev/null 2>&1; then
+                USE_HTTPS=1
+                note_https
+                effective="$alt"
+            fi
+        fi
+
+        if git clone -q "$effective" "$dir" 2>/dev/null; then
             # A repository created on GitHub and never pushed to clones fine and
             # has no HEAD, so rev-parse fails. Say so rather than leaking its
             # "fatal: Needed a single revision" to the terminal.
@@ -149,7 +201,7 @@ sync_repo() {
             say "$proj" "${GRN}cloned${OFF} ${at:-${YLW}empty — nothing pushed to it yet${OFF}}"
             [ -n "$HUB" ] && git -C "$dir" remote add hub "$HUB/$proj.git" 2>/dev/null
         else
-            err "$proj" "clone failed from $url"
+            err "$proj" "clone failed from $effective"
         fi
         return
     fi
@@ -174,7 +226,13 @@ sync_repo() {
             && say "$proj" "${DIM}up to date${OFF} $after" \
             || say "$proj" "${GRN}updated${OFF} $before -> $after"
     else
-        err "$proj" "pull refused - diverged, or no upstream. Resolve by hand."
+        local origin; origin="$(git -C "$dir" remote get-url origin 2>/dev/null)"
+        case "$origin" in
+            *@*:*|ssh://*)
+                err "$proj" "pull failed. origin is SSH; if you have no key here, run:"
+                say ""       "  git -C '$dir' remote set-url origin $(to_https "$origin")" ;;
+            *)  err "$proj" "pull refused - diverged, or no upstream. Resolve by hand." ;;
+        esac
     fi
 }
 
@@ -363,6 +421,7 @@ play_game() {
 ARGS=()
 for a in "$@"; do
     [ "$a" = "--copy" ] && { COPY_ADDONS=1; continue; }
+    [ "$a" = "--https" ] && { USE_HTTPS=1; continue; }
     ARGS+=("$a")
 done
 set -- "${ARGS[@]+"${ARGS[@]}"}"

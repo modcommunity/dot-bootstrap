@@ -10,6 +10,7 @@
         .\bootstrap.ps1 -List           what can be played
         .\bootstrap.ps1 -Play arena     play one, offline, no server needed
         .\bootstrap.ps1 -Links -Copy    copy the addons instead of linking them
+        .\bootstrap.ps1 -Https          reach GitHub over HTTPS rather than SSH
 
     WHERE IT PUTS THINGS
 
@@ -33,12 +34,13 @@
     Developer Mode or an elevated prompt, and Git for Windows will not create
     one at all unless core.symlinks is true.
 
-    This script uses directory junctions instead. A junction needs no elevation
-    and no Developer Mode, and Godot follows one transparently because the
-    filesystem resolves it before Godot ever sees it. The one cost is that a
-    junction stores an ABSOLUTE target, so it cannot be committed and has to be
-    recreated if the tree moves -- which is fine, since these links are
-    gitignored on both platforms anyway and this script is how they are made.
+    Directory junctions were the answer to that -- no elevation, no Developer
+    Mode -- and MEASURED, Godot does not follow them. On Windows 11 with Godot
+    4.7.2 the eight junctions in game-arena\addons existed and Explorer walked
+    them, and Godot registered not one class_name from any of them. So this
+    script COPIES the addon folders by default; -Junction opts back in. The cost
+    is that a copy does not track its source, so -Links must be re-run after a
+    pull.
 
     The failure this avoids is worth naming, because it does not look like a
     link problem. If Git checks a symlink out as a regular file -- which is what
@@ -69,6 +71,7 @@ param(
     [switch]$List,
     [switch]$Copy,
     [switch]$Junction,
+    [switch]$Https,
     [string]$Play
 )
 
@@ -94,6 +97,37 @@ $script:linkedProjects = 0
 # that works. It is also what this family's own documentation says a consumer
 # does: "consumers copy the addon folders into their own project instead".
 $useCopy = -not $Junction
+
+# Whether to reach GitHub over HTTPS instead of SSH. Set by -Https, or latched on
+# automatically the first time an SSH clone fails and the HTTPS one works.
+#
+# SSH is still tried first, deliberately: a machine with a key can PUSH, and
+# rewriting everything to HTTPS would quietly take that away. The fallback is for
+# the read-only case -- a laptop, a fresh Windows box, anywhere the key is not --
+# and the assets are public, so HTTPS needs no credentials to read.
+$script:useHttps  = [bool]$Https
+$script:httpsNoted = $false
+
+# git@host:path -> https://host/path, ssh://git@host/path -> https://host/path.
+# Anything else comes back unchanged, so a local path or an existing https URL
+# passes straight through.
+function ConvertTo-HttpsUrl ($u) {
+    if ($u -match '^ssh://(?:[^@/]+@)?(.+)$') { return "https://$($Matches[1])" }
+    if ($u -match '^(?:[^@/]+@)([^:/]+):(.+)$') { return "https://$($Matches[1])/$($Matches[2])" }
+    return $u
+}
+
+function Note-Https {
+    if ($script:httpsNoted) { return }
+    $script:httpsNoted = $true
+    Write-Host ''
+    Write-Host 'SSH to GitHub is not available here, so this is falling back to HTTPS.' -ForegroundColor Yellow
+    Write-Host 'The Dot assets are public, so cloning and pulling need no credentials.' -ForegroundColor Yellow
+    Write-Host 'Pushing does: these clones get an https:// origin, and a push over it' -ForegroundColor Yellow
+    Write-Host 'wants a personal access token rather than your key. Add an SSH key to' -ForegroundColor Yellow
+    Write-Host 'GitHub and re-run without -Https to get one you can push from.' -ForegroundColor Yellow
+    Write-Host ''
+}
 
 # The directory holding the project repositories, in order of preference.
 if ($Projects) {
@@ -169,12 +203,31 @@ function Sync-Repo ($proj, $url) {
             Err $proj 'has no remote -- it exists only on the machine that made it'
             return
         }
-        git clone -q $url $dir 2>$null
+        $effective = if ($script:useHttps) { ConvertTo-HttpsUrl $url } else { $url }
+
+        # One probe, then latch it on for every remaining project, so this costs
+        # one refused connection rather than thirty-six.
+        if (-not $script:useHttps) {
+            $alt = ConvertTo-HttpsUrl $url
+            if ($alt -ne $url) {
+                git ls-remote --exit-code -h $url 2>$null | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    git ls-remote --exit-code -h $alt 2>$null | Out-Null
+                    if ($LASTEXITCODE -eq 0) {
+                        $script:useHttps = $true
+                        Note-Https
+                        $effective = $alt
+                    }
+                }
+            }
+        }
+
+        git clone -q $effective $dir 2>$null
         if ($LASTEXITCODE -eq 0) {
             Say $proj "cloned $(git -C $dir rev-parse --short HEAD 2>$null)" 'Green'
             if ($Hub) { git -C $dir remote add hub "$Hub/$proj.git" 2>$null | Out-Null }
         } else {
-            Err $proj "clone failed from $url"
+            Err $proj "clone failed from $effective"
         }
         return
     }
@@ -190,7 +243,17 @@ function Sync-Repo ($proj, $url) {
 
     $before = git -C $dir rev-parse --short HEAD
     git -C $dir pull -q --ff-only 2>$null
-    if ($LASTEXITCODE -ne 0) { Err $proj 'pull refused - diverged, or no upstream. Resolve by hand.'; return }
+    if ($LASTEXITCODE -ne 0) {
+        $origin = git -C $dir remote get-url origin 2>$null
+        $alt    = ConvertTo-HttpsUrl $origin
+        if ($alt -ne $origin) {
+            Err  $proj 'pull failed. origin is SSH; if you have no key here, run:'
+            Say  ''    "  git -C `"$dir`" remote set-url origin $alt"
+        } else {
+            Err $proj 'pull refused - diverged, or no upstream. Resolve by hand.'
+        }
+        return
+    }
 
     $after = git -C $dir rev-parse --short HEAD
     if ($before -eq $after) { Say $proj "up to date $after" 'DarkGray' }

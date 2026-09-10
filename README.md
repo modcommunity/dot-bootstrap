@@ -11,6 +11,12 @@ addon symlinks per machine. These scripts are the one place that knowledge lives
 
 ## Getting everything
 
+The assets are public, so **you need no credentials to clone or pull.** The
+scripts try SSH first — that is what a machine with a key can push from — and if
+SSH is unavailable they fall back to HTTPS automatically, warn once, and carry
+on. `--https` / `-Https` skips straight to HTTPS.
+
+
 ```bash
 git clone git@github.com:gamemann/tmc-dot-bootstrap.git
 cd tmc-dot-bootstrap
