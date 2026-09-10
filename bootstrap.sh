@@ -76,8 +76,23 @@ if [ -n "${DOT_PROJECTS:-}" ]; then
 elif [ -d "$SELF_DIR/godot" ]; then
     # Invoked from a game-dev tree root, almost certainly through the symlink.
     PROJECTS_DIR="$SELF_DIR/godot"
-elif [ "$(basename "$(dirname "$REPO_DIR")")" = "godot" ]; then
+elif [ "$(basename "$REPO_DIR")" = "bootstrap" ] \
+     && [ "$(basename "$(dirname "$REPO_DIR")")" = "godot" ] \
+     && [ -f "$(dirname "$(dirname "$REPO_DIR")")/CLAUDE.md" ]; then
     # This repository is itself a project directory: <tree>/godot/bootstrap.
+    #
+    # All THREE conditions, because the obvious one-condition version of this
+    # test -- "is my parent called godot" -- silently ate a real setup. A clone
+    # at F:\Godot\tmc-dot-bootstrap has a parent whose leaf is "Godot", and
+    # PowerShell's -eq is case-INSENSITIVE, so bootstrap.ps1 matched: everything
+    # was cloned to F:\Godot as siblings of the repository instead of into
+    # ./projects, and the only sign was one line of output nobody had a reason
+    # to read.
+    #
+    # This `=` is case-sensitive and would NOT have matched the same path, which
+    # is worse than either behaviour on its own: one repository laying two
+    # machines out differently depending on how a folder happened to be
+    # capitalised.
     PROJECTS_DIR="$(dirname "$REPO_DIR")"
 else
     # A standalone clone. Everything goes beside this script, and .gitignore

@@ -81,8 +81,21 @@ elseif (Test-Path (Join-Path $repoDir 'godot')) {
     # Sitting at a game-dev tree root.
     $projectsDir = Join-Path $repoDir 'godot'
 }
-elseif ((Split-Path (Split-Path $repoDir -Parent) -Leaf) -eq 'godot') {
+elseif ((Split-Path $repoDir -Leaf) -eq 'bootstrap' -and
+        (Split-Path (Split-Path $repoDir -Parent) -Leaf) -eq 'godot' -and
+        (Test-Path (Join-Path (Split-Path (Split-Path $repoDir -Parent) -Parent) 'CLAUDE.md'))) {
     # This repository is itself a project directory: <tree>\godot\bootstrap.
+    #
+    # All THREE conditions, because the obvious one-condition version of this
+    # test -- "is my parent called godot" -- silently ate a real setup. A clone
+    # at F:\Godot\tmc-dot-bootstrap has a parent whose leaf is "Godot", and
+    # PowerShell's -eq is case-INSENSITIVE, so it matched: everything was cloned
+    # to F:\Godot as siblings of this repository instead of into .\projects, and
+    # the only sign was one line of output nobody had a reason to read.
+    #
+    # Bash's = is case-sensitive, so bootstrap.sh would have taken the other
+    # branch for the same path -- the same repository laying two machines out
+    # differently depending on how a folder happened to be capitalised.
     $projectsDir = Split-Path $repoDir -Parent
 }
 else {

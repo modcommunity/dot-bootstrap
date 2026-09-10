@@ -20,6 +20,7 @@ cd tmc-dot-bootstrap
 ```powershell
 git clone git@github.com:gamemann/tmc-dot-bootstrap.git
 cd tmc-dot-bootstrap
+Set-ExecutionPolicy RemoteSigned -Scope CurrentUser   # once, if PowerShell refuses
 .\bootstrap.ps1
 ```
 
@@ -27,9 +28,14 @@ Everything lands in `./projects`, beside the script, and that directory is
 gitignored. Run it again any time to pull what has moved; a repository with
 uncommitted work in it is reported and left alone.
 
-If this repository is sitting at `godot/bootstrap` inside a `game-dev` tree, it
-uses that `godot/` directory instead of making a second copy of everything.
-Override either way with `DOT_PROJECTS`.
+The first line it prints is where it decided to put things. Read it.
+
+It uses a tree's existing `godot/` directory instead, rather than making a second
+copy of everything, only when all three of these hold: this repository's folder is
+named exactly `bootstrap`, its parent is named `godot`, and there is a `CLAUDE.md`
+above that. Anything else is a standalone clone and gets `./projects`.
+
+Override either way with `DOT_PROJECTS` (`-Projects` on Windows).
 
 ## Playing a game
 
