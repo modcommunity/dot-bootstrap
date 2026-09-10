@@ -9,6 +9,7 @@
 #   ./bootstrap.sh --check         verify the list against the disk, change nothing
 #   ./bootstrap.sh --list          what can be played
 #   ./bootstrap.sh --play arena    play one, offline, no server needed
+#   ./bootstrap.sh --links --copy  copy the addons instead of linking them
 #
 # WHERE IT PUTS THINGS
 #
@@ -179,6 +180,14 @@ sync_repo() {
 
 # --- Links -----------------------------------------------------------------
 
+# Copy the addon folders instead of linking them. This is the family's own
+# documented consumption model -- "consumers copy the addon folders into their
+# own project instead" -- and it is the answer whenever a link cannot be made or
+# cannot be followed. The cost is that a copy does not track its source, so
+# `--links --copy` has to be re-run after pulling; that is why it is not the
+# default.
+COPY_ADDONS=0
+
 link_addons() {
     local proj="$1"; local dir="$PROJECTS_DIR/$proj"
     [ -d "$dir" ] || return 0
@@ -203,7 +212,11 @@ link_addons() {
         # every script mentioning those names goes down with it as a cascade of
         # apparently unrelated parse errors.
         rm -rf "$dir/addons/$addon"
-        ln -s "../../$src/addons/$addon" "$dir/addons/$addon"
+        if [ "$COPY_ADDONS" = "1" ]; then
+            cp -r "$PROJECTS_DIR/$src/addons/$addon" "$dir/addons/$addon"
+        else
+            ln -s "../../$src/addons/$addon" "$dir/addons/$addon"
+        fi
         made=$((made + 1))
     done <<< "$addons"
     say "$proj" "${DIM}linked $made addon(s)${OFF}"
@@ -328,6 +341,14 @@ play_game() {
 }
 
 # --- Modes -----------------------------------------------------------------
+
+# --copy may accompany any mode; strip it before the mode is read.
+ARGS=()
+for a in "$@"; do
+    [ "$a" = "--copy" ] && { COPY_ADDONS=1; continue; }
+    ARGS+=("$a")
+done
+set -- "${ARGS[@]+"${ARGS[@]}"}"
 
 mode="${1:-sync}"
 

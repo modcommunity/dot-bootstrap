@@ -9,6 +9,7 @@
         .\bootstrap.ps1 -Check          verify the list against the disk
         .\bootstrap.ps1 -List           what can be played
         .\bootstrap.ps1 -Play arena     play one, offline, no server needed
+        .\bootstrap.ps1 -Links -Copy    copy the addons instead of linking them
 
     WHERE IT PUTS THINGS
 
@@ -66,6 +67,7 @@ param(
     [switch]$Status,
     [switch]$Check,
     [switch]$List,
+    [switch]$Copy,
     [string]$Play
 )
 
@@ -206,6 +208,22 @@ function Link-Addons ($proj) {
             $item = Get-Item $link -Force
             if ($item.LinkType) { [System.IO.Directory]::Delete($item.FullName, $false) }
             else                { Remove-Item $link -Recurse -Force }
+        }
+
+        # -Copy makes real folders instead of links. It is the family's own
+        # documented consumption model -- "consumers copy the addon folders into
+        # their own project instead" -- and it is the answer whenever a link
+        # cannot be made or cannot be followed: a wrong filesystem, a policy, or
+        # a Godot that will not descend a reparse point out of the project.
+        #
+        # The cost is that a copy does not track its source, so -Links -Copy has
+        # to be re-run after pulling. That is why it is a switch and not the
+        # default.
+        if ($Copy) {
+            Copy-Item -Path $target -Destination $link -Recurse -Force -ErrorAction SilentlyContinue
+            if (Test-Path (Join-Path $link 'plugin.cfg')) { $made++ }
+            else { Err $proj "copy failed: $addon" }
+            continue
         }
 
         # Capture WHY rather than swallowing it. -ErrorAction SilentlyContinue
