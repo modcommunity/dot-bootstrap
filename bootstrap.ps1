@@ -1,6 +1,7 @@
 <#
-    Clone or update every project in the tree, wire the local-development addon
-    links, and run any of the games. The Windows counterpart of bootstrap.sh.
+    Clone or update every project in the Dot family, wire the local-development
+    addon links, and run any of the games. The Windows counterpart of
+    bootstrap.sh.
 
         .\bootstrap.ps1                 clone what is missing, pull what is not
         .\bootstrap.ps1 -Links          only redo the links, touch no repository
@@ -9,10 +10,20 @@
         .\bootstrap.ps1 -List           what can be played
         .\bootstrap.ps1 -Play arena     play one, offline, no server needed
 
-    Clone from somewhere else:
-        .\bootstrap.ps1 -GitBase git@gitlab.example/mine
-    Also add the dev-box bare repos as a second remote called `hub`:
-        .\bootstrap.ps1 -Hub ssh://christian@10.50.0.185/home/christian/git
+    WHERE IT PUTS THINGS
+
+    A fresh clone of this repository on its own clones everything into
+    .\projects, beside this script, and that directory is gitignored. Nothing
+    else is needed: clone this, run it, play a game.
+
+    It also recognises the layout it was born in, where this repository sits at
+    godot\bootstrap inside the game-dev tree and its siblings are the projects.
+    Then it uses that godot\ directory rather than making a second copy of
+    everything. Override either with -Projects, or $env:DOT_PROJECTS.
+
+    Clone from somewhere else:  -GitBase git@gitlab.example/mine
+    Also add a second remote called `hub` (bare repos on a dev box):
+        -Hub ssh://you@10.50.0.185/home/you/git
 
     WHY THIS IS NOT JUST bootstrap.sh UNDER GIT BASH
 
@@ -48,8 +59,9 @@
 
 [CmdletBinding()]
 param(
-    [string]$GitBase = $(if ($env:DOT_GIT_BASE) { $env:DOT_GIT_BASE } else { 'git@github.com:modcommunity' }),
-    [string]$Hub     = $(if ($env:DOTHUB) { $env:DOTHUB } else { '' }),
+    [string]$Projects = $(if ($env:DOT_PROJECTS) { $env:DOT_PROJECTS } else { '' }),
+    [string]$GitBase  = $(if ($env:DOT_GIT_BASE) { $env:DOT_GIT_BASE } else { 'git@github.com:modcommunity' }),
+    [string]$Hub      = $(if ($env:DOTHUB) { $env:DOTHUB } else { '' }),
     [switch]$Links,
     [switch]$Status,
     [switch]$Check,
@@ -58,12 +70,31 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-$root     = $PSScriptRoot
-$godotDir = Join-Path $root 'godot'
-$listFile = Join-Path $root 'projects.tsv'
+$repoDir = $PSScriptRoot
 $script:failed = $false
 
-if (-not (Test-Path $listFile)) { Write-Host "missing $listFile" -ForegroundColor Red; exit 2 }
+# The directory holding the project repositories, in order of preference.
+if ($Projects) {
+    $projectsDir = $Projects
+}
+elseif (Test-Path (Join-Path $repoDir 'godot')) {
+    # Sitting at a game-dev tree root.
+    $projectsDir = Join-Path $repoDir 'godot'
+}
+elseif ((Split-Path (Split-Path $repoDir -Parent) -Leaf) -eq 'godot') {
+    # This repository is itself a project directory: <tree>\godot\bootstrap.
+    $projectsDir = Split-Path $repoDir -Parent
+}
+else {
+    # A standalone clone. Everything goes beside this script, and .gitignore
+    # already has /projects/ so none of it is ever offered back to this repo.
+    $projectsDir = Join-Path $repoDir 'projects'
+}
+
+$listFile = Join-Path $repoDir 'projects.tsv'
+if (-not (Test-Path $listFile)) {
+    Write-Host "missing projects.tsv beside $repoDir" -ForegroundColor Red; exit 2
+}
 
 function Say  ($n, $m, $c = 'Gray') { Write-Host ("{0,-22} " -f $n) -NoNewline; Write-Host $m -ForegroundColor $c }
 function Warn ($n, $m)              { Say $n $m 'Yellow' }
@@ -87,7 +118,7 @@ function Get-Projects {
 # "ignore the lot" (dot-server-setup-test vendors its own with setup.sh) and
 # names nothing to link.
 function Get-LinksFor ($proj) {
-    $gi = Join-Path $godotDir "$proj\.gitignore"
+    $gi = Join-Path $projectsDir "$proj\.gitignore"
     if (-not (Test-Path $gi)) { return @() }
     Get-Content $gi |
         ForEach-Object { if ($_ -match '^/addons/([a-z0-9_]+)\s*$') { $Matches[1] } }
@@ -96,7 +127,7 @@ function Get-LinksFor ($proj) {
 # --- Repositories ----------------------------------------------------------
 
 function Sync-Repo ($proj, $url) {
-    $dir = Join-Path $godotDir $proj
+    $dir = Join-Path $projectsDir $proj
 
     if (-not (Test-Path (Join-Path $dir '.git'))) {
         if ($url -eq 'LOCAL') {
@@ -105,7 +136,7 @@ function Sync-Repo ($proj, $url) {
         }
         git clone -q $url $dir 2>$null
         if ($LASTEXITCODE -eq 0) {
-            Say $proj "cloned $(git -C $dir rev-parse --short HEAD)" 'Green'
+            Say $proj "cloned $(git -C $dir rev-parse --short HEAD 2>$null)" 'Green'
             if ($Hub) { git -C $dir remote add hub "$Hub/$proj.git" 2>$null | Out-Null }
         } else {
             Err $proj "clone failed from $url"
@@ -137,7 +168,7 @@ function Link-Addons ($proj) {
     $addons = @(Get-LinksFor $proj)
     if ($addons.Count -eq 0) { return }
 
-    $dir = Join-Path $godotDir $proj
+    $dir = Join-Path $projectsDir $proj
     if (-not (Test-Path $dir)) { return }
 
     $addonDir = Join-Path $dir 'addons'
@@ -145,9 +176,9 @@ function Link-Addons ($proj) {
 
     $made = 0
     foreach ($addon in $addons) {
-        # dot_user_avatar -> dot-user-avatar. True for every link in the tree.
+        # dot_user_avatar -> dot-user-avatar. True for every link in the family.
         $src    = $addon -replace '_', '-'
-        $target = Join-Path $godotDir "$src\addons\$addon"
+        $target = Join-Path $projectsDir "$src\addons\$addon"
         $link   = Join-Path $addonDir $addon
 
         if (-not (Test-Path $target)) { Err $proj "source missing: $src\addons\$addon"; continue }
@@ -172,7 +203,7 @@ function Link-Addons ($proj) {
 # --- Reporting -------------------------------------------------------------
 
 function Status-Repo ($proj) {
-    $dir = Join-Path $godotDir $proj
+    $dir = Join-Path $projectsDir $proj
     if (-not (Test-Path (Join-Path $dir '.git'))) { Warn $proj 'not cloned'; return }
     $n     = @(git -C $dir status --porcelain).Count
     $br    = git -C $dir branch --show-current
@@ -185,11 +216,15 @@ function Status-Repo ($proj) {
 # The mechanical detector. A list that is not checked against reality is a list
 # that is already wrong; this is the check.
 function Check-List {
-    $listed = @(Get-Projects)
-    $names  = $listed | ForEach-Object { $_.Name }
-    $disk   = @(Get-ChildItem -Directory $godotDir |
-                Where-Object { Test-Path (Join-Path $_.FullName '.git') } |
-                ForEach-Object { $_.Name })
+    if (-not (Test-Path $projectsDir)) { Warn '' "nothing cloned yet at $projectsDir"; return }
+
+    $names = @(Get-Projects | ForEach-Object { $_.Name })
+    # This repository is skipped when it is sitting among the projects it
+    # manages: it is the thing doing the cloning, not a thing to be cloned.
+    $dirs  = @(Get-ChildItem -Directory $projectsDir |
+               Where-Object { $_.FullName -ne $repoDir })
+    $disk  = @($dirs | Where-Object { Test-Path (Join-Path $_.FullName '.git') } |
+               ForEach-Object { $_.Name })
 
     foreach ($d in $disk) {
         if ($names -notcontains $d) { Err $d 'a repository on disk that projects.tsv does not list' }
@@ -197,14 +232,14 @@ function Check-List {
     foreach ($n in $names) {
         if ($disk -notcontains $n) { Warn $n 'listed in projects.tsv, not cloned here' }
     }
-    foreach ($p in $listed) {
+    foreach ($p in Get-Projects) {
         if ($p.Url -eq 'LOCAL') { Err $p.Name 'LOCAL: no remote, so a clone elsewhere cannot get it' }
     }
     # Directories that are not repositories: work in progress, or a clone that
     # failed halfway. Either way nothing else can obtain them.
-    foreach ($d in Get-ChildItem -Directory $godotDir) {
+    foreach ($d in $dirs) {
         if (-not (Test-Path (Join-Path $d.FullName '.git'))) {
-            Warn $d.Name 'a directory in godot/ that is not a git repository'
+            Warn $d.Name 'a directory beside the projects that is not a git repository'
         }
     }
     if (-not $script:failed) { Write-Host ''; Say '' 'projects.tsv agrees with the disk' 'Green' }
@@ -240,11 +275,12 @@ function Get-Games { Get-Projects | Where-Object { $_.Name -like 'game-*' } }
 
 function List-Games {
     $bin = Find-Godot
-    if ($bin) { Write-Host "godot: $bin" } else { Write-Host 'godot: not found' -ForegroundColor Red }
+    Write-Host "projects: $projectsDir"
+    if ($bin) { Write-Host "godot:    $bin" } else { Write-Host 'godot:    not found' -ForegroundColor Red }
     Write-Host ''
     foreach ($g in Get-Games) {
-        $pg = Join-Path $godotDir "$($g.Name)\project.godot"
-        $scene = ''
+        $pg = Join-Path $projectsDir "$($g.Name)\project.godot"
+        $scene = 'not cloned'
         if (Test-Path $pg) {
             $m = Select-String -Path $pg -Pattern 'run/main_scene="([^"]+)"' | Select-Object -First 1
             if ($m) { $scene = $m.Matches[0].Groups[1].Value }
@@ -265,6 +301,11 @@ function Play-Game ($want) {
         List-Games
         exit 2
     }
+    $dir = Join-Path $projectsDir $proj
+    if (-not (Test-Path $dir)) {
+        Write-Host "$proj is not cloned yet. Run .\bootstrap.ps1 first." -ForegroundColor Red
+        exit 2
+    }
 
     $bin = Find-Godot
     if (-not $bin) {
@@ -275,27 +316,26 @@ function Play-Game ($want) {
     # --offline is what the clients that have a networked mode read to skip it;
     # the ones that do not have one ignore an unknown user argument. Either way
     # this needs no server, no dot-cloud and no downloads.
-    $dir = Join-Path $godotDir $proj
     Write-Host "$bin --path $dir -- --offline" -ForegroundColor Cyan
     & $bin --path $dir -- --offline
 }
 
 # --- Modes -----------------------------------------------------------------
 
-New-Item -ItemType Directory -Force -Path $godotDir | Out-Null
-
 if ($Play)        { Play-Game $Play; exit 0 }
 elseif ($List)    { List-Games; exit 0 }
 elseif ($Check)   { Check-List }
 elseif ($Status)  {
-    Write-Host "base: $GitBase`n"
+    Write-Host "projects: $projectsDir`n"
     foreach ($p in Get-Projects) { Status-Repo $p.Name }
 }
 elseif ($Links)   {
     foreach ($p in Get-Projects) { Link-Addons $p.Name }
 }
 else {
-    Write-Host "base: $GitBase`n"
+    New-Item -ItemType Directory -Force -Path $projectsDir | Out-Null
+    Write-Host "projects: $projectsDir"
+    Write-Host "base:     $GitBase`n"
     # Repositories first, all of them, then links -- a link can point into a
     # project this same run is about to clone.
     foreach ($p in Get-Projects) { Sync-Repo $p.Name $p.Url }

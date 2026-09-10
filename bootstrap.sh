@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Clone or update every project in the tree, wire the local-development addon
-# links, and run any of the games.
+# Clone or update every project in the Dot family, wire the local-development
+# addon links, and run any of the games.
 #
 #   ./bootstrap.sh                 clone what is missing, pull what is not, link
 #   ./bootstrap.sh --links         only redo the links, touch no repository
@@ -10,18 +10,28 @@
 #   ./bootstrap.sh --list          what can be played
 #   ./bootstrap.sh --play arena    play one, offline, no server needed
 #
+# WHERE IT PUTS THINGS
+#
+# A fresh clone of this repository on its own clones everything into
+# ./projects, beside this script, and that directory is gitignored. Nothing
+# else is needed: clone this, run it, play a game.
+#
+# It also recognises the layout it was born in, where this repository sits at
+# godot/bootstrap inside the game-dev tree and its siblings are the projects.
+# Then it uses that godot/ directory rather than making a second copy of
+# everything. Override either with DOT_PROJECTS=/some/where.
+#
 # Clone from somewhere else:  DOT_GIT_BASE=git@gitlab.example/mine ./bootstrap.sh
-# Also add the dev-box bare repos as a second remote called `hub`:
-#   DOTHUB=ssh://christian@10.50.0.185/home/christian/git ./bootstrap.sh
+# Also add a second remote called `hub` (bare repos on a dev box):
+#   DOTHUB=ssh://you@10.50.0.185/home/you/git ./bootstrap.sh
 #
 # WHY THIS SCRIPT EXISTS AT ALL
 #
-# Each subdirectory of godot/ is its own repository, deliberately: an addon is
-# consumed by copying its addons/<name>/ folder, and nothing should be able to
-# clone the whole tree as one unit and take a dependency on that shape. The
-# cost of that rule is thirty-three clones and a hundred-odd links to set up by
-# hand on every machine, which is exactly the sort of thing nobody does
-# correctly twice.
+# Each project is its own repository, deliberately: an addon is consumed by
+# copying its addons/<name>/ folder, and nothing should be able to clone the
+# whole family as one unit and take a dependency on that shape. The cost of
+# that rule is thirty-odd clones and a hundred-odd links to set up by hand on
+# every machine, which is exactly the sort of thing nobody does correctly twice.
 #
 # WHY THERE ARE NO LISTS IN THIS FILE
 #
@@ -29,7 +39,7 @@
 # projects AND of the addons each one needs. Both went stale: it listed 19 of
 # the 33 repositories, and the fourteen it had lost included game-playground
 # and game-g2gfast -- two of the five games -- and the whole movement and NPC
-# half of the family. That is this tree's most-repeated bug, and it has now
+# half of the family. That is this family's most-repeated bug, and it has now
 # happened to setup.sh, to tools/check.sh, to tools/package_check.sh and here.
 #
 # So neither list lives here:
@@ -44,9 +54,39 @@
 
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GODOT_DIR="$ROOT/godot"
-LIST="$ROOT/projects.tsv"
+# Where this was INVOKED from, symlink not resolved: game-dev's tree root keeps
+# a bootstrap.sh -> godot/bootstrap/bootstrap.sh symlink for convenience, and
+# running that one should mean the tree, not this repository.
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Where the file actually lives, symlink resolved. projects.tsv sits beside it.
+REAL_SELF="${BASH_SOURCE[0]}"
+while [ -L "$REAL_SELF" ]; do
+    _t="$(readlink "$REAL_SELF")"
+    case "$_t" in
+        /*) REAL_SELF="$_t" ;;
+        *)  REAL_SELF="$(dirname "$REAL_SELF")/$_t" ;;
+    esac
+done
+REPO_DIR="$(cd "$(dirname "$REAL_SELF")" && pwd)"
+
+# The directory holding the project repositories, in order of preference.
+if [ -n "${DOT_PROJECTS:-}" ]; then
+    PROJECTS_DIR="$DOT_PROJECTS"
+elif [ -d "$SELF_DIR/godot" ]; then
+    # Invoked from a game-dev tree root, almost certainly through the symlink.
+    PROJECTS_DIR="$SELF_DIR/godot"
+elif [ "$(basename "$(dirname "$REPO_DIR")")" = "godot" ]; then
+    # This repository is itself a project directory: <tree>/godot/bootstrap.
+    PROJECTS_DIR="$(dirname "$REPO_DIR")"
+else
+    # A standalone clone. Everything goes beside this script, and .gitignore
+    # already has /projects/ so none of it is ever offered back to this repo.
+    PROJECTS_DIR="$REPO_DIR/projects"
+fi
+
+LIST="$REPO_DIR/projects.tsv"
+[ -f "$LIST" ] || LIST="$SELF_DIR/projects.tsv"
 
 GIT_BASE="${DOT_GIT_BASE:-git@github.com:modcommunity}"
 HUB="${DOTHUB:-}"
@@ -58,7 +98,7 @@ say()  { printf '%-22s %s\n' "$1" "$2"; }
 warn() { printf '%-22s %s\n' "$1" "${YLW}$2${OFF}"; }
 err()  { printf '%-22s %s\n' "$1" "${RED}$2${OFF}"; fail=1; }
 
-[ -f "$LIST" ] || { echo "${RED}missing $LIST${OFF}" >&2; exit 2; }
+[ -f "$LIST" ] || { echo "${RED}missing projects.tsv beside $REAL_SELF${OFF}" >&2; exit 2; }
 
 # name<TAB>url, comments and blank lines dropped.
 projects() { grep -v '^[[:space:]]*#' "$LIST" | grep -v '^[[:space:]]*$' | cut -f1; }
@@ -68,7 +108,7 @@ url_for()  { grep -v '^[[:space:]]*#' "$LIST" | awk -F'\t' -v p="$1" '$1==p{prin
 # project's own addon is never in there -- dot-net ignores dot_core and ships
 # dot_net -- which is exactly the distinction wanted.
 links_for() {
-    local gi="$GODOT_DIR/$1/.gitignore"
+    local gi="$PROJECTS_DIR/$1/.gitignore"
     [ -f "$gi" ] || return 0
     # /addons/ on its own means "ignore the lot" (dot-server-setup-test vendors
     # its addons with setup.sh) and names nothing to link.
@@ -78,7 +118,7 @@ links_for() {
 # --- Repositories ----------------------------------------------------------
 
 sync_repo() {
-    local proj="$1"; local dir="$GODOT_DIR/$proj"; local url; url="$(url_for "$proj")"
+    local proj="$1"; local dir="$PROJECTS_DIR/$proj"; local url; url="$(url_for "$proj")"
 
     if [ ! -d "$dir/.git" ]; then
         if [ "$url" = "LOCAL" ]; then
@@ -86,7 +126,11 @@ sync_repo() {
             return
         fi
         if git clone -q "$url" "$dir" 2>/dev/null; then
-            say "$proj" "${GRN}cloned${OFF} $(git -C "$dir" rev-parse --short HEAD)"
+            # A repository created on GitHub and never pushed to clones fine and
+            # has no HEAD, so rev-parse fails. Say so rather than leaking its
+            # "fatal: Needed a single revision" to the terminal.
+            local at; at="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null)"
+            say "$proj" "${GRN}cloned${OFF} ${at:-${YLW}empty — nothing pushed to it yet${OFF}}"
             [ -n "$HUB" ] && git -C "$dir" remote add hub "$HUB/$proj.git" 2>/dev/null
         else
             err "$proj" "clone failed from $url"
@@ -121,7 +165,7 @@ sync_repo() {
 # --- Links -----------------------------------------------------------------
 
 link_addons() {
-    local proj="$1"; local dir="$GODOT_DIR/$proj"
+    local proj="$1"; local dir="$PROJECTS_DIR/$proj"
     [ -d "$dir" ] || return 0
 
     local addons; addons="$(links_for "$proj")"
@@ -131,9 +175,9 @@ link_addons() {
     local made=0 addon src
     while read -r addon; do
         [ -n "$addon" ] || continue
-        # dot_user_avatar -> dot-user-avatar. True for every link in the tree.
+        # dot_user_avatar -> dot-user-avatar. True for every link in the family.
         src="${addon//_/-}"
-        if [ ! -d "$GODOT_DIR/$src/addons/$addon" ]; then
+        if [ ! -d "$PROJECTS_DIR/$src/addons/$addon" ]; then
             err "$proj" "source missing: $src/addons/$addon"
             continue
         fi
@@ -153,7 +197,7 @@ link_addons() {
 # --- Reporting -------------------------------------------------------------
 
 status_repo() {
-    local proj="$1"; local dir="$GODOT_DIR/$proj"
+    local proj="$1"; local dir="$PROJECTS_DIR/$proj"
     [ -d "$dir/.git" ] || { warn "$proj" "not cloned"; return; }
     local n br ahead
     n=$(git -C "$dir" status --porcelain | wc -l)
@@ -169,7 +213,13 @@ status_repo() {
 check_list() {
     local listed disk
     listed="$(projects | sort)"
-    disk="$(cd "$GODOT_DIR" && for d in */; do d="${d%/}"; [ -d "$d/.git" ] && echo "$d"; done | sort)"
+    # This repository is skipped when it is sitting among the projects it
+    # manages: it is the thing doing the cloning, not a thing to be cloned.
+    disk="$(cd "$PROJECTS_DIR" 2>/dev/null && for d in */; do
+                d="${d%/}"
+                [ "$PROJECTS_DIR/$d" = "$REPO_DIR" ] && continue
+                [ -d "$d/.git" ] && echo "$d"
+            done | sort)"
 
     local missing extra
     missing="$(comm -13 <(echo "$listed") <(echo "$disk"))"
@@ -196,10 +246,12 @@ check_list() {
     # Directories that are not repositories: work in progress, or a clone that
     # failed halfway. Either way nothing else can obtain them.
     local d
-    for d in "$GODOT_DIR"/*/; do
+    for d in "$PROJECTS_DIR"/*/; do
+        [ -d "$d" ] || continue
         d="$(basename "${d%/}")"
-        [ -d "$GODOT_DIR/$d/.git" ] && continue
-        warn "$d" "a directory in godot/ that is not a git repository"
+        [ "$PROJECTS_DIR/$d" = "$REPO_DIR" ] && continue
+        [ -d "$PROJECTS_DIR/$d/.git" ] && continue
+        warn "$d" "a directory beside the projects that is not a git repository"
     done
 
     [ "$fail" -eq 0 ] && echo && say "" "${GRN}projects.tsv agrees with the disk${OFF}"
@@ -223,12 +275,13 @@ games() { projects | grep '^game-'; }
 list_games() {
     local g bin
     bin="$(find_godot || true)"
-    echo "godot: ${bin:-${RED}not found on PATH${OFF}}"
+    echo "projects: $PROJECTS_DIR"
+    echo "godot:    ${bin:-${RED}not found on PATH${OFF}}"
     echo
     while read -r g; do
         [ -n "$g" ] || continue
-        local scene; scene=$(grep -oP 'run/main_scene="\K[^"]+' "$GODOT_DIR/$g/project.godot" 2>/dev/null)
-        printf '  %-20s %s\n' "${g#game-}" "${DIM}${scene:-no main scene}${OFF}"
+        local scene; scene=$(grep -oP 'run/main_scene="\K[^"]+' "$PROJECTS_DIR/$g/project.godot" 2>/dev/null)
+        printf '  %-20s %s\n' "${g#game-}" "${DIM}${scene:-not cloned}${OFF}"
     done <<< "$(games)"
     echo
     echo "  ./bootstrap.sh --play <name>"
@@ -244,6 +297,10 @@ play_game() {
         list_games >&2
         exit 2
     fi
+    if [ ! -d "$PROJECTS_DIR/$proj" ]; then
+        echo "${RED}$proj is not cloned yet. Run ./bootstrap.sh first.${OFF}" >&2
+        exit 2
+    fi
 
     local bin; bin="$(find_godot)" || {
         echo "${RED}Godot is not on PATH. Set GODOT=/path/to/godot.${OFF}" >&2; exit 3; }
@@ -251,18 +308,22 @@ play_game() {
     # --offline is what the clients that have a networked mode read to skip it;
     # the ones that do not have one ignore an unknown user argument. Either way
     # this needs no server, no dot-cloud and no downloads.
-    echo "${CYN}$bin --path $GODOT_DIR/$proj -- --offline${OFF}"
-    exec "$bin" --path "$GODOT_DIR/$proj" -- --offline "${@:2}"
+    echo "${CYN}$bin --path $PROJECTS_DIR/$proj -- --offline${OFF}"
+    exec "$bin" --path "$PROJECTS_DIR/$proj" -- --offline "${@:2}"
 }
 
 # --- Modes -----------------------------------------------------------------
 
 mode="${1:-sync}"
-mkdir -p "$GODOT_DIR"
+
+case "$mode" in
+    --list|--play|--check|--status) : ;;   # must not create anything
+    *) mkdir -p "$PROJECTS_DIR" ;;
+esac
 
 case "$mode" in
     --status)
-        echo "base: $GIT_BASE"; echo
+        echo "projects: $PROJECTS_DIR"; echo
         while read -r p; do [ -n "$p" ] && status_repo "$p"; done <<< "$(projects)"
         ;;
     --check)
@@ -279,7 +340,8 @@ case "$mode" in
         play_game "${@:2}"
         ;;
     sync|"")
-        echo "base: $GIT_BASE"; echo
+        echo "projects: $PROJECTS_DIR"
+        echo "base:     $GIT_BASE"; echo
         # Repositories first, all of them, then links -- a link can point into a
         # project that this same run is about to clone.
         while read -r p; do [ -n "$p" ] && sync_repo "$p"; done <<< "$(projects)"
@@ -287,7 +349,7 @@ case "$mode" in
         while read -r p; do [ -n "$p" ] && link_addons "$p"; done <<< "$(projects)"
         ;;
     -h|--help)
-        sed -n '3,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0
+        sed -n '3,26p' "$REAL_SELF" | sed 's/^# \{0,1\}//'; exit 0
         ;;
     *)
         echo "usage: $0 [--links|--status|--check|--list|--play <game>]" >&2; exit 2

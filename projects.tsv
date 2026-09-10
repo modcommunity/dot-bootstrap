@@ -1,0 +1,57 @@
+# Every project in the Dot family, and where it is cloned from.
+#
+# THIS IS THE ONLY COPY OF THIS LIST. bootstrap.sh and bootstrap.ps1 both read
+# it, and `bootstrap --check` fails if a repository on disk is missing from it
+# or a line here names something that is not there. Two copies of one list is
+# the bug the list was guarding against, and this family has shipped that bug
+# three times already: setup.sh against tools/check.sh against
+# tools/package_check.sh, and bootstrap's own manifest, which had drifted to 19
+# of 33 projects and had silently lost two of the five games.
+#
+# The addons each project needs are NOT here on purpose. They are derived from
+# the /addons/<name> lines in that project's own .gitignore, which is the one
+# place that can be right: the repository that gains a dependency is the
+# repository that has to ignore its link, so the list maintains itself.
+#
+# This repository is not listed. It is the thing doing the cloning.
+#
+# Columns: name <TAB> clone URL, or the word LOCAL for a project with no remote
+# yet -- a LOCAL project cannot be cloned onto another machine at all.
+#
+# A project named game-* has a playable client: `bootstrap --play <name>`.
+dot-2d	git@github.com:modcommunity/dot-2d.git
+dot-achievements	git@github.com:modcommunity/dot-achievements.git
+dot-auth	git@github.com:modcommunity/dot-auth.git
+dot-browser	git@github.com:modcommunity/dot-browser.git
+dot-chat	git@github.com:modcommunity/dot-chat.git
+dot-cloud	git@github.com:modcommunity/dot-cloud.git
+dot-combat	git@github.com:modcommunity/dot-combat.git
+dot-core	git@github.com:modcommunity/dot-core.git
+dot-fps-controller	git@github.com:modcommunity/dot-fps-controller.git
+dot-leaderboard	git@github.com:modcommunity/dot-leaderboard.git
+dot-loadout	git@github.com:modcommunity/dot-loadout.git
+dot-map	git@github.com:modcommunity/dot-map.git
+dot-match	git@github.com:modcommunity/dot-match.git
+dot-moderation	git@github.com:modcommunity/dot-moderation
+dot-net	git@github.com:modcommunity/dot-net.git
+dot-npc	git@github.com:modcommunity/dot-npc.git
+dot-npc-ai	git@github.com:modcommunity/dot-npc-ai.git
+dot-npc-ai-director	git@github.com:modcommunity/dot-npc-ai-director.git
+dot-platform	git@github.com:modcommunity/dot-platform.git
+dot-props	git@github.com:modcommunity/dot-props.git
+dot-serve	git@github.com:modcommunity/dot-serve.git
+dot-server	git@github.com:modcommunity/dot-server.git
+dot-server-setup-test	git@github.com:gamemann/tmc-dot-deployment.git
+dot-stats	git@github.com:modcommunity/dot-stats
+dot-timer	git@github.com:modcommunity/dot-timer.git
+dot-ui	git@github.com:modcommunity/dot-ui.git
+dot-user	git@github.com:modcommunity/dot-user.git
+dot-user-avatar	git@github.com:modcommunity/dot-user-avatar.git
+dot-vehicle	git@github.com:modcommunity/dot-vehicle.git
+dot-voice	git@github.com:modcommunity/dot-voice.git
+dot-vote	git@github.com:modcommunity/dot-vote.git
+game-arena	git@github.com:modcommunity/game-arena.git
+game-g2gfast	git@github.com:modcommunity/game-g2gfast.git
+game-hungario	git@github.com:modcommunity/game-hungario.git
+game-playground	git@github.com:modcommunity/game-playground.git
+game-simple-lobby	git@github.com:modcommunity/game-simple-lobby

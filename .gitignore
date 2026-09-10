@@ -1,0 +1,10 @@
+# Where a standalone clone of this repository puts everything it clones.
+#
+# bootstrap.sh / bootstrap.ps1 default to ./projects when this repository is
+# not sitting inside a game-dev tree. That is thirty-odd separate repositories
+# and their addon links; none of it belongs to this one.
+/projects/
+
+# OS
+.DS_Store
+Thumbs.db
