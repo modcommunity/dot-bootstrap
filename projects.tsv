@@ -31,7 +31,6 @@ dot-console	git@github.com:modcommunity/dot-console.git
 dot-core	git@github.com:modcommunity/dot-core.git
 dot-economy	git@github.com:modcommunity/dot-economy.git
 dot-effects	git@github.com:modcommunity/dot-effects.git
-dot-fps-controller	git@github.com:modcommunity/dot-fps-controller.git
 dot-fx	git@github.com:modcommunity/dot-fx.git
 dot-inventory	git@github.com:modcommunity/dot-inventory.git
 dot-leaderboard	git@github.com:modcommunity/dot-leaderboard.git
@@ -45,7 +44,12 @@ dot-npc-ai	git@github.com:modcommunity/dot-npc-ai.git
 dot-npc-ai-director	git@github.com:modcommunity/dot-npc-ai-director.git
 dot-objective	git@github.com:modcommunity/dot-objective.git
 dot-peer-to-peer	git@github.com:modcommunity/dot-peer-to-peer.git
+dot-physics	git@github.com:modcommunity/dot-physics.git
 dot-platform	git@github.com:modcommunity/dot-platform.git
+dot-player	git@github.com:modcommunity/dot-player.git
+dot-player-char	git@github.com:modcommunity/dot-player-char.git
+dot-player-class	git@github.com:modcommunity/dot-player-class.git
+dot-player-controller	git@github.com:modcommunity/dot-player-controller.git
 dot-procedural-generation	git@github.com:modcommunity/dot-procedural-generation.git
 dot-props	git@github.com:modcommunity/dot-props.git
 dot-randomness	git@github.com:modcommunity/dot-randomness.git
@@ -53,8 +57,10 @@ dot-serve	git@github.com:modcommunity/dot-serve.git
 dot-server	git@github.com:modcommunity/dot-server.git
 dot-server-deploy	git@github.com:modcommunity/dot-server-deploy.git
 dot-settings	git@github.com:modcommunity/dot-settings.git
+dot-spawn	git@github.com:modcommunity/dot-spawn.git
 dot-spectate	git@github.com:modcommunity/dot-spectate.git
 dot-stats	git@github.com:modcommunity/dot-stats
+dot-team	git@github.com:modcommunity/dot-team.git
 dot-timer	git@github.com:modcommunity/dot-timer.git
 dot-ui	git@github.com:modcommunity/dot-ui.git
 dot-user	git@github.com:modcommunity/dot-user.git
@@ -62,6 +68,7 @@ dot-user-avatar	git@github.com:modcommunity/dot-user-avatar.git
 dot-vehicle	git@github.com:modcommunity/dot-vehicle.git
 dot-voice	git@github.com:modcommunity/dot-voice.git
 dot-vote	git@github.com:modcommunity/dot-vote.git
+dot-weapon	git@github.com:modcommunity/dot-weapon.git
 game-arena	git@github.com:modcommunity/game-arena.git
 game-g2gfast	git@github.com:modcommunity/game-g2gfast.git
 game-hungario	git@github.com:modcommunity/game-hungario.git
