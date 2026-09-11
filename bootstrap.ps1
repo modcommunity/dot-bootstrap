@@ -137,10 +137,15 @@ elseif (Test-Path (Join-Path $repoDir 'godot')) {
     # Sitting at a game-dev tree root.
     $projectsDir = Join-Path $repoDir 'godot'
 }
-elseif ((Split-Path $repoDir -Leaf) -eq 'bootstrap' -and
+elseif ((Split-Path $repoDir -Leaf) -in @('dot-bootstrap', 'bootstrap') -and
         (Split-Path (Split-Path $repoDir -Parent) -Leaf) -eq 'godot' -and
         (Test-Path (Join-Path (Split-Path (Split-Path $repoDir -Parent) -Parent) 'CLAUDE.md'))) {
-    # This repository is itself a project directory: <tree>\godot\bootstrap.
+    # This repository is itself a project directory: <tree>\godot\dot-bootstrap.
+    #
+    # Both leaf names, because this repository was renamed from `bootstrap` and a
+    # clone made before that is still a correct clone. A name test that only knows
+    # today's name sends an existing checkout down the standalone branch, where it
+    # clones the whole family a second time into .\projects.
     #
     # All THREE conditions, because the obvious one-condition version of this
     # test -- "is my parent called godot" -- silently ate a real setup. A clone
@@ -184,7 +189,7 @@ function Get-Projects {
 # The addons a project needs linked in, read out of its own .gitignore. A
 # project's own addon is never in there -- dot-net ignores dot_core and ships
 # dot_net -- which is exactly the distinction wanted. A bare "/addons/" means
-# "ignore the lot" (dot-server-setup-test vendors its own with setup.sh) and
+# "ignore the lot" (dot-server-deploy vendors its own with setup.sh) and
 # names nothing to link.
 function Get-LinksFor ($proj) {
     $gi = Join-Path $projectsDir "$proj\.gitignore"

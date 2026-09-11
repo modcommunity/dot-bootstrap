@@ -78,10 +78,18 @@ if [ -n "${DOT_PROJECTS:-}" ]; then
 elif [ -d "$SELF_DIR/godot" ]; then
     # Invoked from a game-dev tree root, almost certainly through the symlink.
     PROJECTS_DIR="$SELF_DIR/godot"
-elif [ "$(basename "$REPO_DIR")" = "bootstrap" ] \
+elif { [ "$(basename "$REPO_DIR")" = "dot-bootstrap" ] \
+       || [ "$(basename "$REPO_DIR")" = "bootstrap" ]; } \
      && [ "$(basename "$(dirname "$REPO_DIR")")" = "godot" ] \
      && [ -f "$(dirname "$(dirname "$REPO_DIR")")/CLAUDE.md" ]; then
-    # This repository is itself a project directory: <tree>/godot/bootstrap.
+    # This repository is itself a project directory: <tree>/godot/dot-bootstrap.
+    #
+    # Both leaf names, because this repository was renamed from `bootstrap` and a
+    # clone made before that is still a correct clone. A name test that only knows
+    # today's name sends an existing checkout down the standalone branch, where it
+    # clones the whole family a second time into ./projects and says so in one line
+    # nobody has a reason to read -- which is the failure the comment below is about,
+    # reached by a rename instead of by a capital letter.
     #
     # All THREE conditions, because the obvious one-condition version of this
     # test -- "is my parent called godot" -- silently ate a real setup. A clone
@@ -163,7 +171,7 @@ url_for()  { grep -v '^[[:space:]]*#' "$LIST" | awk -F'\t' -v p="$1" '$1==p{prin
 links_for() {
     local gi="$PROJECTS_DIR/$1/.gitignore"
     [ -f "$gi" ] || return 0
-    # /addons/ on its own means "ignore the lot" (dot-server-setup-test vendors
+    # /addons/ on its own means "ignore the lot" (dot-server-deploy vendors
     # its addons with setup.sh) and names nothing to link.
     grep -oE '^/addons/[a-z0-9_]+$' "$gi" 2>/dev/null | sed 's|^/addons/||'
 }

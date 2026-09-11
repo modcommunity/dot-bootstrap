@@ -12,14 +12,14 @@ The assets are public, so **you need no credentials to clone or pull.** The scri
 
 
 ```bash
-git clone https://github.com/gamemann/tmc-dot-bootstrap.git
-cd tmc-dot-bootstrap
+git clone https://github.com/modcommunity/dot-bootstrap.git
+cd dot-bootstrap
 ./bootstrap.sh
 ```
 
 ```powershell
-git clone https://github.com/gamemann/tmc-dot-bootstrap.git
-cd tmc-dot-bootstrap
+git clone https://github.com/modcommunity/dot-bootstrap.git
+cd dot-bootstrap
 Set-ExecutionPolicy RemoteSigned -Scope CurrentUser   # once, if PowerShell refuses
 .\bootstrap.ps1
 ```
@@ -28,7 +28,7 @@ Everything lands in `./projects`, beside the script, and that directory is gitig
 
 The first line it prints is where it decided to put things. Read it.
 
-It uses a tree's existing `godot/` directory instead, rather than making a second copy of everything, only when all three of these hold: this repository's folder is named exactly `bootstrap`, its parent is named `godot`, and there is a `CLAUDE.md` above that. Anything else is a standalone clone and gets `./projects`.
+It uses a tree's existing `godot/` directory instead, rather than making a second copy of everything, only when all three of these hold: this repository's folder is named `dot-bootstrap` (or `bootstrap`, which is what it was called before the rename), its parent is named `godot`, and there is a `CLAUDE.md` above that. Anything else is a standalone clone and gets `./projects`.
 
 Override either way with `DOT_PROJECTS` (`-Projects` on Windows).
 
