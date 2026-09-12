@@ -5,6 +5,7 @@
 #
 #   ./bootstrap.sh                 clone what is missing, pull what is not, link
 #   ./bootstrap.sh --links         only redo the links, touch no repository
+#   ./bootstrap.sh --content-keys  make a content signing keypair, to publish packs
 #   ./bootstrap.sh --status        report each repository, change nothing
 #   ./bootstrap.sh --check         verify the list against the disk, change nothing
 #   ./bootstrap.sh --list          what can be played
@@ -436,6 +437,56 @@ set -- "${ARGS[@]+"${ARGS[@]}"}"
 
 mode="${1:-sync}"
 
+content_keys() {
+    # A CONTENT SIGNING KEYPAIR, for a developer who wants to PUBLISH packs locally.
+    #
+    # dot-cloud refuses unsigned manifests, and it should: a mounted pack can contain
+    # scripts, so a client that mounts unsigned content runs whatever the server sent.
+    # That means publishing needs a private key, and a private key is the one thing a
+    # clone can never carry -- `keys/` is gitignored in dot-server-deploy precisely so
+    # it cannot arrive in a commit.
+    #
+    # So a fresh clone can CONSUME the team's content (the public half is committed in
+    # client/content.json) and cannot PUBLISH any. This makes it able to, with its own
+    # identity, and rewrites content.json to trust that identity instead -- which will
+    # show as a local modification to a committed file. That is the honest trade and the
+    # reason this is opt-in rather than part of a plain sync: overwriting it silently
+    # would leave somebody wondering why their client rejects the team's packs.
+    local deploy="$PROJECTS_DIR/dot-server-deploy"
+
+    [ -d "$deploy" ] || { warn "dot-server-deploy" "not cloned yet; run a sync first"; return 1; }
+
+    local godot; godot="$(find_godot)" || return 1
+
+    if [ -f "$deploy/keys/content.key" ]; then
+        ok "content keys" "already present ($deploy/keys)"
+    else
+        mkdir -p "$deploy/keys"
+        ( cd "$deploy" && "$godot" --headless --path . \
+            --script addons/dot_cloud/publish/dot_cloud_cli.gd -- \
+            keygen --private keys/content.key --public keys/content.pub >/dev/null 2>&1 ) \
+            || { warn "content keys" "keygen failed"; return 1; }
+        # The generator warns it lands with default permissions, and it is right to.
+        chmod 600 "$deploy/keys/content.key" 2>/dev/null
+        ok "content keys" "generated in $deploy/keys"
+    fi
+
+    python3 - "$deploy" <<'PY'
+import io, json, sys, collections, os
+deploy = sys.argv[1]
+pem = io.open(os.path.join(deploy, 'keys', 'content.pub'), encoding='utf-8').read().strip()
+cfg = os.path.join(deploy, 'client', 'content.json')
+doc = collections.OrderedDict()
+if os.path.exists(cfg):
+    doc = json.load(io.open(cfg, encoding='utf-8'), object_pairs_hook=collections.OrderedDict)
+doc['require_signed_manifests'] = True
+doc['trusted_keys'] = {'default': pem}
+io.open(cfg, 'w', encoding='utf-8').write(json.dumps(doc, indent=4) + '\n')
+print('  client/content.json now trusts this machine\'s key')
+PY
+}
+
+
 case "$mode" in
     --list|--play|--check|--status) : ;;   # must not create anything
     *) mkdir -p "$PROJECTS_DIR" ;;
@@ -451,6 +502,9 @@ case "$mode" in
         ;;
     --links)
         while read -r p; do [ -n "$p" ] && link_addons "$p"; done <<< "$(projects)"
+        ;;
+    --content-keys)
+        content_keys
         ;;
     --list)
         list_games; exit 0
