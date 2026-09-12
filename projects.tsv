@@ -53,7 +53,6 @@ dot-player-class	git@github.com:modcommunity/dot-player-class.git
 dot-player-controller	git@github.com:modcommunity/dot-player-controller.git
 dot-procedural-generation	git@github.com:modcommunity/dot-procedural-generation.git
 dot-props	git@github.com:modcommunity/dot-props.git
-dot-randomness	git@github.com:modcommunity/dot-randomness.git
 dot-serve	git@github.com:modcommunity/dot-serve.git
 dot-server	git@github.com:modcommunity/dot-server.git
 dot-server-deploy	git@github.com:modcommunity/dot-server-deploy.git
