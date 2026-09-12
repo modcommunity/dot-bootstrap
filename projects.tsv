@@ -57,6 +57,7 @@ dot-serve	git@github.com:modcommunity/dot-serve.git
 dot-server	git@github.com:modcommunity/dot-server.git
 dot-server-deploy	git@github.com:modcommunity/dot-server-deploy.git
 dot-server-query	git@github.com:modcommunity/dot-server-query.git
+dot-server-security	git@github.com:modcommunity/dot-server-security.git
 dot-settings	git@github.com:modcommunity/dot-settings.git
 dot-spawn	git@github.com:modcommunity/dot-spawn.git
 dot-spectate	git@github.com:modcommunity/dot-spectate.git
