@@ -1,6 +1,6 @@
 Some useful bootstrap scripts for TMC's [Dot assets](https://moddingcommunity.com/co/4-dot-assets).
 
-Each Dot project is its own Git repository, deliberately. An addon is consumed by copying its `addons/<name>/` folder, and nothing should be able to clone the whole family as one unit. The cost of that rule is thirty-odd clones and a hundred-odd addon symlinks per machine. These scripts are the one place that knowledge lives.
+Each Dot project is its own Git repository, deliberately. An addon is consumed by copying its `addons/<name>/` folder, and nothing should be able to clone the whole family as one unit. The cost of that rule is fifty-odd clones and getting on for three hundred addon links per machine, and both numbers grow every time the family does. These scripts are the one place that knowledge lives.
 
 - [`./bootstrap.sh`](./bootstrap.sh) for Linux and macOS.
 - [`./bootstrap.ps1`](./bootstrap.ps1) for Windows.
@@ -50,8 +50,21 @@ Override either way with `DOT_PROJECTS` (`-Projects` on Windows).
 | `--links` / `-Links` | only redo the addon links |
 | `--status` / `-Status` | branch, dirty and unpushed, per repository |
 | `--check` / `-Check` | does `projects.tsv` still agree with the disk? |
+| `--content-keys` / `-ContentKeys` | a content signing keypair, so this machine can publish packs |
 
 `DOT_GIT_BASE` clones from somewhere other than GitHub. `DOTHUB` adds a second remote called `hub`, pointing at bare repositories on a dev box, when cloning.
+
+## Publishing content from a fresh clone
+
+`dot-cloud` refuses an unsigned manifest, and it is right to: a mounted pack can contain scripts, so a client that mounts unsigned content runs whatever the server sent it. Publishing therefore needs a private key — and a private key is the one thing a clone can never carry. `dot-server-deploy/keys/` is gitignored precisely so one cannot arrive in a commit.
+
+So a fresh clone can **consume** the team's content, whose public half is committed in `dot-server-deploy/client/content.json`, and can publish none of its own. `--content-keys` gives this machine an identity of its own and rewrites that file to trust it:
+
+```bash
+./bootstrap.sh --content-keys     # or .\bootstrap.ps1 -ContentKeys
+```
+
+It is opt-in rather than part of a plain sync because **it leaves `client/content.json` locally modified**, now naming a key no other machine has. That is the honest trade, and doing it silently would leave somebody wondering why their client had started rejecting the team's packs. Do not commit the result.
 
 ## Why the scripts contain no lists
 

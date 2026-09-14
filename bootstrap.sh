@@ -33,8 +33,10 @@
 # Each project is its own repository, deliberately: an addon is consumed by
 # copying its addons/<name>/ folder, and nothing should be able to clone the
 # whole family as one unit and take a dependency on that shape. The cost of
-# that rule is thirty-odd clones and a hundred-odd links to set up by hand on
-# every machine, which is exactly the sort of thing nobody does correctly twice.
+# that rule is fifty-odd clones and getting on for three hundred links to set up
+# by hand on every machine, which is exactly the sort of thing nobody does
+# correctly twice. Both numbers grow every time the family does, which is the
+# other reason neither of them is written down anywhere a person maintains.
 #
 # WHY THERE ARE NO LISTS IN THIS FILE
 #
@@ -157,6 +159,7 @@ RED=$'\033[31m'; GRN=$'\033[32m'; YLW=$'\033[33m'; CYN=$'\033[36m'; DIM=$'\033[2
 fail=0
 
 say()  { printf '%-22s %s\n' "$1" "$2"; }
+ok()   { printf '%-22s %s\n' "$1" "${GRN}$2${OFF}"; }
 warn() { printf '%-22s %s\n' "$1" "${YLW}$2${OFF}"; }
 err()  { printf '%-22s %s\n' "$1" "${RED}$2${OFF}"; fail=1; }
 
@@ -456,6 +459,13 @@ content_keys() {
 
     [ -d "$deploy" ] || { warn "dot-server-deploy" "not cloned yet; run a sync first"; return 1; }
 
+    # The rewrite of client/content.json below is Python, because editing JSON in
+    # sed is how a config file gets corrupted. Check for it up front: without this
+    # the heredoc fails after the key has already been written, which leaves a
+    # keypair on disk that nothing trusts.
+    command -v python3 >/dev/null 2>&1 \
+        || { err "content keys" "python3 is needed to rewrite client/content.json"; return 1; }
+
     local godot; godot="$(find_godot)" || return 1
 
     if [ -f "$deploy/keys/content.key" ]; then
@@ -504,7 +514,7 @@ case "$mode" in
         while read -r p; do [ -n "$p" ] && link_addons "$p"; done <<< "$(projects)"
         ;;
     --content-keys)
-        content_keys
+        content_keys || fail=1
         ;;
     --list)
         list_games; exit 0

@@ -5,6 +5,7 @@
 
         .\bootstrap.ps1                 clone what is missing, pull what is not
         .\bootstrap.ps1 -Links          only redo the links, touch no repository
+        .\bootstrap.ps1 -ContentKeys    make a content signing keypair, to publish packs
         .\bootstrap.ps1 -Status         report each repository, change nothing
         .\bootstrap.ps1 -Check          verify the list against the disk
         .\bootstrap.ps1 -List           what can be played
@@ -66,6 +67,7 @@ param(
     [string]$GitBase  = $(if ($env:DOT_GIT_BASE) { $env:DOT_GIT_BASE } else { 'git@github.com:modcommunity' }),
     [string]$Hub      = $(if ($env:DOTHUB) { $env:DOTHUB } else { '' }),
     [switch]$Links,
+    [switch]$ContentKeys,
     [switch]$Status,
     [switch]$Check,
     [switch]$List,
@@ -171,6 +173,7 @@ if (-not (Test-Path $listFile)) {
 }
 
 function Say  ($n, $m, $c = 'Gray') { Write-Host ("{0,-22} " -f $n) -NoNewline; Write-Host $m -ForegroundColor $c }
+function Ok   ($n, $m)              { Say $n $m 'Green' }
 function Warn ($n, $m)              { Say $n $m 'Yellow' }
 function Err  ($n, $m)              { Say $n $m 'Red'; $script:failed = $true }
 
@@ -476,6 +479,83 @@ function Play-Game ($want) {
     & $bin --path $dir -- --offline
 }
 
+# --- Content keys ----------------------------------------------------------
+
+# A CONTENT SIGNING KEYPAIR, for a developer who wants to PUBLISH packs locally.
+#
+# dot-cloud refuses unsigned manifests, and it should: a mounted pack can contain
+# scripts, so a client that mounts unsigned content runs whatever the server sent.
+# That means publishing needs a private key, and a private key is the one thing a
+# clone can never carry -- keys\ is gitignored in dot-server-deploy precisely so it
+# cannot arrive in a commit.
+#
+# So a fresh clone can CONSUME the team's content (the public half is committed in
+# client\content.json) and cannot PUBLISH any. This makes it able to, with its own
+# identity, and rewrites content.json to trust that identity instead -- which will
+# show as a local modification to a committed file. That is the honest trade and the
+# reason this is opt-in rather than part of a plain sync: overwriting it silently
+# would leave somebody wondering why their client rejects the team's packs.
+function New-ContentKeys {
+    $deploy = Join-Path $projectsDir 'dot-server-deploy'
+    if (-not (Test-Path $deploy)) {
+        Warn 'dot-server-deploy' 'not cloned yet; run a sync first'
+        return $false
+    }
+
+    $godot = Find-Godot
+    if (-not $godot) {
+        Err 'content keys' 'Godot was not found. Set $env:GODOT to the executable.'
+        return $false
+    }
+
+    $keyDir = Join-Path $deploy 'keys'
+    $priv   = Join-Path $keyDir 'content.key'
+    $pub    = Join-Path $keyDir 'content.pub'
+
+    if (Test-Path $priv) {
+        Ok 'content keys' "already present ($keyDir)"
+    }
+    else {
+        New-Item -ItemType Directory -Force -Path $keyDir | Out-Null
+        Push-Location $deploy
+        try {
+            & $godot --headless --path . `
+                --script addons/dot_cloud/publish/dot_cloud_cli.gd -- `
+                keygen --private keys/content.key --public keys/content.pub 2>&1 | Out-Null
+        }
+        finally { Pop-Location }
+
+        if (-not (Test-Path $priv)) {
+            Err 'content keys' 'keygen failed'
+            return $false
+        }
+        Ok 'content keys' "generated in $keyDir"
+    }
+
+    $pem = (Get-Content $pub -Raw).Trim()
+    $cfg = Join-Path $deploy 'client\content.json'
+
+    # Rebuilt rather than edited in place, and ordered, so require_signed_manifests
+    # and trusted_keys land in the same order bootstrap.sh puts them in. The
+    # indentation still differs from that script's -- ConvertTo-Json is not python's
+    # json -- and that is fine, because this file is expected to be locally modified
+    # and not committed: it now names THIS machine's key, which no other machine has.
+    $doc = [ordered]@{}
+    if (Test-Path $cfg) {
+        $existing = Get-Content $cfg -Raw | ConvertFrom-Json
+        foreach ($prop in $existing.PSObject.Properties) { $doc[$prop.Name] = $prop.Value }
+    }
+    $doc['require_signed_manifests'] = $true
+    $doc['trusted_keys'] = [ordered]@{ default = $pem }
+
+    New-Item -ItemType Directory -Force -Path (Split-Path $cfg -Parent) | Out-Null
+    # -Depth, because ConvertTo-Json defaults to 2 and would render trusted_keys as
+    # the string "System.Collections.Specialized.OrderedDictionary".
+    Set-Content -Path $cfg -Value (($doc | ConvertTo-Json -Depth 10) + "`n") -Encoding UTF8 -NoNewline
+    Write-Host "  client\content.json now trusts this machine's key"
+    return $true
+}
+
 # --- Modes -----------------------------------------------------------------
 
 if ($Play)        { Play-Game $Play; exit 0 }
@@ -487,6 +567,9 @@ elseif ($Status)  {
 }
 elseif ($Links)   {
     foreach ($p in Get-Projects) { Link-Addons $p.Name }
+}
+elseif ($ContentKeys) {
+    if (-not (New-ContentKeys)) { $script:failed = $true }
 }
 else {
     New-Item -ItemType Directory -Force -Path $projectsDir | Out-Null
