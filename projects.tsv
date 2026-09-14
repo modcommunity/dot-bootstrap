@@ -36,6 +36,7 @@ dot-inventory	git@github.com:modcommunity/dot-inventory.git
 dot-leaderboard	git@github.com:modcommunity/dot-leaderboard.git
 dot-lighting	git@github.com:modcommunity/dot-lighting.git
 dot-loadout	git@github.com:modcommunity/dot-loadout.git
+dot-log	LOCAL
 dot-map	git@github.com:modcommunity/dot-map.git
 dot-match	git@github.com:modcommunity/dot-match.git
 dot-moderation	git@github.com:modcommunity/dot-moderation
