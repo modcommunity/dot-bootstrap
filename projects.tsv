@@ -31,12 +31,14 @@ dot-console	git@github.com:modcommunity/dot-console.git
 dot-core	git@github.com:modcommunity/dot-core.git
 dot-economy	git@github.com:modcommunity/dot-economy.git
 dot-effects	git@github.com:modcommunity/dot-effects.git
+dot-entity	git@github.com:modcommunity/dot-entity.git
 dot-fx	git@github.com:modcommunity/dot-fx.git
+dot-game	git@github.com:modcommunity/dot-game.git
 dot-inventory	git@github.com:modcommunity/dot-inventory.git
 dot-leaderboard	git@github.com:modcommunity/dot-leaderboard.git
 dot-lighting	git@github.com:modcommunity/dot-lighting.git
 dot-loadout	git@github.com:modcommunity/dot-loadout.git
-dot-log	LOCAL
+dot-log	git@github.com:modcommunity/dot-log
 dot-map	git@github.com:modcommunity/dot-map.git
 dot-match	git@github.com:modcommunity/dot-match.git
 dot-moderation	git@github.com:modcommunity/dot-moderation
@@ -73,8 +75,9 @@ dot-voice	git@github.com:modcommunity/dot-voice.git
 dot-vote	git@github.com:modcommunity/dot-vote.git
 dot-weapon	git@github.com:modcommunity/dot-weapon.git
 game-arena	git@github.com:modcommunity/game-arena.git
-game-buses-from-hell	LOCAL
+game-buses-from-hell	git@github.com:gamemann/game-buses-from-hell.git
 game-g2gfast	git@github.com:modcommunity/game-g2gfast.git
 game-hungario	git@github.com:modcommunity/game-hungario.git
 game-playground	git@github.com:modcommunity/game-playground.git
 game-simple-lobby	git@github.com:modcommunity/game-simple-lobby
+zee-dot-weapons	git@github.com:gamemann/zee-dot-weapons.git
