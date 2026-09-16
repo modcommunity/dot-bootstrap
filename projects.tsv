@@ -75,9 +75,10 @@ dot-voice	git@github.com:modcommunity/dot-voice.git
 dot-vote	git@github.com:modcommunity/dot-vote.git
 dot-weapon	git@github.com:modcommunity/dot-weapon.git
 game-arena	git@github.com:modcommunity/game-arena.git
-game-buses-from-hell	git@github.com:gamemann/game-buses-from-hell.git
 game-g2gfast	git@github.com:modcommunity/game-g2gfast.git
 game-hungario	git@github.com:modcommunity/game-hungario.git
 game-playground	git@github.com:modcommunity/game-playground.git
 game-simple-lobby	git@github.com:modcommunity/game-simple-lobby
+mg-buses-from-hell	git@github.com:gamemann/game-buses-from-hell.git
+mg-smash-copter	git@github.com:gamemann/mg-smash-copter.git
 zee-dot-weapons	git@github.com:gamemann/zee-dot-weapons.git
