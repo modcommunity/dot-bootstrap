@@ -86,3 +86,19 @@ A link the engine will not follow is not a link, so the default is the one that 
 **The cost of copying is that it does not track its source**, so re-run `.\bootstrap.ps1 -Links` after a `git pull`. On Linux the symlinks need no such thing.
 
 Related, and the reason the links matter at all: if Git checks a symlink out as a regular file, which is what it does on Windows when `core.symlinks` is false, then `addons\dot_core` is a ~30 byte text file containing a path. Godot finds no scripts, every `class_name` fails to resolve, and every script mentioning one fails to parse too. Same symptom, different cause.
+
+## `tools/` — the checks that need every repository at once
+
+Most of this family's mechanical detectors are a grep you run inside one project, and they are catalogued with the family's own documentation rather than here. A few cannot be: they have to resolve a `class_name` declared in one repository against an `extends` written in another, which means reading all of them together. Those live here, for the same reason `projects.tsv` does — this is the repository that owns the family as a whole.
+
+```bash
+tools/shadowed_methods.py --self-test
+```
+
+GDScript accepts a `func` whose name a native class already defines with **no warning and no parse error**, and the call then binds to the engine's implementation — so the method is present, reachable, called, and inert. No grep can find it: the name occurs more than once, it has callers, and the body reads correctly. The list of names to check against has to come from `ClassDB` rather than from memory, because `Resource` alone has 76 methods and `reset_state` is not one anybody would guess.
+
+So this asks the engine, resolves every `extends` chain down to the native class it rests on, and reports every **public** `func` whose name is already on that chain. Names beginning with `_` are skipped: that is the engine's own override mechanism and the intended way to replace a virtual.
+
+`--self-test` plants a known shadow first and fails if it is not reported. That is not decoration — **a detector that reports a clean tree and a detector that is broken produce exactly the same output**, and this family has shipped a check that was blind for months for precisely that reason.
+
+It needs `godot` on `PATH` (or `GODOT=` set) and defaults to scanning the directory the projects are cloned into.
