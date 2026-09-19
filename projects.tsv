@@ -18,6 +18,14 @@
 # Columns: name <TAB> clone URL, or the word LOCAL for a project with no remote
 # yet -- a LOCAL project cannot be cloned onto another machine at all.
 #
+# TWO OWNERS, and the split is a rule rather than a set of accidents: the addons
+# are the organisation's (`modcommunity/dot-*`) and the games are their author's
+# (`gamemann/`). That is why the URL is written out per line here instead of being
+# derived from the name -- the name says what a project IS, not who owns it, and a
+# derivation would have to encode the split in two places. setup.sh's repo_url()
+# encodes the same rule for the one case that cannot read this file: a fresh box
+# cloning the sources it needs before dot-bootstrap is on it.
+#
 # A project named game-* has a playable client: `bootstrap --play <name>`.
 dot-2d	git@github.com:modcommunity/dot-2d.git
 dot-achievements	git@github.com:modcommunity/dot-achievements.git
@@ -74,11 +82,11 @@ dot-vehicle	git@github.com:modcommunity/dot-vehicle.git
 dot-voice	git@github.com:modcommunity/dot-voice.git
 dot-vote	git@github.com:modcommunity/dot-vote.git
 dot-weapon	git@github.com:modcommunity/dot-weapon.git
-game-arena	git@github.com:modcommunity/game-arena.git
-game-g2gfast	git@github.com:modcommunity/game-g2gfast.git
-game-hungario	git@github.com:modcommunity/game-hungario.git
-game-playground	git@github.com:modcommunity/game-playground.git
-game-simple-lobby	git@github.com:modcommunity/game-simple-lobby
+game-arena	git@github.com:gamemann/game-arena.git
+game-g2gfast	git@github.com:gamemann/game-g2gfast.git
+game-hungario	git@github.com:gamemann/game-hungario.git
+game-playground	git@github.com:gamemann/game-playground.git
+game-simple-lobby	git@github.com:gamemann/game-simple-lobby.git
 mg-buses-from-hell	git@github.com:gamemann/game-buses-from-hell.git
 mg-smash-copter	git@github.com:gamemann/mg-smash-copter.git
 zee-dot-weapons	git@github.com:gamemann/zee-dot-weapons.git
