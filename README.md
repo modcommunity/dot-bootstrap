@@ -1,4 +1,17 @@
-Some useful bootstrap scripts for TMC's [Dot assets](https://moddingcommunity.com/co/4-dot-assets).
+This is the **bootstrap** tooling for TMC's **Dot** collection. It is what you run first: it clones every project, links each addon into the projects that consume it, and gets you to a game running without you having to know how many repositories that took.
+
+The **Dot** collection is a set of open source Godot 4 assets that provide modular building blocks for games and applications in the TMC ecosystem, covering core functionality, networking, authentication, cloud integration, and more. This tool is what gets them onto your machine and wired together.
+
+**This tool and the assets under it are COMPLETELY OPEN SOURCE**. You are free to use, modify, and distribute them under the terms of the MIT license. The only thing not open source is the back-end web infrastructure. So if you opt into using your own authentication backend instead of integrating with TMC, you will need to build and integrate your own back-end infrastructure.
+
+## From Maintainer & WARNING
+This tool, along with every asset it sets up, was built initially with **Claude Code** and will continue to be maintained and extended using it. This is because I (`gamemann`) cannot build the entire TMC platform alone (I wish I could lol).
+
+**Please treat this as partially tested.** These scripts are how every machine here is set up, so they get run often, but very little of this family has been in front of real players yet. Expect rough edges, and please report anything you run into.
+
+I intend on reviewing code, testing, and editing documentation regularly. If you're interested in helping out, please let me know!
+
+## One Clone Per Project, and One Place That Knows Them All
 
 Each Dot project is its own Git repository, deliberately. An addon is consumed by copying its `addons/<name>/` folder, and nothing should be able to clone the whole family as one unit. The cost of that rule is fifty-odd clones and getting on for three hundred addon links per machine, and both numbers grow every time the family does. These scripts are the one place that knowledge lives.
 
@@ -102,3 +115,7 @@ So this asks the engine, resolves every `extends` chain down to the native class
 `--self-test` plants a known shadow first and fails if it is not reported. That is not decoration — **a detector that reports a clean tree and a detector that is broken produce exactly the same output**, and this family has shipped a check that was blind for months for precisely that reason.
 
 It needs `godot` on `PATH` (or `GODOT=` set) and defaults to scanning the directory the projects are cloned into.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
