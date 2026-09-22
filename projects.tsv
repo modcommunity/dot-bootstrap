@@ -33,6 +33,7 @@ dot-audio	git@github.com:modcommunity/dot-audio.git
 dot-auth	git@github.com:modcommunity/dot-auth.git
 dot-browser	git@github.com:modcommunity/dot-browser.git
 dot-chat	git@github.com:modcommunity/dot-chat.git
+dot-ci	git@github.com:modcommunity/dot-ci.git
 dot-cloud	git@github.com:modcommunity/dot-cloud.git
 dot-combat	git@github.com:modcommunity/dot-combat.git
 dot-console	git@github.com:modcommunity/dot-console.git
