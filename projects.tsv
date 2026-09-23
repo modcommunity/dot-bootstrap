@@ -41,6 +41,7 @@ dot-core	git@github.com:modcommunity/dot-core.git
 dot-economy	git@github.com:modcommunity/dot-economy.git
 dot-effects	git@github.com:modcommunity/dot-effects.git
 dot-entity	git@github.com:modcommunity/dot-entity.git
+dot-friends	git@github.com:modcommunity/dot-friends.git
 dot-fx	git@github.com:modcommunity/dot-fx.git
 dot-game	git@github.com:modcommunity/dot-game.git
 dot-inventory	git@github.com:modcommunity/dot-inventory.git
@@ -68,6 +69,7 @@ dot-player-class	git@github.com:modcommunity/dot-player-class.git
 dot-player-controller	git@github.com:modcommunity/dot-player-controller.git
 dot-procedural-generation	git@github.com:modcommunity/dot-procedural-generation.git
 dot-props	git@github.com:modcommunity/dot-props.git
+dot-replay	git@github.com:modcommunity/dot-replay.git
 dot-serve	git@github.com:modcommunity/dot-serve.git
 dot-server	git@github.com:modcommunity/dot-server.git
 dot-server-deploy	git@github.com:modcommunity/dot-server-deploy.git
