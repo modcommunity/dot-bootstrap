@@ -44,6 +44,7 @@ dot-entity	git@github.com:modcommunity/dot-entity.git
 dot-friends	git@github.com:modcommunity/dot-friends.git
 dot-fx	git@github.com:modcommunity/dot-fx.git
 dot-game	git@github.com:modcommunity/dot-game.git
+dot-game-template	git@github.com:modcommunity/dot-game-template.git
 dot-inventory	git@github.com:modcommunity/dot-inventory.git
 dot-leaderboard	git@github.com:modcommunity/dot-leaderboard.git
 dot-lighting	git@github.com:modcommunity/dot-lighting.git
