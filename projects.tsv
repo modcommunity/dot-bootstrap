@@ -91,6 +91,7 @@ dot-vote	git@github.com:modcommunity/dot-vote.git
 dot-weapon	git@github.com:modcommunity/dot-weapon.git
 game-arena	git@github.com:gamemann/game-arena.git
 game-g2gfast	git@github.com:gamemann/game-g2gfast.git
+g2gfast-maps	git@github.com:gamemann/g2gfast-maps.git
 game-hungario	git@github.com:gamemann/game-hungario.git
 game-playground	git@github.com:gamemann/game-playground.git
 game-simple-lobby	git@github.com:gamemann/game-simple-lobby.git
