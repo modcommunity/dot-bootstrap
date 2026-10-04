@@ -309,6 +309,51 @@ link_addons() {
     say "$proj" "${DIM}$([ "$COPY_ADDONS" = "1" ] && echo copied || echo linked) $made addon(s)${OFF}"
 }
 
+# A project may also need a CONTENT directory from another repository: game-g2gfast's
+# maps/imported is g2gfast-maps/maps. Same rule as the addons, so bootstrap still holds
+# no list: the project's .gitignore says it, as a comment line directly above the
+# ignored path,
+#
+#     # bootstrap-link: g2gfast-maps/maps
+#     /maps/imported
+#
+# Without this a fresh clone of the game had only its three built-in maps, and nothing
+# said why: the imported ones are optional content, so the catalogue just found none.
+content_links_for() {
+    local gi="$PROJECTS_DIR/$1/.gitignore"
+    [ -f "$gi" ] || return 0
+    awk '/^# bootstrap-link: /{src=$3; next} src!="" && /^\//{print $0 "\t" src} {src=""}' "$gi"
+}
+
+link_content() {
+    local proj="$1"; local dir="$PROJECTS_DIR/$proj" path src rel up
+    [ -d "$dir" ] || return 0
+    while IFS=$'\t' read -r path src; do
+        [ -n "$path" ] || continue
+        path="${path#/}"; path="${path%/}"
+        if [ ! -d "$PROJECTS_DIR/$src" ]; then
+            warn "$proj" "content missing: $src (clone ${src%%/*} for $path)"
+            continue
+        fi
+        # A real directory there may be the only copy of something; never delete it.
+        if [ -e "$dir/$path" ] && [ ! -L "$dir/$path" ]; then
+            warn "$proj" "$path is a real directory, left alone (link it to $src by hand)"
+            continue
+        fi
+        rm -f "$dir/$path"
+        mkdir -p "$(dirname "$dir/$path")"
+        if [ "$COPY_ADDONS" = "1" ]; then
+            cp -r "$PROJECTS_DIR/$src" "$dir/$path"
+        else
+            # Relative, so the two checkouts can move together: one ../ per level of
+            # path, plus one out of the project itself.
+            up="$(printf '%s' "$path" | awk -F/ '{for(i=1;i<NF;i++) printf "../"}')"
+            ln -s "../$up$src" "$dir/$path"
+        fi
+        say "$proj" "${DIM}$([ "$COPY_ADDONS" = "1" ] && echo copied || echo linked) $path -> $src${OFF}"
+    done <<< "$(content_links_for "$proj")"
+}
+
 # --- Reporting -------------------------------------------------------------
 
 status_repo() {
@@ -511,7 +556,7 @@ case "$mode" in
         check_list
         ;;
     --links)
-        while read -r p; do [ -n "$p" ] && link_addons "$p"; done <<< "$(projects)"
+        while read -r p; do [ -n "$p" ] && { link_addons "$p"; link_content "$p"; }; done <<< "$(projects)"
         ;;
     --content-keys)
         content_keys || fail=1
@@ -530,7 +575,7 @@ case "$mode" in
         # project that this same run is about to clone.
         while read -r p; do [ -n "$p" ] && sync_repo "$p"; done <<< "$(projects)"
         echo
-        while read -r p; do [ -n "$p" ] && link_addons "$p"; done <<< "$(projects)"
+        while read -r p; do [ -n "$p" ] && { link_addons "$p"; link_content "$p"; }; done <<< "$(projects)"
         ;;
     -h|--help)
         sed -n '3,26p' "$REAL_SELF" | sed 's/^# \{0,1\}//'; exit 0

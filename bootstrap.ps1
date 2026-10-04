@@ -359,6 +359,42 @@ function Link-Addons ($proj) {
     Say $proj "$verb $made addon(s)" 'DarkGray'
 }
 
+# A CONTENT directory from another repository, declared in the project's .gitignore as a
+# comment line directly above the ignored path ("# bootstrap-link: g2gfast-maps/maps" over
+# "/maps/imported"). bootstrap.sh's link_content has the reasoning. Copied by default and
+# junctioned with -Junction, exactly like the addons.
+function Link-Content ($proj) {
+    $dir = Join-Path $projectsDir $proj
+    $gi  = Join-Path $dir '.gitignore'
+    if (-not (Test-Path $gi)) { return }
+    $src = $null
+    foreach ($line in Get-Content $gi) {
+        if ($line -match '^# bootstrap-link: (\S+)\s*$') { $src = $Matches[1]; continue }
+        if ($src -and $line -match '^/(.+?)/?\s*$') {
+            $path   = $Matches[1] -replace '/', '\'
+            $target = Join-Path $projectsDir ($src -replace '/', '\')
+            $link   = Join-Path $dir $path
+            if (-not (Test-Path $target)) {
+                Warn $proj "content missing: $src (clone $(($src -split '/')[0]) for $path)"
+            } elseif ((Test-Path $link) -and -not (Get-Item $link -Force).LinkType -and -not $useCopy) {
+                Warn $proj "$path is a real directory, left alone (link it to $src by hand)"
+            } else {
+                if (Test-Path $link) {
+                    $item = Get-Item $link -Force
+                    if ($item.LinkType) { [System.IO.Directory]::Delete($item.FullName, $false) }
+                    else                { Remove-Item $link -Recurse -Force }
+                }
+                New-Item -ItemType Directory -Force -Path (Split-Path $link) | Out-Null
+                if ($useCopy) { Copy-Item -Path $target -Destination $link -Recurse -Force }
+                else          { New-Item -ItemType Junction -Path $link -Target $target | Out-Null }
+                $verb = if ($useCopy) { 'copied' } else { 'linked' }
+                Say $proj "$verb $path -> $src" 'DarkGray'
+            }
+        }
+        $src = $null
+    }
+}
+
 # --- Reporting -------------------------------------------------------------
 
 function Status-Repo ($proj) {
@@ -566,7 +602,7 @@ elseif ($Status)  {
     foreach ($p in Get-Projects) { Status-Repo $p.Name }
 }
 elseif ($Links)   {
-    foreach ($p in Get-Projects) { Link-Addons $p.Name }
+    foreach ($p in Get-Projects) { Link-Addons $p.Name; Link-Content $p.Name }
 }
 elseif ($ContentKeys) {
     if (-not (New-ContentKeys)) { $script:failed = $true }
@@ -579,7 +615,7 @@ else {
     # project this same run is about to clone.
     foreach ($p in Get-Projects) { Sync-Repo $p.Name $p.Url }
     Write-Host ''
-    foreach ($p in Get-Projects) { Link-Addons $p.Name }
+    foreach ($p in Get-Projects) { Link-Addons $p.Name; Link-Content $p.Name }
 }
 
 Write-Host ''

@@ -87,6 +87,7 @@ So neither list lives in the scripts:
 
 - The projects come from **`projects.tsv`**, the one file both scripts read. `--check` fails if it disagrees with what is on the disk.
 - The addons a project needs are read out of **that project's own `.gitignore`**, from its `/addons/<name>` lines. That is the one place that cannot go stale: the repository that gains a dependency is the repository that has to ignore the link, and Godot will not open without it.
+- A **content directory** from another repository is declared the same way: a `# bootstrap-link: <repo>/<path>` comment line directly above the ignored path. game-g2gfast's `.gitignore` has `# bootstrap-link: g2gfast-maps/maps` over `/maps/imported`, so a fresh clone of the game gets its imported maps (linked, or copied on Windows by default). A real directory already at that path is reported and never replaced, because it may be the only copy of something.
 
 ## Windows copies the addons; Linux links them
 
