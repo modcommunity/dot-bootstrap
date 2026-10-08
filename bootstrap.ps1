@@ -11,7 +11,7 @@
         .\bootstrap.ps1 -List           what can be played
         .\bootstrap.ps1 -Play arena     play one, offline, no server needed
         .\bootstrap.ps1 -Links -Copy    copy the addons instead of linking them
-        .\bootstrap.ps1 -Https          reach GitHub over HTTPS rather than SSH
+        .\bootstrap.ps1 -Ssh            clone over SSH (to push from this machine); HTTPS is the default
         .\bootstrap.ps1 -Only arena,wipeout     only these, plus the addon and map repos they need
         .\bootstrap.ps1 -Only 'mg-*' -NoDeps    only these, and nothing they need
 
@@ -81,6 +81,7 @@ param(
     [switch]$Copy,
     [switch]$Junction,
     [switch]$Https,
+    [switch]$Ssh,
     [string[]]$Only = $(if ($env:DOT_ONLY) { $env:DOT_ONLY -split '[,\s]+' } else { @() }),
     [switch]$NoDeps,
     [string]$Play
@@ -109,14 +110,19 @@ $script:linkedProjects = 0
 # does: "consumers copy the addon folders into their own project instead".
 $useCopy = -not $Junction
 
-# Whether to reach GitHub over HTTPS instead of SSH. Set by -Https, or latched on
-# automatically the first time an SSH clone fails and the HTTPS one works.
+# Whether to reach GitHub over HTTPS instead of SSH. HTTPS is the default: every
+# repository in projects.tsv is public, so HTTPS reads them with no credentials on
+# any machine, while SSH fails on every machine without a key -- which is most of
+# the ones this script is run on.
 #
-# SSH is still tried first, deliberately: a machine with a key can PUSH, and
-# rewriting everything to HTTPS would quietly take that away. The fallback is for
-# the read-only case -- a laptop, a fresh Windows box, anywhere the key is not --
-# and the assets are public, so HTTPS needs no credentials to read.
-$script:useHttps  = [bool]$Https
+# -Ssh restores SSH for a machine that pushes. It still falls back to HTTPS,
+# latched, the first time an SSH clone fails and the HTTPS one works. -Https is
+# the default and still accepted.
+#
+# An EXISTING clone keeps its origin either way. In HTTPS mode a pull from an SSH
+# origin goes over HTTPS for that one command (url.<https>.insteadOf), so a
+# keyless machine can update while a machine with a key can still push.
+$script:useHttps  = -not $Ssh
 $script:httpsNoted = $false
 
 # git@host:path -> https://host/path, ssh://git@host/path -> https://host/path.
@@ -136,8 +142,18 @@ function Note-Https {
     Write-Host 'The Dot assets are public, so cloning and pulling need no credentials.' -ForegroundColor Yellow
     Write-Host 'Pushing does: these clones get an https:// origin, and a push over it' -ForegroundColor Yellow
     Write-Host 'wants a personal access token rather than your key. Add an SSH key to' -ForegroundColor Yellow
-    Write-Host 'GitHub and re-run without -Https to get one you can push from.' -ForegroundColor Yellow
+    Write-Host 'GitHub to get one you can push from.' -ForegroundColor Yellow
     Write-Host ''
+}
+
+# `git -c ...` arguments that send one command over HTTPS when origin is SSH.
+# Empty when it is not, or when HTTPS mode is off.
+function Get-HttpsArgs ($origin) {
+    if (-not $script:useHttps) { return @() }
+    if     ($origin -match '^(ssh://[^/]+/)') { $prefix = $Matches[1] }
+    elseif ($origin -match '^([^@/]+@[^:/]+:)') { $prefix = $Matches[1] }
+    else   { return @() }
+    return @('-c', "url.$(ConvertTo-HttpsUrl $prefix).insteadOf=$prefix")
 }
 
 # The directory holding the project repositories, in order of preference.
@@ -328,7 +344,12 @@ function Sync-Repo ($proj, $url) {
 
         git clone -q $effective $dir 2>$null
         if ($LASTEXITCODE -eq 0) {
-            Say $proj "cloned $(git -C $dir rev-parse --short HEAD 2>$null)" 'Green'
+            # A repository created on GitHub and never pushed to clones fine and
+            # has no HEAD, so rev-parse fails. Say so rather than leaking its
+            # "fatal: Needed a single revision" to the terminal.
+            $at = git -C $dir rev-parse --short HEAD 2>$null
+            if ($at) { Say $proj "cloned $at" 'Green' }
+            else     { Warn $proj 'cloned, empty -- nothing pushed to it yet' }
             if ($Hub) { git -C $dir remote add hub "$Hub/$proj.git" 2>$null | Out-Null }
         } else {
             Err $proj "clone failed from $effective"
@@ -345,23 +366,38 @@ function Sync-Repo ($proj, $url) {
     $dirty = @(git -C $dir status --porcelain)
     if ($dirty.Count -gt 0) { Warn $proj "dirty, left alone ($($dirty.Count) file(s))"; return }
 
-    $before = git -C $dir rev-parse --short HEAD
-    git -C $dir pull -q --ff-only 2>$null
+    $origin = git -C $dir remote get-url origin 2>$null
+    $net    = @(Get-HttpsArgs $origin)
+
+    # A clone of a repository that had nothing pushed to it yet has no HEAD, and
+    # pulling into it fails with "no such ref was fetched" until somebody pushes.
+    # That is not an error on this machine, so it is not reported as one -- and
+    # it was, as "fatal: Needed a single revision" and then a pull failure that
+    # blamed SSH.
+    $before = git -C $dir rev-parse --short HEAD 2>$null
+    if (-not $before) {
+        $heads = git @net -C $dir ls-remote --heads origin 2>$null
+        if (-not $heads) { Warn $proj 'empty -- nothing pushed to it yet'; return }
+    }
+
+    git @net -C $dir pull -q --ff-only 2>$null
     if ($LASTEXITCODE -ne 0) {
-        $origin = git -C $dir remote get-url origin 2>$null
-        $alt    = ConvertTo-HttpsUrl $origin
-        if ($alt -ne $origin) {
-            Err  $proj 'pull failed. origin is SSH; if you have no key here, run:'
-            Say  ''    "  git -C `"$dir`" remote set-url origin $alt"
-        } else {
+        $alt = ConvertTo-HttpsUrl $origin
+        if ($alt -eq $origin) {
             Err $proj 'pull refused - diverged, or no upstream. Resolve by hand.'
+        } elseif ($script:useHttps) {
+            Err $proj 'pull failed over HTTPS too - diverged, no upstream, or not reachable. Resolve by hand.'
+        } else {
+            Err  $proj 'pull failed. origin is SSH; if you have no key here, drop -Ssh, or run:'
+            Say  ''    "  git -C `"$dir`" remote set-url origin $alt"
         }
         return
     }
 
     $after = git -C $dir rev-parse --short HEAD
-    if ($before -eq $after) { Say $proj "up to date $after" 'DarkGray' }
-    else                    { Say $proj "updated $before -> $after" 'Green' }
+    if (-not $before)           { Say $proj "first commits $after" 'Green' }
+    elseif ($before -eq $after) { Say $proj "up to date $after" 'DarkGray' }
+    else                        { Say $proj "updated $before -> $after" 'Green' }
 }
 
 # --- Links -----------------------------------------------------------------

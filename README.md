@@ -21,7 +21,7 @@ Each Dot project is its own Git repository, deliberately. An addon is consumed b
 
 ## Getting everything
 
-The assets are public, so **you need no credentials to clone or pull.** The scripts try SSH first, because that is what a machine with a key can push from, and if SSH is unavailable they fall back to HTTPS automatically, warn once, and carry on. `--https` / `-Https` skips straight to HTTPS.
+The assets are public, so **you need no credentials to clone or pull.** The scripts use HTTPS by default. On a machine you push from, `--ssh` / `-Ssh` clones over SSH instead, and still falls back to HTTPS if the key is missing. A clone that already has an SSH origin keeps it: in the default mode its pulls go over HTTPS for that one command, so a machine without a key can still update it, and a machine with one can still push. A repository that exists on GitHub with nothing pushed to it yet is reported as empty, not as a failure.
 
 
 ```bash

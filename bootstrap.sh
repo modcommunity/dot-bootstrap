@@ -11,7 +11,7 @@
 #   ./bootstrap.sh --list          what can be played
 #   ./bootstrap.sh --play arena    play one, offline, no server needed
 #   ./bootstrap.sh --links --copy  copy the addons instead of linking them
-#   ./bootstrap.sh --https         reach GitHub over HTTPS rather than SSH
+#   ./bootstrap.sh --ssh           clone over SSH (to push from this machine); HTTPS is the default
 #   ./bootstrap.sh --only arena,wipeout   only these, plus the addon and map repos they need
 #   ./bootstrap.sh --only 'mg-*' --no-deps  only these, and nothing they need
 #
@@ -126,14 +126,18 @@ LIST="$REPO_DIR/projects.tsv"
 GIT_BASE="${DOT_GIT_BASE:-git@github.com:modcommunity}"
 HUB="${DOTHUB:-}"
 
-# Whether to reach GitHub over HTTPS instead of SSH. Set by --https, or latched
-# on automatically the first time an SSH clone fails and the HTTPS one works.
+# Whether to reach GitHub over HTTPS instead of SSH. HTTPS is the default: every
+# repository in projects.tsv is public, so HTTPS reads them with no credentials
+# on any machine, while SSH fails on every machine without a key -- which is
+# most of the ones this script is run on.
 #
-# SSH is still tried first, deliberately: a machine with a key can PUSH, and
-# rewriting everything to HTTPS would quietly take that away. The fallback is
-# for the read-only case -- a laptop, a fresh Windows box, anywhere the key is
-# not -- and the assets are public, so HTTPS needs no credentials to read.
-USE_HTTPS=0
+# --ssh restores SSH for a machine that pushes. It still falls back to HTTPS,
+# latched, the first time an SSH clone fails and the HTTPS one works.
+#
+# An EXISTING clone keeps its origin either way. In HTTPS mode a pull from an
+# SSH origin goes over HTTPS for that one command (url.<https>.insteadOf), so a
+# keyless machine can update while a machine with a key can still push.
+USE_HTTPS=1
 HTTPS_NOTED=0
 
 # git@host:path  ->  https://host/path
@@ -158,8 +162,21 @@ note_https() {
     echo "${YLW}The Dot assets are public, so cloning and pulling need no credentials.${OFF}"
     echo "${YLW}Pushing does: these clones get an https:// origin, and a push over it${OFF}"
     echo "${YLW}wants a personal access token rather than your key. Add an SSH key to${OFF}"
-    echo "${YLW}GitHub and re-run without --https to get one you can push from.${OFF}"
+    echo "${YLW}GitHub to get one you can push from.${OFF}"
     echo
+}
+
+# `git -c ...` arguments that send one command over HTTPS when origin is SSH.
+# Nothing is printed when it is not, or when HTTPS mode is off.
+https_for() {
+    [ "$USE_HTTPS" = "1" ] || return 0
+    local origin="$1" prefix
+    case "$origin" in
+        ssh://*) prefix="${origin#ssh://}"; prefix="ssh://${prefix%%/*}/" ;;
+        *@*:*)   prefix="${origin%%:*}:" ;;
+        *)       return 0 ;;
+    esac
+    printf '%s\n' -c "url.$(to_https "$prefix").insteadOf=$prefix"
 }
 
 RED=$'\033[31m'; GRN=$'\033[32m'; YLW=$'\033[33m'; CYN=$'\033[36m'; DIM=$'\033[2m'; OFF=$'\033[0m'
@@ -337,18 +354,32 @@ sync_repo() {
         return
     fi
 
-    local before; before=$(git -C "$dir" rev-parse --short HEAD)
-    if git -C "$dir" pull -q --ff-only 2>/dev/null; then
+    local origin; origin="$(git -C "$dir" remote get-url origin 2>/dev/null)"
+    local net=(); mapfile -t net < <(https_for "$origin")
+
+    # A clone of a repository that had nothing pushed to it yet has no HEAD, and
+    # pulling into it fails with "no such ref was fetched" until somebody pushes.
+    # That is not an error on this machine, so it is not reported as one.
+    local before; before=$(git -C "$dir" rev-parse --short HEAD 2>/dev/null)
+    if [ -z "$before" ] && [ -z "$(git "${net[@]}" -C "$dir" ls-remote --heads origin 2>/dev/null)" ]; then
+        warn "$proj" "empty — nothing pushed to it yet"
+        return
+    fi
+
+    if git "${net[@]}" -C "$dir" pull -q --ff-only 2>/dev/null; then
         local after; after=$(git -C "$dir" rev-parse --short HEAD)
-        [ "$before" = "$after" ] \
-            && say "$proj" "${DIM}up to date${OFF} $after" \
-            || say "$proj" "${GRN}updated${OFF} $before -> $after"
+        if [ -z "$before" ]; then say "$proj" "${GRN}first commits${OFF} $after"
+        elif [ "$before" = "$after" ]; then say "$proj" "${DIM}up to date${OFF} $after"
+        else say "$proj" "${GRN}updated${OFF} $before -> $after"; fi
     else
-        local origin; origin="$(git -C "$dir" remote get-url origin 2>/dev/null)"
         case "$origin" in
             *@*:*|ssh://*)
-                err "$proj" "pull failed. origin is SSH; if you have no key here, run:"
-                say ""       "  git -C '$dir' remote set-url origin $(to_https "$origin")" ;;
+                if [ "$USE_HTTPS" = "1" ]; then
+                    err "$proj" "pull failed over HTTPS too - diverged, no upstream, or not reachable. Resolve by hand."
+                else
+                    err "$proj" "pull failed. origin is SSH; if you have no key here, drop --ssh, or run:"
+                    say ""       "  git -C '$dir' remote set-url origin $(to_https "$origin")"
+                fi ;;
             *)  err "$proj" "pull refused - diverged, or no upstream. Resolve by hand." ;;
         esac
     fi
@@ -579,14 +610,15 @@ play_game() {
 
 # --- Modes -----------------------------------------------------------------
 
-# --copy, --https, --only and --no-deps may accompany any mode; strip them before
+# --copy, --ssh, --https, --only and --no-deps may accompany any mode; strip them before
 # the mode is read.
 ARGS=()
 only_raw="${DOT_ONLY:-}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --copy)    COPY_ADDONS=1 ;;
-        --https)   USE_HTTPS=1 ;;
+        --ssh)     USE_HTTPS=0 ;;
+        --https)   USE_HTTPS=1 ;;   # the default; still accepted
         --no-deps) NO_DEPS=1 ;;
         --only)    [ $# -ge 2 ] || { echo "${RED}--only needs a name${OFF}" >&2; exit 2; }
                    only_raw="$only_raw,$2"; shift ;;
