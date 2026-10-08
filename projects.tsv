@@ -79,6 +79,7 @@ dot-server-security	git@github.com:modcommunity/dot-server-security.git
 dot-settings	git@github.com:modcommunity/dot-settings.git
 dot-spawn	git@github.com:modcommunity/dot-spawn.git
 dot-spectate	git@github.com:modcommunity/dot-spectate.git
+dot-sql	git@github.com:modcommunity/dot-sql
 dot-stats	git@github.com:modcommunity/dot-stats
 dot-team	git@github.com:modcommunity/dot-team.git
 dot-timer	git@github.com:modcommunity/dot-timer.git
@@ -95,7 +96,6 @@ g2gfast-maps	git@github.com:gamemann/g2gfast-maps.git
 game-hungario	git@github.com:gamemann/game-hungario.git
 game-playground	git@github.com:gamemann/game-playground.git
 game-playground-maps	git@github.com:gamemann/game-playground-maps.git
-game-simple-lobby	git@github.com:gamemann/game-simple-lobby.git
 mg-buses-from-hell	git@github.com:gamemann/mg-buses-from-hell.git
 mg-deathrun	git@github.com:gamemann/mg-deathrun.git
 mg-deathrun-maps	git@github.com:gamemann/mg-deathrun-maps.git

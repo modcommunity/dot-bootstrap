@@ -68,7 +68,7 @@ The addons are copied (or linked) into the projects you named and nowhere else. 
 
 ```bash
 ./bootstrap.sh --list           # what there is
-./bootstrap.sh --play arena     # or g2gfast, hungario, playground, simple-lobby
+./bootstrap.sh --play arena     # or g2gfast, hungario, playground
 ```
 
 **No server, no CDN, no downloads.** Every game falls back to playing offline when no dedicated server is attached: `arena` gives you three bots on `dm_atrium`, `hungario` six, `g2gfast` and `playground` a map and a timer. You need Godot 4.7 on `PATH`, or `GODOT` pointing at it.
