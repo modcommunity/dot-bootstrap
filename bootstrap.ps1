@@ -201,6 +201,22 @@ function Get-LinksFor ($proj) {
         ForEach-Object { if ($_ -match '^/addons/([a-z0-9_]+)\s*$') { $Matches[1] } }
 }
 
+# Which repository an addon comes from. bootstrap.sh's addon_source has the reasoning:
+# the name rule misses a game's own pack (zee_weapons is in zee-dot-weapons), so ask the
+# checkouts for the project that has the folder and does not ignore it.
+function Get-AddonSource ($addon) {
+    $src = $addon -replace '_', '-'
+    if (Test-Path (Join-Path $projectsDir "$src\addons\$addon")) { return $src }
+    foreach ($d in Get-ChildItem -Path $projectsDir -Directory -ErrorAction SilentlyContinue) {
+        if (-not (Test-Path (Join-Path $d.FullName "addons\$addon")) -or -not (Test-Path (Join-Path $d.FullName '.git'))) { continue }
+        # Git's own answer, not a line match: dot-server-deploy ignores /addons/ whole.
+        git -C $d.FullName check-ignore -q "addons/$addon" 2>$null
+        if ($LASTEXITCODE -eq 0) { continue }
+        return $d.Name
+    }
+    return $src
+}
+
 # --- Repositories ----------------------------------------------------------
 
 function Sync-Repo ($proj, $url) {
@@ -296,8 +312,7 @@ function Link-Addons ($proj) {
 
     $made = 0
     foreach ($addon in $addons) {
-        # dot_user_avatar -> dot-user-avatar. True for every link in the family.
-        $src    = $addon -replace '_', '-'
+        $src    = Get-AddonSource $addon
         $target = Join-Path $projectsDir "$src\addons\$addon"
         $link   = Join-Path $addonDir $addon
 

@@ -180,6 +180,25 @@ links_for() {
     grep -oE '^/addons/[a-z0-9_]+$' "$gi" 2>/dev/null | sed 's|^/addons/||'
 }
 
+# Which repository an addon comes from. dot_user_avatar -> dot-user-avatar covers every
+# dot-* addon, but not a game's own pack: zee_weapons lives in zee-dot-weapons, and the
+# name rule sent every game that used it looking for a zee-weapons nobody has. Rather
+# than a table of exceptions, ask the checkouts: the owner is the project that HAS the
+# folder and does not ignore it -- every consumer ignores it, linked or copied, and
+# dot-server-deploy, which vendors a copy of everything, ignores /addons/ whole.
+addon_source() {
+    local addon="$1" src="${1//_/-}" d
+    if [ -d "$PROJECTS_DIR/$src/addons/$addon" ]; then echo "$src"; return 0; fi
+    for d in "$PROJECTS_DIR"/*/; do
+        d="${d%/}"
+        [ -d "$d/addons/$addon" ] && [ -d "$d/.git" ] || continue
+        # Git's own answer, not a line match: dot-server-deploy ignores /addons/ whole.
+        git -C "$d" check-ignore -q "addons/$addon" && continue
+        echo "${d##*/}"; return 0
+    done
+    echo "$src"
+}
+
 # --- Repositories ----------------------------------------------------------
 
 sync_repo() {
@@ -284,8 +303,7 @@ link_addons() {
     local made=0 addon src
     while read -r addon; do
         [ -n "$addon" ] || continue
-        # dot_user_avatar -> dot-user-avatar. True for every link in the family.
-        src="${addon//_/-}"
+        src="$(addon_source "$addon")"
         if [ ! -d "$PROJECTS_DIR/$src/addons/$addon" ]; then
             err "$proj" "source missing: $src/addons/$addon"
             continue
