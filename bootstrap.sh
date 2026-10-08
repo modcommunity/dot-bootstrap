@@ -12,6 +12,13 @@
 #   ./bootstrap.sh --play arena    play one, offline, no server needed
 #   ./bootstrap.sh --links --copy  copy the addons instead of linking them
 #   ./bootstrap.sh --https         reach GitHub over HTTPS rather than SSH
+#   ./bootstrap.sh --only arena,wipeout   only these, plus the addon and map repos they need
+#   ./bootstrap.sh --only 'mg-*' --no-deps  only these, and nothing they need
+#
+# --only works with every mode (sync, --links, --status). A name is a project
+# from projects.tsv, or its short form (arena = game-arena, wipeout = mg-wipeout,
+# core = dot-core), or a glob. Set DOT_ONLY to make a selection stick. Addons
+# are linked (or copied) into the named projects only.
 #
 # WHERE IT PUTS THINGS
 #
@@ -197,6 +204,86 @@ addon_source() {
         echo "${d##*/}"; return 0
     done
     echo "$src"
+}
+
+# --- Selecting -------------------------------------------------------------
+#
+# --only names projects; what each one NEEDS comes from the same place the links
+# do -- its .gitignore -- so the selection holds no list either. That means the
+# needs of a project are only known once it is cloned, which is why a sync walks
+# them as a queue (clone, read, enqueue what it names) rather than working the set
+# out first.
+
+ONLY=()
+NO_DEPS=0
+
+listed() { projects | grep -qxF "$1"; }
+
+# A name as typed -> the projects it means, or nothing.
+resolve_name() {
+    local n="$1" p
+    case "$n" in
+        *[*?[]*) projects | while read -r p; do [[ "$p" == $n ]] && echo "$p"; done; return ;;
+    esac
+    for p in "$n" "game-$n" "mg-$n" "dot-$n"; do listed "$p" && { echo "$p"; return; }; done
+}
+
+# The listed repository an addon comes from, clone or no clone. The name rule first;
+# then a checkout that owns it; then the listed name it matches with every "dot-"
+# taken out -- zee_weapons is zee-dot-weapons -- which is unambiguous because no two
+# names in projects.tsv are equal that way (`--check`'s neighbour, measured 10-07).
+addon_repo() {
+    local src="${1//_/-}" p
+    listed "$src" && { echo "$src"; return; }
+    p="$(addon_source "$1")"; listed "$p" && [ -d "$PROJECTS_DIR/$p/addons/$1" ] && { echo "$p"; return; }
+    projects | while read -r p; do [ "${p//dot-/}" = "${src//dot-/}" ] && { echo "$p"; break; }; done
+}
+
+# What a project needs on disk beside it: the repositories of its addons, and of any
+# content directory its .gitignore names with "# bootstrap-link:".
+deps_of() {
+    local a src path
+    while read -r a; do [ -n "$a" ] && addon_repo "$a"; done <<< "$(links_for "$1")"
+    while IFS=$'\t' read -r path src; do
+        [ -n "$src" ] && listed "${src%%/*}" && echo "${src%%/*}"
+    done <<< "$(content_links_for "$1")"
+}
+
+# Every project when nothing was selected; otherwise the selection, plus (unless
+# --no-deps) everything it needs that is already on disk, in projects.tsv order.
+# A sync calls sync_selected instead, which clones as it goes.
+selected() {
+    [ ${#ONLY[@]} -eq 0 ] && { projects; return; }
+    local -A seen=(); local queue=("${ONLY[@]}") p d
+    while [ ${#queue[@]} -gt 0 ]; do
+        p="${queue[0]}"; queue=("${queue[@]:1}")
+        [ -n "${seen[$p]:-}" ] && continue
+        seen[$p]=1
+        [ "$NO_DEPS" = "1" ] && continue
+        while read -r d; do [ -n "$d" ] && queue+=("$d"); done <<< "$(deps_of "$p")"
+    done
+    projects | while read -r p; do [ -n "${seen[$p]:-}" ] && echo "$p"; done
+}
+
+# Where links go. With a selection, only into what was NAMED: the repositories pulled
+# in for it are sources to copy from, and filling their own addons/ folders too would
+# be most of the work and, under --copy, most of the disk.
+link_targets() {
+    [ ${#ONLY[@]} -eq 0 ] && { projects; return; }
+    printf '%s\n' "${ONLY[@]}"
+}
+
+sync_selected() {
+    [ ${#ONLY[@]} -eq 0 ] && { while read -r p; do [ -n "$p" ] && sync_repo "$p"; done <<< "$(projects)"; return; }
+    local -A seen=(); local queue=("${ONLY[@]}") p d
+    while [ ${#queue[@]} -gt 0 ]; do
+        p="${queue[0]}"; queue=("${queue[@]:1}")
+        [ -n "${seen[$p]:-}" ] && continue
+        seen[$p]=1
+        sync_repo "$p"
+        [ "$NO_DEPS" = "1" ] && continue
+        while read -r d; do [ -n "$d" ] && queue+=("$d"); done <<< "$(deps_of "$p")"
+    done
 }
 
 # --- Repositories ----------------------------------------------------------
@@ -492,14 +579,33 @@ play_game() {
 
 # --- Modes -----------------------------------------------------------------
 
-# --copy may accompany any mode; strip it before the mode is read.
+# --copy, --https, --only and --no-deps may accompany any mode; strip them before
+# the mode is read.
 ARGS=()
-for a in "$@"; do
-    [ "$a" = "--copy" ] && { COPY_ADDONS=1; continue; }
-    [ "$a" = "--https" ] && { USE_HTTPS=1; continue; }
-    ARGS+=("$a")
+only_raw="${DOT_ONLY:-}"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --copy)    COPY_ADDONS=1 ;;
+        --https)   USE_HTTPS=1 ;;
+        --no-deps) NO_DEPS=1 ;;
+        --only)    [ $# -ge 2 ] || { echo "${RED}--only needs a name${OFF}" >&2; exit 2; }
+                   only_raw="$only_raw,$2"; shift ;;
+        --only=*)  only_raw="$only_raw,${1#--only=}" ;;
+        *)         ARGS+=("$1") ;;
+    esac
+    shift
 done
 set -- "${ARGS[@]+"${ARGS[@]}"}"
+
+# A name that matches nothing is an error, not an empty selection: an empty one
+# would quietly mean "everything", which is the opposite of what was asked.
+IFS=', ' read -ra _names <<< "$only_raw"
+for n in "${_names[@]+"${_names[@]}"}"; do
+    [ -n "$n" ] || continue
+    _hit="$(resolve_name "$n")"
+    [ -n "$_hit" ] || { echo "${RED}--only: no project called $n in projects.tsv${OFF}" >&2; exit 2; }
+    while read -r p; do ONLY+=("$p"); done <<< "$_hit"
+done
 
 mode="${1:-sync}"
 
@@ -568,13 +674,13 @@ esac
 case "$mode" in
     --status)
         echo "projects: $PROJECTS_DIR"; echo
-        while read -r p; do [ -n "$p" ] && status_repo "$p"; done <<< "$(projects)"
+        while read -r p; do [ -n "$p" ] && status_repo "$p"; done <<< "$(selected)"
         ;;
     --check)
         check_list
         ;;
     --links)
-        while read -r p; do [ -n "$p" ] && { link_addons "$p"; link_content "$p"; }; done <<< "$(projects)"
+        while read -r p; do [ -n "$p" ] && { link_addons "$p"; link_content "$p"; }; done <<< "$(link_targets)"
         ;;
     --content-keys)
         content_keys || fail=1
@@ -591,12 +697,13 @@ case "$mode" in
         echo "base:     $GIT_BASE"; echo
         # Repositories first, all of them, then links -- a link can point into a
         # project that this same run is about to clone.
-        while read -r p; do [ -n "$p" ] && sync_repo "$p"; done <<< "$(projects)"
+        [ ${#ONLY[@]} -gt 0 ] && echo "only:     ${ONLY[*]}$([ "$NO_DEPS" = "1" ] && echo " (no deps)")" && echo
+        sync_selected
         echo
-        while read -r p; do [ -n "$p" ] && { link_addons "$p"; link_content "$p"; }; done <<< "$(projects)"
+        while read -r p; do [ -n "$p" ] && { link_addons "$p"; link_content "$p"; }; done <<< "$(link_targets)"
         ;;
     -h|--help)
-        sed -n '3,26p' "$REAL_SELF" | sed 's/^# \{0,1\}//'; exit 0
+        sed -n '3,32p' "$REAL_SELF" | sed 's/^# \{0,1\}//'; exit 0
         ;;
     *)
         echo "usage: $0 [--links|--status|--check|--list|--play <game>]" >&2; exit 2

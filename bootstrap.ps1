@@ -12,6 +12,13 @@
         .\bootstrap.ps1 -Play arena     play one, offline, no server needed
         .\bootstrap.ps1 -Links -Copy    copy the addons instead of linking them
         .\bootstrap.ps1 -Https          reach GitHub over HTTPS rather than SSH
+        .\bootstrap.ps1 -Only arena,wipeout     only these, plus the addon and map repos they need
+        .\bootstrap.ps1 -Only 'mg-*' -NoDeps    only these, and nothing they need
+
+    -Only works with every mode (sync, -Links, -Status). A name is a project
+    from projects.tsv, or its short form (arena = game-arena, wipeout =
+    mg-wipeout, core = dot-core), or a wildcard. Set $env:DOT_ONLY to make a
+    selection stick. Addons are copied (or linked) into the named projects only.
 
     WHERE IT PUTS THINGS
 
@@ -74,6 +81,8 @@ param(
     [switch]$Copy,
     [switch]$Junction,
     [switch]$Https,
+    [string[]]$Only = $(if ($env:DOT_ONLY) { $env:DOT_ONLY -split '[,\s]+' } else { @() }),
+    [switch]$NoDeps,
     [string]$Play
 )
 
@@ -215,6 +224,77 @@ function Get-AddonSource ($addon) {
         return $d.Name
     }
     return $src
+}
+
+# --- Selecting -------------------------------------------------------------
+#
+# bootstrap.sh's "Selecting" has the reasoning: what a project needs comes out of its
+# .gitignore, so it is only known once the project is cloned, and a sync walks it as
+# a queue -- clone, read, enqueue what it names.
+
+function Test-Listed ($name) { [bool](Get-Projects | Where-Object { $_.Name -eq $name }) }
+
+# A name as typed -> the projects it means, or nothing.
+function Resolve-Name ($n) {
+    if ($n -match '[*?\[]') { return @(Get-Projects | Where-Object { $_.Name -like $n } | ForEach-Object { $_.Name }) }
+    foreach ($p in @($n, "game-$n", "mg-$n", "dot-$n")) { if (Test-Listed $p) { return @($p) } }
+    return @()
+}
+
+# The listed repository an addon comes from, clone or no clone: the name rule, then a
+# checkout that owns it, then the listed name it matches with every "dot-" taken out
+# (zee_weapons is zee-dot-weapons; no two names in projects.tsv are equal that way).
+function Get-AddonRepo ($addon) {
+    $src = $addon -replace '_', '-'
+    if (Test-Listed $src) { return $src }
+    $owner = Get-AddonSource $addon
+    if ((Test-Listed $owner) -and (Test-Path (Join-Path $projectsDir "$owner\addons\$addon"))) { return $owner }
+    $bare = $src -replace 'dot-', ''
+    foreach ($p in Get-Projects) { if (($p.Name -replace 'dot-', '') -eq $bare) { return $p.Name } }
+    return $null
+}
+
+# The repositories a project's "# bootstrap-link: repo/path" lines name.
+function Get-ContentRepos ($proj) {
+    $gi = Join-Path $projectsDir "$proj\.gitignore"
+    if (-not (Test-Path $gi)) { return @() }
+    Get-Content $gi | ForEach-Object {
+        if ($_ -match '^# bootstrap-link: ([^/\s]+)') { $Matches[1] }
+    }
+}
+
+function Get-Deps ($proj) {
+    foreach ($a in @(Get-LinksFor $proj)) { $r = Get-AddonRepo $a; if ($r) { $r } }
+    foreach ($r in @(Get-ContentRepos $proj)) { if (Test-Listed $r) { $r } }
+}
+
+# The selection plus (unless -NoDeps) what it needs, in projects.tsv order. With
+# -Sync, each one is cloned or pulled as it is reached, so its needs can be read.
+function Get-Selected ([switch]$Sync) {
+    if ($script:selection.Count -eq 0) {
+        if ($Sync) { foreach ($p in Get-Projects) { Sync-Repo $p.Name $p.Url } }
+        return @(Get-Projects | ForEach-Object { $_.Name })
+    }
+    $seen  = @{}
+    $queue = [System.Collections.Generic.Queue[string]]::new()
+    foreach ($p in $script:selection) { $queue.Enqueue($p) }
+    while ($queue.Count -gt 0) {
+        $p = $queue.Dequeue()
+        if ($seen.ContainsKey($p)) { continue }
+        $seen[$p] = $true
+        if ($Sync) { Sync-Repo $p ((Get-Projects | Where-Object { $_.Name -eq $p }).Url) }
+        if ($NoDeps) { continue }
+        foreach ($d in @(Get-Deps $p)) { $queue.Enqueue($d) }
+    }
+    return @(Get-Projects | Where-Object { $seen.ContainsKey($_.Name) } | ForEach-Object { $_.Name })
+}
+
+# Where links go. With a selection, only into what was NAMED: the repositories pulled
+# in for it are sources to copy from, and filling their own addons folders too would
+# be most of the work and most of the disk.
+function Get-LinkTargets {
+    if ($script:selection.Count -eq 0) { return @(Get-Projects | ForEach-Object { $_.Name }) }
+    return $script:selection
 }
 
 # --- Repositories ----------------------------------------------------------
@@ -609,15 +689,25 @@ function New-ContentKeys {
 
 # --- Modes -----------------------------------------------------------------
 
+# A name that matches nothing is an error, not an empty selection: an empty one would
+# quietly mean "everything", the opposite of what was asked.
+$script:selection = @()
+foreach ($n in @($Only | ForEach-Object { $_ -split '[,\s]+' } | Where-Object { $_ })) {
+    $hit = @(Resolve-Name $n)
+    if ($hit.Count -eq 0) { Write-Host "-Only: no project called $n in projects.tsv" -ForegroundColor Red; exit 2 }
+    $script:selection += $hit
+}
+$script:selection = @($script:selection | Select-Object -Unique)
+
 if ($Play)        { Play-Game $Play; exit 0 }
 elseif ($List)    { List-Games; exit 0 }
 elseif ($Check)   { Check-List }
 elseif ($Status)  {
     Write-Host "projects: $projectsDir`n"
-    foreach ($p in Get-Projects) { Status-Repo $p.Name }
+    foreach ($p in Get-Selected) { Status-Repo $p }
 }
 elseif ($Links)   {
-    foreach ($p in Get-Projects) { Link-Addons $p.Name; Link-Content $p.Name }
+    foreach ($p in Get-LinkTargets) { Link-Addons $p; Link-Content $p }
 }
 elseif ($ContentKeys) {
     if (-not (New-ContentKeys)) { $script:failed = $true }
@@ -628,9 +718,13 @@ else {
     Write-Host "base:     $GitBase`n"
     # Repositories first, all of them, then links -- a link can point into a
     # project this same run is about to clone.
-    foreach ($p in Get-Projects) { Sync-Repo $p.Name $p.Url }
+    if ($script:selection.Count -gt 0) {
+        $note = if ($NoDeps) { ' (no deps)' } else { '' }
+        Write-Host "only:     $($script:selection -join ' ')$note`n"
+    }
+    Get-Selected -Sync | Out-Null
     Write-Host ''
-    foreach ($p in Get-Projects) { Link-Addons $p.Name; Link-Content $p.Name }
+    foreach ($p in Get-LinkTargets) { Link-Addons $p; Link-Content $p }
 }
 
 Write-Host ''

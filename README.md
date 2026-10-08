@@ -45,6 +45,25 @@ It uses a tree's existing `godot/` directory instead, rather than making a secon
 
 Override either way with `DOT_PROJECTS` (`-Projects` on Windows).
 
+## Getting only some of it
+
+You do not need all seventy-odd repositories to play one game. Name what you want and it brings what that needs (its addons, and any maps or courses it keeps in a repository of its own), and nothing else:
+
+```bash
+./bootstrap.sh --only wipeout              # mg-wipeout, its 28 addon repos, zee-dot-weapons, mg-wipeout-maps
+./bootstrap.sh --only arena,playground     # short names: arena = game-arena, wipeout = mg-wipeout, core = dot-core
+./bootstrap.sh --only 'mg-*'               # a wildcard
+./bootstrap.sh --only dot-weapon --no-deps # just that repository, nothing it needs
+```
+
+```powershell
+.\bootstrap.ps1 -Only wipeout
+.\bootstrap.ps1 -Only arena,playground
+.\bootstrap.ps1 -Only dot-weapon -NoDeps
+```
+
+The addons are copied (or linked) into the projects you named and nowhere else. The addon repositories it clones are only the sources for those copies, so their own `addons/` folders are left empty. A name that matches nothing stops the run, because an empty selection would mean everything. `--only` works with `--links` and `--status` too, and `DOT_ONLY=arena,wipeout` (`$env:DOT_ONLY` on Windows) makes a selection stick between runs. What a project needs is read from its `.gitignore` as it is cloned, so the selection holds no list either.
+
 ## Playing a game
 
 ```bash
