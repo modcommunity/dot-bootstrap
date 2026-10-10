@@ -98,6 +98,7 @@ game-hide-n-seek	git@github.com:gamemann/game-hide-n-seek.git
 game-hungario	git@github.com:gamemann/game-hungario.git
 game-playground	git@github.com:gamemann/game-playground.git
 game-playground-maps	git@github.com:gamemann/game-playground-maps.git
+game-zombie-zone	git@github.com:gamemann/game-zombie-zone.git
 hide-n-seek-maps	git@github.com:gamemann/hide-n-seek-maps.git
 mg-buses-from-hell	git@github.com:gamemann/mg-buses-from-hell.git
 mg-deathrun	git@github.com:gamemann/mg-deathrun.git
@@ -109,4 +110,6 @@ mg-prop-hunt-maps	git@github.com:gamemann/mg-prop-hunt-maps.git
 mg-smash-copter	git@github.com:gamemann/mg-smash-copter.git
 mg-wipeout	git@github.com:gamemann/mg-wipeout.git
 mg-wipeout-maps	git@github.com:gamemann/mg-wipeout-maps.git
+zed-dot-weapons	git@github.com:gamemann/zed-dot-weapons.git
 zee-dot-weapons	git@github.com:gamemann/zee-dot-weapons.git
+zombie-zone-maps	git@github.com:gamemann/zombie-zone-maps.git
