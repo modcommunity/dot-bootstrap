@@ -94,9 +94,11 @@ dot-weapon	git@github.com:modcommunity/dot-weapon.git
 game-arena	git@github.com:gamemann/game-arena.git
 game-g2gfast	git@github.com:gamemann/game-g2gfast.git
 g2gfast-maps	git@github.com:gamemann/g2gfast-maps.git
+game-hide-n-seek	git@github.com:gamemann/game-hide-n-seek.git
 game-hungario	git@github.com:gamemann/game-hungario.git
 game-playground	git@github.com:gamemann/game-playground.git
 game-playground-maps	git@github.com:gamemann/game-playground-maps.git
+hide-n-seek-maps	git@github.com:gamemann/hide-n-seek-maps.git
 mg-buses-from-hell	git@github.com:gamemann/mg-buses-from-hell.git
 mg-deathrun	git@github.com:gamemann/mg-deathrun.git
 mg-deathrun-maps	git@github.com:gamemann/mg-deathrun-maps.git
