@@ -362,9 +362,13 @@ function Sync-Repo ($proj, $url) {
         return
     }
 
-    # Never clobber work in progress: any machine may hold the only copy.
-    $dirty = @(git -C $dir status --porcelain)
-    if ($dirty.Count -gt 0) { Warn $proj "dirty, left alone ($($dirty.Count) file(s))"; return }
+    # Never clobber work in progress: any machine may hold the only copy. A
+    # dirty tree is still pulled, because `pull --ff-only` without --autostash
+    # is already safe: git refuses, touching nothing, when an incoming commit
+    # changes a file that is modified here or would overwrite an untracked one.
+    # Skipping every dirty tree left a project behind over a few
+    # editor-rewritten .import files nobody meant to keep.
+    $dirty = @(git -C $dir status --porcelain).Count
 
     $origin = git -C $dir remote get-url origin 2>$null
     $net    = @(Get-HttpsArgs $origin)
@@ -380,10 +384,18 @@ function Sync-Repo ($proj, $url) {
         if (-not $heads) { Warn $proj 'empty -- nothing pushed to it yet'; return }
     }
 
-    git @net -C $dir pull -q --ff-only 2>$null
+    $pullErr = @(git @net -C $dir pull -q --no-rebase --ff-only 2>&1 | ForEach-Object { "$_" })
     if ($LASTEXITCODE -ne 0) {
         $alt = ConvertTo-HttpsUrl $origin
-        if ($alt -eq $origin) {
+        if ($dirty -gt 0 -and ($pullErr -join "`n") -match 'would be overwritten|commit your changes or stash') {
+            # The update touches files changed here. Name them, so the choice
+            # between committing and discarding is made by somebody looking.
+            $files = @($pullErr | Where-Object { $_ -match '^\s+\S' -and $_ -notmatch '^\s*(Please|Aborting)' } |
+                       ForEach-Object { $_.Trim() } | Select-Object -First 5) -join ' '
+            if (-not $files) { $files = 'see git status' }
+            Warn $proj "dirty, not updated: the update changes files modified here ($files)"
+            Say  ''    '  commit or discard them, then run this again'
+        } elseif ($alt -eq $origin) {
             Err $proj 'pull refused - diverged, or no upstream. Resolve by hand.'
         } elseif ($script:useHttps) {
             Err $proj 'pull failed over HTTPS too - diverged, no upstream, or not reachable. Resolve by hand.'
@@ -395,9 +407,10 @@ function Sync-Repo ($proj, $url) {
     }
 
     $after = git -C $dir rev-parse --short HEAD
-    if (-not $before)           { Say $proj "first commits $after" 'Green' }
-    elseif ($before -eq $after) { Say $proj "up to date $after" 'DarkGray' }
-    else                        { Say $proj "updated $before -> $after" 'Green' }
+    $kept  = if ($dirty -gt 0) { " (kept $dirty uncommitted file(s))" } else { '' }
+    if (-not $before)           { Say $proj "first commits $after$kept" 'Green' }
+    elseif ($before -eq $after) { Say $proj "up to date $after$kept" 'DarkGray' }
+    else                        { Say $proj "updated $before -> $after$kept" 'Green' }
 }
 
 # --- Links -----------------------------------------------------------------

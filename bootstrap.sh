@@ -346,14 +346,13 @@ sync_repo() {
         return
     fi
 
-    # Never clobber work in progress. A dirty tree is reported and skipped,
-    # because the whole point of several machines is that any one of them may
-    # be holding the only copy of something.
-    if [ -n "$(git -C "$dir" status --porcelain)" ]; then
-        warn "$proj" "dirty, left alone ($(git -C "$dir" status --porcelain | wc -l) file(s))"
-        return
-    fi
-
+    # Never clobber work in progress: any machine may hold the only copy. A
+    # dirty tree is still pulled, because `pull --ff-only` without --autostash
+    # is already safe: git refuses, touching nothing, when an incoming commit
+    # changes a file that is modified here or would overwrite an untracked one.
+    # Skipping every dirty tree left a project behind over a few
+    # editor-rewritten .import files nobody meant to keep.
+    local dirty; dirty=$(git -C "$dir" status --porcelain | wc -l)
     local origin; origin="$(git -C "$dir" remote get-url origin 2>/dev/null)"
     local net=(); mapfile -t net < <(https_for "$origin")
 
@@ -366,11 +365,19 @@ sync_repo() {
         return
     fi
 
-    if git "${net[@]}" -C "$dir" pull -q --ff-only 2>/dev/null; then
+    local pull_err; pull_err="$(git "${net[@]}" -C "$dir" pull -q --no-rebase --ff-only 2>&1 >/dev/null)"
+    if [ $? -eq 0 ]; then
         local after; after=$(git -C "$dir" rev-parse --short HEAD)
-        if [ -z "$before" ]; then say "$proj" "${GRN}first commits${OFF} $after"
-        elif [ "$before" = "$after" ]; then say "$proj" "${DIM}up to date${OFF} $after"
-        else say "$proj" "${GRN}updated${OFF} $before -> $after"; fi
+        local kept=""; [ "$dirty" -gt 0 ] && kept=" ${YLW}(kept $dirty uncommitted file(s))${OFF}"
+        if [ -z "$before" ]; then say "$proj" "${GRN}first commits${OFF} $after$kept"
+        elif [ "$before" = "$after" ]; then say "$proj" "${DIM}up to date${OFF} $after$kept"
+        else say "$proj" "${GRN}updated${OFF} $before -> $after$kept"; fi
+    elif [ "$dirty" -gt 0 ] && printf '%s' "$pull_err" | grep -qE 'would be overwritten|commit your changes or stash'; then
+        # The update touches files changed here. Name them, so the choice
+        # between committing and discarding is made by somebody looking.
+        local files; files="$(printf '%s\n' "$pull_err" | sed -n 's/^[[:space:]]\{1,\}\([^[:space:]].*\)$/\1/p' | grep -v '^Please\|^Aborting' | head -5 | paste -sd' ' -)"
+        warn "$proj" "dirty, not updated: the update changes files modified here (${files:-see git status})"
+        say  ""      "  commit or discard them, then run this again"
     else
         case "$origin" in
             *@*:*|ssh://*)

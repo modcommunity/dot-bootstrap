@@ -37,7 +37,7 @@ Set-ExecutionPolicy RemoteSigned -Scope CurrentUser   # once, if PowerShell refu
 .\bootstrap.ps1
 ```
 
-Everything lands in `./projects`, beside the script, and that directory is gitignored. Run it again any time to pull what has moved; a repository with uncommitted work in it is reported and left alone.
+Everything lands in `./projects`, beside the script, and that directory is gitignored. Run it again any time to pull what has moved. Uncommitted work is never touched: a repository with some is still fast-forwarded when the update does not change those files, and when it does, nothing is pulled and the files are named.
 
 The first line it prints is where it decided to put things. Read it.
 
