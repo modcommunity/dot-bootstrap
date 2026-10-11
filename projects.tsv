@@ -20,7 +20,7 @@
 #
 # TWO OWNERS, and the split is a rule rather than a set of accidents: the addons
 # are the organisation's (`modcommunity/dot-*`) and the games are their author's
-# (`gamemann/`). That is why the URL is written out per line here instead of being
+# (`zees-games/`). That is why the URL is written out per line here instead of being
 # derived from the name -- the name says what a project IS, not who owns it, and a
 # derivation would have to encode the split in two places. setup.sh's repo_url()
 # encodes the same rule for the one case that cannot read this file: a fresh box
@@ -91,25 +91,25 @@ dot-vehicle	git@github.com:modcommunity/dot-vehicle.git
 dot-voice	git@github.com:modcommunity/dot-voice.git
 dot-vote	git@github.com:modcommunity/dot-vote.git
 dot-weapon	git@github.com:modcommunity/dot-weapon.git
-game-arena	git@github.com:gamemann/game-arena.git
-game-g2gfast	git@github.com:gamemann/game-g2gfast.git
-g2gfast-maps	git@github.com:gamemann/g2gfast-maps.git
-game-hide-n-seek	git@github.com:gamemann/game-hide-n-seek.git
-game-hungario	git@github.com:gamemann/game-hungario.git
-game-playground	git@github.com:gamemann/game-playground.git
-game-playground-maps	git@github.com:gamemann/game-playground-maps.git
-game-zombie-zone	git@github.com:gamemann/game-zombie-zone.git
-hide-n-seek-maps	git@github.com:gamemann/hide-n-seek-maps.git
-mg-buses-from-hell	git@github.com:gamemann/mg-buses-from-hell.git
-mg-deathrun	git@github.com:gamemann/mg-deathrun.git
-mg-deathrun-maps	git@github.com:gamemann/mg-deathrun-maps.git
-mg-dangerous-delivery	git@github.com:gamemann/mg-dangerous-delivery.git
-mg-look-at-me	git@github.com:gamemann/mg-look-at-me.git
-mg-prop-hunt	git@github.com:gamemann/mg-prop-hunt.git
-mg-prop-hunt-maps	git@github.com:gamemann/mg-prop-hunt-maps.git
-mg-smash-copter	git@github.com:gamemann/mg-smash-copter.git
-mg-wipeout	git@github.com:gamemann/mg-wipeout.git
-mg-wipeout-maps	git@github.com:gamemann/mg-wipeout-maps.git
-zed-dot-weapons	git@github.com:gamemann/zed-dot-weapons.git
-zee-dot-weapons	git@github.com:gamemann/zee-dot-weapons.git
-zombie-zone-maps	git@github.com:gamemann/zombie-zone-maps.git
+game-arena	git@github.com:zees-games/game-arena.git
+game-g2gfast	git@github.com:zees-games/game-g2gfast.git
+g2gfast-maps	git@github.com:zees-games/g2gfast-maps.git
+game-hide-n-seek	git@github.com:zees-games/game-hide-n-seek.git
+game-hungario	git@github.com:zees-games/game-hungario.git
+game-playground	git@github.com:zees-games/game-playground.git
+game-playground-maps	git@github.com:zees-games/game-playground-maps.git
+game-zombie-zone	git@github.com:zees-games/game-zombie-zone.git
+hide-n-seek-maps	git@github.com:zees-games/hide-n-seek-maps.git
+mg-buses-from-hell	git@github.com:zees-games/mg-buses-from-hell.git
+mg-deathrun	git@github.com:zees-games/mg-deathrun.git
+mg-deathrun-maps	git@github.com:zees-games/mg-deathrun-maps.git
+mg-dangerous-delivery	git@github.com:zees-games/mg-dangerous-delivery.git
+mg-look-at-me	git@github.com:zees-games/mg-look-at-me.git
+mg-prop-hunt	git@github.com:zees-games/mg-prop-hunt.git
+mg-prop-hunt-maps	git@github.com:zees-games/mg-prop-hunt-maps.git
+mg-smash-copter	git@github.com:zees-games/mg-smash-copter.git
+mg-wipeout	git@github.com:zees-games/mg-wipeout.git
+mg-wipeout-maps	git@github.com:zees-games/mg-wipeout-maps.git
+zed-dot-weapons	git@github.com:zees-games/zed-dot-weapons.git
+zee-dot-weapons	git@github.com:zees-games/zee-dot-weapons.git
+zombie-zone-maps	git@github.com:zees-games/zombie-zone-maps.git
