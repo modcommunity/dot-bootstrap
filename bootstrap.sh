@@ -573,7 +573,8 @@ find_godot() {
 # A game is a project whose directory begins with game-. Every one of them sets
 # run/main_scene to something a person can sit down at, so there is no list of
 # scenes here either.
-games() { projects | grep '^game-'; }
+# game-<x> and mg-<x> (the minigames); a maps repository is not a game.
+games() { projects | grep -E '^(game|mg)-' | grep -v -- '-maps$'; }
 
 list_games() {
     local g bin
@@ -592,8 +593,11 @@ list_games() {
 
 play_game() {
     local want="$1"
-    local proj="$want"
-    [[ "$proj" == game-* ]] || proj="game-$proj"
+    # A game is game-<x> or mg-<x> (the minigames); the short form tries each prefix.
+    local proj="$want" c
+    for c in "$want" "game-$want" "mg-$want"; do
+        games | grep -qx "$c" && { proj="$c"; break; }
+    done
 
     if ! games | grep -qx "$proj"; then
         echo "${RED}no such game: $want${OFF}" >&2

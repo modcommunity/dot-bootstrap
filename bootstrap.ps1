@@ -607,10 +607,10 @@ function Find-Godot {
     return $null
 }
 
-# A game is a project whose directory begins with game-. Every one of them sets
+# A game is a project whose directory begins with game- or mg- (a maps repository is not one). Every one of them sets
 # run/main_scene to something a person can sit down at, so there is no list of
 # scenes here either.
-function Get-Games { Get-Projects | Where-Object { $_.Name -like 'game-*' } }
+function Get-Games { Get-Projects | Where-Object { ($_.Name -like 'game-*' -or $_.Name -like 'mg-*') -and $_.Name -notlike '*-maps' } }
 
 function List-Games {
     $bin = Find-Godot
@@ -632,8 +632,11 @@ function List-Games {
 }
 
 function Play-Game ($want) {
+    # game-<x> or mg-<x>; the short form tries each prefix.
     $proj = $want
-    if ($proj -notlike 'game-*') { $proj = "game-$proj" }
+    foreach ($c in @($want, "game-$want", "mg-$want")) {
+        if (Get-Games | Where-Object { $_.Name -eq $c }) { $proj = $c; break }
+    }
 
     if (-not (Get-Games | Where-Object { $_.Name -eq $proj })) {
         Write-Host "no such game: $want" -ForegroundColor Red
