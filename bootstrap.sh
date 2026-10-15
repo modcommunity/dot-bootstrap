@@ -608,6 +608,15 @@ play_game() {
     local bin; bin="$(find_godot)" || {
         echo "${RED}Godot is not on PATH. Set GODOT=/path/to/godot.${OFF}" >&2; exit 3; }
 
+    # Import first. Godot imports a file only when the editor (or --import) scans it, so a
+    # game started straight after a pull has the new models' .glb and .import files and no
+    # imported scene: on 2026-10-13 every person in three games was a fallback capsule for
+    # exactly that. A pass over an up-to-date cache takes seconds.
+    echo "${CYN}importing $proj${OFF}"
+    local cap=(); command -v timeout >/dev/null && cap=(timeout 900)
+    ${cap[@]+"${cap[@]}"} "$bin" --headless --path "$PROJECTS_DIR/$proj" --import >/dev/null 2>&1 \
+        || echo "${YLW}the import pass failed; playing anyway${OFF}" >&2
+
     # --offline is what the clients that have a networked mode read to skip it;
     # the ones that do not have one ignore an unknown user argument. Either way
     # this needs no server, no dot-cloud and no downloads.

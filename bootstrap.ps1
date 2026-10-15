@@ -652,6 +652,15 @@ function Play-Game ($want) {
         exit 3
     }
 
+    # Import first. Godot imports a file only when the editor (or --import) scans it, so a
+    # game started straight after a pull has the new models' .glb and .import files and no
+    # imported scene: on 2026-10-13 every person in three games was a fallback capsule for
+    # exactly that. A pass over an up-to-date cache takes seconds. Piping to Out-Null makes
+    # PowerShell wait for the GUI-subsystem executable to exit.
+    Write-Host "importing $proj" -ForegroundColor Cyan
+    & $bin --headless --path $dir --import 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { Write-Host 'the import pass failed; playing anyway' -ForegroundColor Yellow }
+
     # --offline is what the clients that have a networked mode read to skip it;
     # the ones that do not have one ignore an unknown user argument. Either way
     # this needs no server, no dot-cloud and no downloads.
