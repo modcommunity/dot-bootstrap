@@ -93,6 +93,7 @@ dot-voice	git@github.com:modcommunity/dot-voice.git
 dot-vote	git@github.com:modcommunity/dot-vote.git
 dot-weapon	git@github.com:modcommunity/dot-weapon.git
 game-arena	git@github.com:zees-games/game-arena.git
+arena-surf-dm-maps	git@github.com:zees-games/arena-surf-dm-maps.git
 game-g2gfast	git@github.com:zees-games/game-g2gfast.git
 g2gfast-maps	git@github.com:zees-games/g2gfast-maps.git
 game-hide-n-seek	git@github.com:zees-games/game-hide-n-seek.git
