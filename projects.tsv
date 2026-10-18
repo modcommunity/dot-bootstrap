@@ -98,6 +98,7 @@ game-g2gfast	git@github.com:zees-games/game-g2gfast.git
 g2gfast-maps	git@github.com:zees-games/g2gfast-maps.git
 game-hide-n-seek	git@github.com:zees-games/game-hide-n-seek.git
 game-hungario	git@github.com:zees-games/game-hungario.git
+game-murder-mystery	git@github.com:zees-games/game-murder-mystery.git
 game-playground	git@github.com:zees-games/game-playground.git
 game-playground-maps	git@github.com:zees-games/game-playground-maps.git
 game-zombie-zone	git@github.com:zees-games/game-zombie-zone.git
@@ -112,6 +113,8 @@ mg-prop-hunt-maps	git@github.com:zees-games/mg-prop-hunt-maps.git
 mg-smash-copter	git@github.com:zees-games/mg-smash-copter.git
 mg-wipeout	git@github.com:zees-games/mg-wipeout.git
 mg-wipeout-maps	git@github.com:zees-games/mg-wipeout-maps.git
+murder-mystery-maps	git@github.com:zees-games/murder-mystery-maps.git
+natural-disasters	git@github.com:zees-games/natural-disasters.git
 zed-dot-weapons	git@github.com:zees-games/zed-dot-weapons.git
 zee-dot-weapons	git@github.com:zees-games/zee-dot-weapons.git
 zombie-zone-maps	git@github.com:zees-games/zombie-zone-maps.git
