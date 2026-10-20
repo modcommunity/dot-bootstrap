@@ -82,9 +82,19 @@ The addons are copied (or linked) into the projects you named and nowhere else. 
 | `--links` / `-Links` | only redo the addon links |
 | `--status` / `-Status` | branch, dirty and unpushed, per repository |
 | `--check` / `-Check` | does `projects.tsv` still agree with the disk? |
+| `--tools` / `-Tools` | install fastgmad, the `.gma` unpacker the map importers use (below) |
 | `--content-keys` / `-ContentKeys` | a content signing keypair, so this machine can publish packs |
 
 `DOT_GIT_BASE` clones from somewhere other than GitHub. `DOTHUB` adds a second remote called `hub`, pointing at bare repositories on a dev box, when cloning.
+
+## Tools the importers shell out to
+
+`--tools` (`-Tools` on Windows) installs **fastgmad**, the community extractor for `.gma` addon archives. dot-map's BSP importer (`tools/bsp/dotbsp/gma.py`) runs `fastgmad extract` on a `.gma` rather than carrying a reader of its own, and finds it through the `DOTBSP_FASTGMAD` environment variable, then `PATH`, then `~/.local/bin/fastgmad`.
+
+- **What**: fastgmad 0.2.1, by William Venner, Apache-2.0, https://github.com/WilliamVenner/fastgmad (release assets under `/releases/tag/v0.2.1`).
+- **How**: the script downloads the release zip for this platform, refuses it unless its SHA-256 equals the value written in the script (the same digest GitHub shows for the asset), then unpacks it into `~/.local/share/fastgmad-0.2.1` and links the executable at `~/.local/bin/fastgmad`. The release ships helper libraries beside the executable, so the whole zip is kept together. `DOT_TOOLS_PREFIX` replaces `~/.local`; `DOT_FASTGMAD_ZIP` names a local copy of the zip for a machine without network access, and is held to the same checksum.
+- **Platforms**: Linux x86_64 and macOS (the macOS binary is checksum-pinned but untested here). On Windows `-Tools` unpacks into `%LOCALAPPDATA%\fastgmad\0.2.1`; dotbsp does not look there, so put that folder on `PATH` or set `DOTBSP_FASTGMAD`. The Windows path is untested.
+- **Why opt-in**: a plain sync needs git and nothing else. Making it part of the default path would add a network download of a binary to every bootstrap, and `--check` and `--status` must stay offline.
 
 ## Publishing content from a fresh clone
 

@@ -6,6 +6,7 @@
 #   ./bootstrap.sh                 clone what is missing, pull what is not, link
 #   ./bootstrap.sh --links         only redo the links, touch no repository
 #   ./bootstrap.sh --content-keys  make a content signing keypair, to publish packs
+#   ./bootstrap.sh --tools         install fastgmad (.gma unpacker) into ~/.local/bin, checksum-verified
 #   ./bootstrap.sh --status        report each repository, change nothing
 #   ./bootstrap.sh --check         verify the list against the disk, change nothing
 #   ./bootstrap.sh --list          what can be played
@@ -718,8 +719,55 @@ PY
 }
 
 
+FASTGMAD_VERSION="0.2.1"
+install_tools() {
+    # fastgmad, the community addon-archive (.gma) extractor that dot-map's BSP importer
+    # (tools/bsp/dotbsp/gma.py) shells out to. Opt-in rather than part of a plain sync,
+    # because a plain sync needs git and nothing else, and this is a download of a binary.
+    # Pinned to one release and refused unless its SHA-256 matches the value below, which
+    # was checked against the release's own digest: the importer runs this on archives
+    # from the internet, so the binary itself must not be whatever a mirror served.
+    # The release ships helper libraries beside the executable, so all of it is installed
+    # into one directory and only the executable is linked into the bin directory.
+    local prefix="${DOT_TOOLS_PREFIX:-$HOME/.local}" os arch asset sum
+    os="$(uname -s)"; arch="$(uname -m)"
+    case "$os-$arch" in
+        Linux-x86_64)  asset=fastgmad_linux.zip;
+                       sum=eaf617664a2c534b7e9a0238a94156e692313334ff92d2695b6c5445d49b9d04 ;;
+        Darwin-*)      asset=fastgmad_macos.zip;
+                       sum=5a22a4e8fd1356bf02369108726f759938322c97b434a0a60c10fcf77307fbd8 ;;
+        *) err "fastgmad" "no release binary for $os $arch"; return 1 ;;
+    esac
+    command -v unzip >/dev/null 2>&1 || { err "fastgmad" "unzip is needed"; return 1; }
+    local dest="$prefix/share/fastgmad-$FASTGMAD_VERSION" tmp
+    if [ -x "$dest/fastgmad" ] && [ -L "$prefix/bin/fastgmad" ]; then
+        ok "fastgmad" "already installed ($dest)"; return 0
+    fi
+    tmp="$(mktemp -d)" || return 1
+    # DOT_FASTGMAD_ZIP names a local copy of the release zip (an offline machine). It is
+    # held to the same checksum.
+    if [ -n "${DOT_FASTGMAD_ZIP:-}" ]; then
+        cp "$DOT_FASTGMAD_ZIP" "$tmp/$asset" || { rm -rf "$tmp"; return 1; }
+    else
+        curl -fsSL -o "$tmp/$asset" \
+            "https://github.com/WilliamVenner/fastgmad/releases/download/v$FASTGMAD_VERSION/$asset" \
+            || { err "fastgmad" "download failed"; rm -rf "$tmp"; return 1; }
+    fi
+    local got; got="$( (sha256sum "$tmp/$asset" 2>/dev/null || shasum -a 256 "$tmp/$asset") | cut -d' ' -f1)"
+    if [ "$got" != "$sum" ]; then
+        err "fastgmad" "checksum mismatch (got $got, want $sum); nothing installed"
+        rm -rf "$tmp"; return 1
+    fi
+    mkdir -p "$dest" "$prefix/bin"
+    unzip -qo "$tmp/$asset" -d "$dest" || { err "fastgmad" "unzip failed"; rm -rf "$tmp"; return 1; }
+    chmod +x "$dest/fastgmad"
+    ln -sfn "$dest/fastgmad" "$prefix/bin/fastgmad"
+    rm -rf "$tmp"
+    ok "fastgmad" "$FASTGMAD_VERSION installed, linked at $prefix/bin/fastgmad"
+}
+
 case "$mode" in
-    --list|--play|--check|--status) : ;;   # must not create anything
+    --list|--play|--check|--status|--tools) : ;;   # must not create anything
     *) mkdir -p "$PROJECTS_DIR" ;;
 esac
 
@@ -733,6 +781,9 @@ case "$mode" in
         ;;
     --links)
         while read -r p; do [ -n "$p" ] && { link_addons "$p"; link_content "$p"; }; done <<< "$(link_targets)"
+        ;;
+    --tools)
+        install_tools || fail=1
         ;;
     --content-keys)
         content_keys || fail=1
@@ -755,7 +806,7 @@ case "$mode" in
         while read -r p; do [ -n "$p" ] && { link_addons "$p"; link_content "$p"; }; done <<< "$(link_targets)"
         ;;
     -h|--help)
-        sed -n '3,32p' "$REAL_SELF" | sed 's/^# \{0,1\}//'; exit 0
+        sed -n '3,33p' "$REAL_SELF" | sed 's/^# \{0,1\}//'; exit 0
         ;;
     *)
         echo "usage: $0 [--links|--status|--check|--list|--play <game>]" >&2; exit 2

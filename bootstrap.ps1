@@ -6,6 +6,7 @@
         .\bootstrap.ps1                 clone what is missing, pull what is not
         .\bootstrap.ps1 -Links          only redo the links, touch no repository
         .\bootstrap.ps1 -ContentKeys    make a content signing keypair, to publish packs
+        .\bootstrap.ps1 -Tools         install fastgmad (.gma unpacker), checksum-verified
         .\bootstrap.ps1 -Status         report each repository, change nothing
         .\bootstrap.ps1 -Check          verify the list against the disk
         .\bootstrap.ps1 -List           what can be played
@@ -75,6 +76,7 @@ param(
     [string]$Hub      = $(if ($env:DOTHUB) { $env:DOTHUB } else { '' }),
     [switch]$Links,
     [switch]$ContentKeys,
+    [switch]$Tools,
     [switch]$Status,
     [switch]$Check,
     [switch]$List,
@@ -687,6 +689,33 @@ function Play-Game ($want) {
 # show as a local modification to a committed file. That is the honest trade and the
 # reason this is opt-in rather than part of a plain sync: overwriting it silently
 # would leave somebody wondering why their client rejects the team's packs.
+# fastgmad, the community addon-archive (.gma) extractor that dot-map's BSP importer shells
+# out to. Opt-in for the same reason as -ContentKeys: a plain sync needs git and nothing
+# else. Pinned to one release and refused unless its SHA-256 matches. Installed under
+# %LOCALAPPDATA%\fastgmad\<version> with the helper DLLs beside it; add that folder to PATH
+# or set DOTBSP_FASTGMAD to the exe (dotbsp does not look there on its own).
+function Install-Tools {
+    $ver = '0.2.1'
+    $sum = 'f093eebeffd0871513042a49ecda5a0d2902e278225679ac857a583cfb6e2d9f'
+    $root = if ($env:DOT_TOOLS_PREFIX) { $env:DOT_TOOLS_PREFIX } else { Join-Path $env:LOCALAPPDATA 'fastgmad' }
+    $dest = Join-Path $root $ver
+    if (Test-Path (Join-Path $dest 'fastgmad.exe')) { Ok 'fastgmad' "already installed ($dest)"; return $true }
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
+    New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+    $zip = Join-Path $tmp 'fastgmad_windows.zip'
+    try {
+        if ($env:DOT_FASTGMAD_ZIP) { Copy-Item $env:DOT_FASTGMAD_ZIP $zip }
+        else { Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/WilliamVenner/fastgmad/releases/download/v$ver/fastgmad_windows.zip" -OutFile $zip }
+        $got = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+        if ($got -ne $sum) { Err 'fastgmad' "checksum mismatch (got $got); nothing installed"; return $false }
+        New-Item -ItemType Directory -Force -Path $dest | Out-Null
+        Expand-Archive -Force -Path $zip -DestinationPath $dest
+        Ok 'fastgmad' "$ver installed in $dest; put it on PATH or set DOTBSP_FASTGMAD"
+        return $true
+    } catch { Err 'fastgmad' $_.Exception.Message; return $false }
+    finally { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue }
+}
+
 function New-ContentKeys {
     $deploy = Join-Path $projectsDir 'dot-server-deploy'
     if (-not (Test-Path $deploy)) {
@@ -769,6 +798,9 @@ elseif ($Status)  {
 }
 elseif ($Links)   {
     foreach ($p in Get-LinkTargets) { Link-Addons $p; Link-Content $p }
+}
+elseif ($Tools) {
+    if (-not (Install-Tools)) { $script:failed = $true }
 }
 elseif ($ContentKeys) {
     if (-not (New-ContentKeys)) { $script:failed = $true }
