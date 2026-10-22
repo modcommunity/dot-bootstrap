@@ -32,6 +32,7 @@ dot-achievements	git@github.com:modcommunity/dot-achievements.git
 dot-audio	git@github.com:modcommunity/dot-audio.git
 dot-auth	git@github.com:modcommunity/dot-auth.git
 dot-bot	git@github.com:modcommunity/dot-bot.git
+dot-bot-record	git@github.com:modcommunity/dot-bot-record.git
 dot-bot-learn	git@github.com:modcommunity/dot-bot-learn.git
 dot-browser	git@github.com:modcommunity/dot-browser.git
 dot-chat	git@github.com:modcommunity/dot-chat.git
@@ -93,6 +94,7 @@ dot-vehicle	git@github.com:modcommunity/dot-vehicle.git
 dot-voice	git@github.com:modcommunity/dot-voice.git
 dot-vote	git@github.com:modcommunity/dot-vote.git
 dot-weapon	git@github.com:modcommunity/dot-weapon.git
+dot-workbench	git@github.com:modcommunity/dot-workbench.git
 dot-weather	git@github.com:modcommunity/dot-weather.git
 game-arena	git@github.com:zees-games/game-arena.git
 arena-surf-dm-maps	git@github.com:zees-games/arena-surf-dm-maps.git
