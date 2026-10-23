@@ -428,7 +428,44 @@ function Sync-Repo ($proj, $url) {
     }
 
     $pullErr = @(git @net -C $dir pull -q --no-rebase --ff-only 2>&1 | ForEach-Object { "$_" })
-    if ($LASTEXITCODE -ne 0) {
+    $pullOk = ($LASTEXITCODE -eq 0)
+    if (-not $pullOk) {
+        $errText = $pullErr -join "`n"
+        # Editor-regenerated files (.uid, .import) block an update whenever the
+        # editor rewrote them. They are rebuilt on open, so restore them and retry.
+        if ($errText -match 'would be overwritten') {
+            $gen = @($pullErr | Where-Object { $_ -match '^\s+\S' -and $_ -notmatch '^\s*(Please|Aborting|error)' } | ForEach-Object { $_.Trim() })
+            if ($gen.Count -gt 0 -and @($gen | Where-Object { $_ -notmatch '\.(uid|import)$' }).Count -eq 0) {
+                foreach ($f in $gen) {
+                    git -C $dir ls-files --error-unmatch -- $f 2>$null | Out-Null
+                    if ($LASTEXITCODE -eq 0) { git -C $dir checkout -- $f 2>$null | Out-Null }
+                    else { Remove-Item -LiteralPath (Join-Path $dir $f) -Force -ErrorAction SilentlyContinue }
+                }
+                $pullErr = @(git @net -C $dir pull -q --no-rebase --ff-only 2>&1 | ForEach-Object { "$_" })
+                $errText = $pullErr -join "`n"
+            }
+        }
+        # Upstream history was rewritten (an amended commit): the local commits are
+        # the old copies. Keep them on a backup branch, move to upstream, keep
+        # uncommitted work (--keep refuses rather than overwrite it).
+        $pullOk = ($LASTEXITCODE -eq 0)
+        if (-not $pullOk -and $errText -match 'Not possible to fast-forward|divergent') {
+            $up = git -C $dir rev-parse '@{u}' 2>$null
+            if ($up) {
+                $backup = "bootstrap-backup/$(Get-Date -Format yyyyMMdd-HHmmss)"
+                git -C $dir branch $backup HEAD 2>$null | Out-Null
+                git -C $dir reset -q --keep $up 2>&1 | Out-Null
+                if ($LASTEXITCODE -eq 0) {
+                    $pullOk = $true
+                    $n = @(git -C $dir rev-list "$up..$backup").Count
+                    if ($n -gt 0) { Warn $proj "history was rewritten upstream; $n local commit(s) kept on branch $backup" }
+                } else {
+                    git -C $dir branch -D $backup 2>$null | Out-Null
+                }
+            }
+        }
+    }
+    if (-not $pullOk) {
         $alt = ConvertTo-HttpsUrl $origin
         if ($dirty -gt 0 -and ($pullErr -join "`n") -match 'would be overwritten|commit your changes or stash') {
             # The update touches files changed here. Name them, so the choice

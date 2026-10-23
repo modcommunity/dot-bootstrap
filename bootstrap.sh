@@ -406,7 +406,34 @@ sync_repo() {
     fi
 
     local pull_err; pull_err="$(git "${net[@]}" -C "$dir" pull -q --no-rebase --ff-only 2>&1 >/dev/null)"
-    if [ $? -eq 0 ]; then
+    local pull_rc=$?
+    # Editor-regenerated files (.uid, .import) block an update whenever the editor
+    # rewrote them. They are rebuilt on open, so restore them and retry.
+    if [ $pull_rc -ne 0 ] && printf '%s' "$pull_err" | grep -q 'would be overwritten'; then
+        local gen; gen="$(printf '%s\n' "$pull_err" | sed -n 's/^[[:space:]]\{1,\}\([^[:space:]].*\)$/\1/p' | grep -v '^Please\|^Aborting\|^error')"
+        if [ -n "$gen" ] && ! printf '%s\n' "$gen" | grep -qvE '\.(uid|import)$'; then
+            printf '%s\n' "$gen" | while IFS= read -r f; do if git -C "$dir" ls-files --error-unmatch -- "$f" >/dev/null 2>&1; then git -C "$dir" checkout -- "$f" 2>/dev/null; else rm -f "$dir/$f"; fi; done
+            pull_err="$(git "${net[@]}" -C "$dir" pull -q --no-rebase --ff-only 2>&1 >/dev/null)"; pull_rc=$?
+        fi
+    fi
+    # Upstream history was rewritten (an amended commit): the local commits are the
+    # old copies. Keep them on a backup branch, move to upstream, keep uncommitted
+    # work (--keep refuses rather than overwrite it).
+    if [ $pull_rc -ne 0 ] && printf '%s' "$pull_err" | grep -qE 'Not possible to fast-forward|divergent'; then
+        local up; up=$(git -C "$dir" rev-parse '@{u}' 2>/dev/null)
+        if [ -n "$up" ]; then
+            local backup="bootstrap-backup/$(date +%Y%m%d-%H%M%S)"
+            git -C "$dir" branch "$backup" HEAD 2>/dev/null
+            if git -C "$dir" reset -q --keep "$up" 2>/dev/null; then
+                pull_rc=0
+                local n; n=$(git -C "$dir" rev-list --count "$up..$backup")
+                [ "$n" -gt 0 ] && warn "$proj" "history was rewritten upstream; $n local commit(s) kept on branch $backup"
+            else
+                git -C "$dir" branch -D "$backup" >/dev/null 2>&1
+            fi
+        fi
+    fi
+    if [ $pull_rc -eq 0 ]; then
         local after; after=$(git -C "$dir" rev-parse --short HEAD)
         local kept=""; [ "$dirty" -gt 0 ] && kept=" ${YLW}(kept $dirty uncommitted file(s))${OFF}"
         if [ -z "$before" ]; then say "$proj" "${GRN}first commits${OFF} $after$kept"
