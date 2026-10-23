@@ -515,7 +515,7 @@ function Link-Content ($proj) {
     if (-not (Test-Path $gi)) { return }
     $src = $null
     foreach ($line in Get-Content $gi) {
-        if ($line -match '^# bootstrap-link: (\S+)\s*$') { $src = $Matches[1]; continue }
+        if ($line -match '^# bootstrap-link: (\S+)(\s+ci)?\s*$') { $src = $Matches[1]; continue }
         if ($src -and $line -match '^/(.+?)/?\s*$') {
             $path   = $Matches[1] -replace '/', '\'
             $target = Join-Path $projectsDir ($src -replace '/', '\')
