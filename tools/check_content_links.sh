@@ -65,6 +65,15 @@ for g in $games; do
         repos="$repos $(grep -qx "clone ${a//_/-}\|have ${a//_/-}" <<< "$default_plan" && echo "${a//_/-}")"
         linked_repos="$linked_repos ${a//_/-}"
     done < <(awk '/^# bootstrap-optional/{o=1;next} o&&/^\/addons\//{sub("^/addons/","");print} {o=0}' "$gi")
+    # Content rule: a zz-* pack (weapons, monsters) is content, so its /addons line must carry
+    # "# bootstrap-optional". zee/zed weapons are not: game scripts name their classes.
+    while read -r a; do
+        [ -n "$a" ] || continue
+        awk -v a="/addons/$a" '/^# bootstrap-optional/{o=1;next} $0==a{if(!o)f=1} {o=0} END{exit !f}' "$gi" \
+            && { bad "$g: content pack $a lacks the '# bootstrap-optional' marker"; st=FAIL; }
+    done < <(sed -n 's|^/addons/\(zz_[a-z_]*\)$|\1|p' "$gi")
+    # a link line whose target is a content repository (-maps) must never be a plain addon
+    plan "$g" --min | grep -qE "^link $g addon zz_" && { bad "$g: --min still links a zz_ pack"; st=FAIL; }
     # --min must drop every content line
     plan "$g" --min | grep -q "^link $g content " && { bad "$g: --min still links content"; st=FAIL; }
     printf '%-22s %-40s %-8s %-8s %s\n' "$g" "$(echo ${repos:-none} | tr " " "\n" | awk '!s[$0]++' | paste -sd" ")" "$shline" "$psline" "$st"
@@ -91,9 +100,11 @@ for g in $games; do grep -qx "clone $g" <<< "$out" || bad "group zees-games lack
 grep -qx 'clone zz-modern-weapons' <<< "$out" || bad "group zees-games did not pull zz-modern-weapons"
 out="$(plan --zees-games-min)"
 for g in $games; do grep -qx "clone $g" <<< "$out" || bad "--zees-games-min lacks $g"; done
-grep -E '^clone .*(-maps|^zz-)|^link .* content' <<< "$out" | grep -q . && bad "--zees-games-min cloned or linked content"
+grep -E '^clone (.*-maps|zz-.*)$|^link .* content |^link .* addon zz_' <<< "$out" | grep -q . && bad "--zees-games-min cloned or linked content"
 grep -qE '^clone zz-' <<< "$out" && bad "--zees-games-min cloned a zz pack"
 grep -qx 'clone dot-core' <<< "$out" || bad "--zees-games-min lacks the addons"
+out="$(plan --min)"
+grep -E '^clone (.*-maps|zz-.*)$|^link .* content |^link .* addon zz_' <<< "$out" | grep -q . && bad "--min --plan links or clones content for some game"
 out="$(plan mg-wipeout --min)"
 grep -qx 'clone mg-wipeout-maps' <<< "$out" && bad "--min cloned maps"
 out="$(plan --addons dot-core,weapon)"
