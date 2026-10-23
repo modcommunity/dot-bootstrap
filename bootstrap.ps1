@@ -15,11 +15,20 @@
         .\bootstrap.ps1 -Ssh            clone over SSH (to push from this machine); HTTPS is the default
         .\bootstrap.ps1 -Only arena,wipeout     only these, plus the addon and map repos they need
         .\bootstrap.ps1 -Only 'mg-*' -NoDeps    only these, and nothing they need
+        .\bootstrap.ps1 game-arena mg-wipeout  the same as -Only (names, short forms, wildcards)
+        .\bootstrap.ps1 -Games arena,wipeout -Addons dot-core   games and/or addons by kind
+        .\bootstrap.ps1 zees-games             every game, with the addons and content it needs
+        .\bootstrap.ps1 -ZeesGamesMin          every game, base repository + addons only
+        .\bootstrap.ps1 mg-wipeout -Min        -Min: no maps, weapon, monster or other content packs
+        .\bootstrap.ps1 -Plan [selection]      print what would be cloned and linked, change nothing
 
     -Only works with every mode (sync, -Links, -Status). A name is a project
     from projects.tsv, or its short form (arena = game-arena, wipeout =
     mg-wipeout, core = dot-core), or a wildcard. Set $env:DOT_ONLY to make a
     selection stick. Addons are copied (or linked) into the named projects only.
+    Selecting a game also selects the addons it requires and the content it links
+    (maps, courses, optional weapon and monster packs) unless -Min. With no
+    selection at all, EVERYTHING is cloned and linked.
 
     WHERE IT PUTS THINGS
 
@@ -86,7 +95,14 @@ param(
     [switch]$Ssh,
     [string[]]$Only = $(if ($env:DOT_ONLY) { $env:DOT_ONLY -split '[,\s]+' } else { @() }),
     [switch]$NoDeps,
-    [string]$Play
+    [switch]$Min,
+    [switch]$ZeesGamesMin,
+    [switch]$Plan,
+    [string[]]$Games = @(),
+    [string[]]$Addons = @(),
+    [string]$Play,
+    [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
+    [string[]]$Names = @()
 )
 
 $ErrorActionPreference = 'Continue'
@@ -222,10 +238,32 @@ function Get-Projects {
 # "ignore the lot" (dot-server-deploy vendors its own with setup.sh) and
 # names nothing to link.
 function Get-LinksFor ($proj) {
-    $gi = Join-Path $projectsDir "$proj\.gitignore"
+    $gi = Get-GitignorePath $proj
     if (-not (Test-Path $gi)) { return @() }
+    $skip = if ($script:minMode) { @(Get-OptionalFor $proj) } else { @() }
     Get-Content $gi |
-        ForEach-Object { if ($_ -match '^/addons/([a-z0-9_]+)\s*$') { $Matches[1] } }
+        ForEach-Object { if ($_ -match '^/addons/([a-z0-9_]+)\s*$') { $Matches[1] } } |
+        Where-Object { $skip -notcontains $_ }
+}
+
+# Addons a project marks optional (a weapon or monster pack it runs without): a
+# "# bootstrap-optional" comment line directly above the /addons/<name> line.
+function Get-OptionalFor ($proj) {
+    $gi = Get-GitignorePath $proj
+    if (-not (Test-Path $gi)) { return @() }
+    $o = $false
+    foreach ($line in Get-Content $gi) {
+        if ($line -match '^# bootstrap-optional') { $o = $true; continue }
+        if ($o -and $line -match '^/addons/([a-z0-9_]+)\s*$') { $Matches[1] }
+        $o = $false
+    }
+}
+
+# A project's .gitignore: its checkout, else (for -Plan) the one in $env:DOT_PLAN_FROM.
+function Get-GitignorePath ($proj) {
+    $here = Join-Path $projectsDir "$proj\.gitignore"
+    if ((Test-Path $here) -or -not $env:DOT_PLAN_FROM) { return $here }
+    return (Join-Path $env:DOT_PLAN_FROM "$proj\.gitignore")
 }
 
 # Which repository an addon comes from. bootstrap.sh's addon_source has the reasoning:
@@ -254,6 +292,8 @@ function Test-Listed ($name) { [bool](Get-Projects | Where-Object { $_.Name -eq 
 
 # A name as typed -> the projects it means, or nothing.
 function Resolve-Name ($n) {
+    if ($n -in @('zees-games', 'games')) { return @(Get-Games | ForEach-Object { $_.Name }) }
+    if ($n -eq 'addons') { return @(Get-Projects | Where-Object { $_.Name -like 'dot-*' } | ForEach-Object { $_.Name }) }
     if ($n -match '[*?\[]') { return @(Get-Projects | Where-Object { $_.Name -like $n } | ForEach-Object { $_.Name }) }
     foreach ($p in @($n, "game-$n", "mg-$n", "dot-$n")) { if (Test-Listed $p) { return @($p) } }
     return @()
@@ -274,7 +314,8 @@ function Get-AddonRepo ($addon) {
 
 # The repositories a project's "# bootstrap-link: repo/path" lines name.
 function Get-ContentRepos ($proj) {
-    $gi = Join-Path $projectsDir "$proj\.gitignore"
+    if ($script:minMode) { return @() }
+    $gi = Get-GitignorePath $proj
     if (-not (Test-Path $gi)) { return @() }
     Get-Content $gi | ForEach-Object {
         if ($_ -match '^# bootstrap-link: ([^/\s]+)') { $Matches[1] }
@@ -510,6 +551,7 @@ function Link-Addons ($proj) {
 # "/maps/imported"). bootstrap.sh's link_content has the reasoning. Copied by default and
 # junctioned with -Junction, exactly like the addons.
 function Link-Content ($proj) {
+    if ($script:minMode) { return }
     $dir = Join-Path $projectsDir $proj
     $gi  = Join-Path $dir '.gitignore'
     if (-not (Test-Path $gi)) { return }
@@ -782,13 +824,54 @@ function New-ContentKeys {
 # A name that matches nothing is an error, not an empty selection: an empty one would
 # quietly mean "everything", the opposite of what was asked.
 $script:selection = @()
-foreach ($n in @($Only | ForEach-Object { $_ -split '[,\s]+' } | Where-Object { $_ })) {
-    $hit = @(Resolve-Name $n)
-    if ($hit.Count -eq 0) { Write-Host "-Only: no project called $n in projects.tsv" -ForegroundColor Red; exit 2 }
-    $script:selection += $hit
+$script:minMode = [bool]($Min -or $ZeesGamesMin)
+function Add-Selection ($flag, $kind, $list) {
+    foreach ($n in @($list | ForEach-Object { $_ -split '[,\s]+' } | Where-Object { $_ })) {
+        $hit = @(Resolve-Name $n)
+        if ($hit.Count -eq 0) { Write-Host "${flag}: no project or group called '$n' in projects.tsv (try -List for the games)" -ForegroundColor Red; exit 2 }
+        $gameNames = @(Get-Games | ForEach-Object { $_.Name })
+        foreach ($h in $hit) {
+            if ($kind -eq 'game'  -and $gameNames -notcontains $h) { Write-Host "${flag}: '$h' is not a game" -ForegroundColor Red; exit 2 }
+            if ($kind -eq 'addon' -and $gameNames -contains $h)    { Write-Host "${flag}: '$h' is a game, not an addon (use -Games)" -ForegroundColor Red; exit 2 }
+        }
+        $script:selection += $hit
+    }
 }
+$namesAll = @($Names)
+if ($ZeesGamesMin) { $namesAll += 'zees-games' }
+Add-Selection '-Only' 'any' $Only
+Add-Selection 'name' 'any' $namesAll
+Add-Selection '-Games' 'game' $Games
+Add-Selection '-Addons' 'addon' $Addons
+# -Min on its own means every game, base only.
+if ($script:minMode -and $script:selection.Count -eq 0) { Add-Selection '-Min' 'game' @('zees-games') }
 $script:selection = @($script:selection | Select-Object -Unique)
 
+# What a sync would clone and link for this selection, from .gitignore files alone. A
+# project that is not cloned is read from $env:DOT_PLAN_FROM (default: the projects dir).
+function Show-Plan {
+    if (-not $env:DOT_PLAN_FROM) { $env:DOT_PLAN_FROM = $projectsDir }
+    $sel = if ($script:selection.Count -gt 0) { $script:selection -join ' ' } else { 'everything' }
+    $tag = "$(if ($script:minMode) { ' (min: no content packs)' })$(if ($NoDeps) { ' (no deps)' })"
+    Write-Output "selection: $sel$tag"
+    foreach ($p in Get-Selected) {
+        if (Test-Path (Join-Path $projectsDir "$p\.git")) { Write-Output "have $p" } else { Write-Output "clone $p" }
+    }
+    foreach ($p in Get-LinkTargets) {
+        foreach ($a in @(Get-LinksFor $p)) { Write-Output "link $p addon $a" }
+        if ($script:minMode) { continue }
+        $gi = Get-GitignorePath $p
+        if (-not (Test-Path $gi)) { continue }
+        $src = $null
+        foreach ($line in Get-Content $gi) {
+            if ($line -match '^# bootstrap-link: (\S+)(\s+ci)?\s*$') { $src = $Matches[1]; continue }
+            if ($src -and $line -match '^/(.+?)/?\s*$') { Write-Output "link $p content $($Matches[1]) -> $src" }
+            $src = $null
+        }
+    }
+}
+
+if ($Plan)        { Show-Plan; exit 0 }
 if ($Play)        { Play-Game $Play; exit 0 }
 elseif ($List)    { List-Games; exit 0 }
 elseif ($Check)   { Check-List }

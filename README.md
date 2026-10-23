@@ -54,15 +54,27 @@ You do not need all seventy-odd repositories to play one game. Name what you wan
 ./bootstrap.sh --only arena,playground     # short names: arena = game-arena, wipeout = mg-wipeout, core = dot-core
 ./bootstrap.sh --only 'mg-*'               # a wildcard
 ./bootstrap.sh --only dot-weapon --no-deps # just that repository, nothing it needs
+./bootstrap.sh game-arena mg-wipeout       # bare names select, like --only
+./bootstrap.sh --games arena,wipeout --addons dot-core   # by kind; --games refuses an addon, --addons a game
+./bootstrap.sh zees-games                  # the group: every game, with its addons and content
+./bootstrap.sh --zees-games-min            # every game, base repository + addons only
+./bootstrap.sh mg-wipeout --min            # --min on any selection: no content packs
+./bootstrap.sh --plan zees-games           # print what would be cloned and linked, change nothing
 ```
 
 ```powershell
+.\bootstrap.ps1 game-arena mg-wipeout
+.\bootstrap.ps1 -Games arena,wipeout -Addons dot-core
+.\bootstrap.ps1 zees-games
+.\bootstrap.ps1 -ZeesGamesMin
+.\bootstrap.ps1 mg-wipeout -Min
+.\bootstrap.ps1 -Plan zees-games
 .\bootstrap.ps1 -Only wipeout
 .\bootstrap.ps1 -Only arena,playground
 .\bootstrap.ps1 -Only dot-weapon -NoDeps
 ```
 
-The addons are copied (or linked) into the projects you named and nowhere else. The addon repositories it clones are only the sources for those copies, so their own `addons/` folders are left empty. A name that matches nothing stops the run, because an empty selection would mean everything. `--only` works with `--links` and `--status` too, and `DOT_ONLY=arena,wipeout` (`$env:DOT_ONLY` on Windows) makes a selection stick between runs. What a project needs is read from its `.gitignore` as it is cloned, so the selection holds no list either.
+The addons are copied (or linked) into the projects you named and nowhere else. The addon repositories it clones are only the sources for those copies, so their own `addons/` folders are left empty. **A plain `./bootstrap.sh` with no selection clones every repository in `projects.tsv` and links all of it**: every game, every maps repository, and the optional weapon and monster packs a game declares. **Content** is the maps, courses and worlds a game links with `# bootstrap-link:` and the packs it marks with `# bootstrap-optional`; a selection pulls it in with the game unless `--min` (`-Min`) is given, and `--min` alone means every game, base only (`--zees-games-min`). The group `zees-games` (alias `games`) is every `game-*` and `mg-*` project; `addons` is every `dot-*`. A name that matches no project or group stops the run with exit 2, because an empty selection would mean everything. `--plan` (`-Plan`) prints `clone`/`have` per repository and `link` per addon and content line without touching the disk (set `DOT_PLAN_FROM` to a checkout tree to read `.gitignore` files for repositories not cloned yet). `tools/check_content_links.sh` walks every game with it and fails if a link target is missing from `projects.tsv`, not cloned or not linked by default. A name that matches nothing stops the run, because an empty selection would mean everything. `--only` works with `--links` and `--status` too, and `DOT_ONLY=arena,wipeout` (`$env:DOT_ONLY` on Windows) makes a selection stick between runs. What a project needs is read from its `.gitignore` as it is cloned, so the selection holds no list either.
 
 ## Playing a game
 
@@ -117,6 +129,7 @@ So neither list lives in the scripts:
 - The projects come from **`projects.tsv`**, the one file both scripts read. `--check` fails if it disagrees with what is on the disk.
 - The addons a project needs are read out of **that project's own `.gitignore`**, from its `/addons/<name>` lines. That is the one place that cannot go stale: the repository that gains a dependency is the repository that has to ignore the link, and Godot will not open without it.
 - A **content directory** from another repository is declared the same way: a `# bootstrap-link: <repo>/<path>` comment line directly above the ignored path. game-g2gfast's `.gitignore` has `# bootstrap-link: g2gfast-maps/maps` over `/maps/imported`, so a fresh clone of the game gets its imported maps (linked, or copied on Windows by default). A real directory already at that path is reported and never replaced, because it may be the only copy of something.
+- An **optional pack** (a weapon or monster pack the game runs without, such as game-zombie-zone's zz-modern-weapons, zz-medieval-weapons and zz-historical-monsters) is an ordinary `/addons/<name>` line preceded by a `# bootstrap-optional` comment line. It is linked by default and skipped under `--min`.
 
 ## Windows copies the addons; Linux links them
 

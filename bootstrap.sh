@@ -15,11 +15,19 @@
 #   ./bootstrap.sh --ssh           clone over SSH (to push from this machine); HTTPS is the default
 #   ./bootstrap.sh --only arena,wipeout   only these, plus the addon and map repos they need
 #   ./bootstrap.sh --only 'mg-*' --no-deps  only these, and nothing they need
+#   ./bootstrap.sh game-arena mg-wipeout    the same as --only (names, short forms, globs)
+#   ./bootstrap.sh --games arena,wipeout --addons dot-core   games and/or addons by kind
+#   ./bootstrap.sh zees-games               every game, with the addons and content it needs
+#   ./bootstrap.sh --zees-games-min         every game, base repository + addons only
+#   ./bootstrap.sh mg-wipeout --min         --min: no maps, weapon, monster or other content packs
+#   ./bootstrap.sh --plan [selection]       print what would be cloned and linked, change nothing
 #
 # --only works with every mode (sync, --links, --status). A name is a project
 # from projects.tsv, or its short form (arena = game-arena, wipeout = mg-wipeout,
 # core = dot-core), or a glob. Set DOT_ONLY to make a selection stick. Addons
-# are linked (or copied) into the named projects only.
+# are linked (or copied) into the named projects only. Selecting a game also selects
+# the addons it requires and the content it links (maps, courses, optional weapon and
+# monster packs) unless --min. With no selection at all, EVERYTHING is cloned and linked.
 #
 # WHERE IT PUTS THINGS
 #
@@ -198,11 +206,32 @@ url_for()  { grep -v '^[[:space:]]*#' "$LIST" | awk -F'\t' -v p="$1" '$1==p{prin
 # project's own addon is never in there -- dot-net ignores dot_core and ships
 # dot_net -- which is exactly the distinction wanted.
 links_for() {
-    local gi="$PROJECTS_DIR/$1/.gitignore"
+    local gi; gi="$(gi_path "$1")"
     [ -f "$gi" ] || return 0
     # /addons/ on its own means "ignore the lot" (dot-server-deploy vendors
     # its addons with setup.sh) and names nothing to link.
-    grep -oE '^/addons/[a-z0-9_]+$' "$gi" 2>/dev/null | sed 's|^/addons/||'
+    local all; all="$(grep -oE '^/addons/[a-z0-9_]+$' "$gi" 2>/dev/null | sed 's|^/addons/||')"
+    if [ "$MIN" = "1" ]; then
+        local opt; opt="$(optional_for "$1")"
+        [ -n "$opt" ] && { grep -vxF "$opt" <<< "$all"; return 0; }
+    fi
+    [ -n "$all" ] && printf '%s\n' "$all"
+    return 0
+}
+
+# A project's .gitignore: its checkout, else (for --plan) the one in PLAN_FROM.
+gi_path() {
+    if [ -f "$PROJECTS_DIR/$1/.gitignore" ]; then echo "$PROJECTS_DIR/$1/.gitignore"
+    elif [ -n "$PLAN_FROM" ]; then echo "$PLAN_FROM/$1/.gitignore"
+    else echo "$PROJECTS_DIR/$1/.gitignore"; fi
+}
+
+# Addons a project marks optional (a weapon or monster pack it runs without): a
+# "# bootstrap-optional" comment line directly above the /addons/<name> line.
+optional_for() {
+    local gi; gi="$(gi_path "$1")"
+    [ -f "$gi" ] || return 0
+    awk '/^# bootstrap-optional/{o=1; next} o && /^\/addons\//{sub("^/addons/",""); print} {o=0}' "$gi"
 }
 
 # Which repository an addon comes from. dot_user_avatar -> dot-user-avatar covers every
@@ -234,12 +263,22 @@ addon_source() {
 
 ONLY=()
 NO_DEPS=0
+# --min: leave out content (maps, courses, worlds) and the optional packs a game marks
+# with "# bootstrap-optional" above their /addons/ line.
+MIN=0
+PLAN=0
+# --plan reads a project's .gitignore from here when it is not cloned yet.
+PLAN_FROM="${DOT_PLAN_FROM:-}"
 
 listed() { projects | grep -qxF "$1"; }
 
 # A name as typed -> the projects it means, or nothing.
 resolve_name() {
     local n="$1" p
+    case "$n" in
+        zees-games|games) games; return ;;
+        addons)           projects | grep -E '^dot-'; return ;;
+    esac
     case "$n" in
         *[*?[]*) projects | while read -r p; do [[ "$p" == $n ]] && echo "$p"; done; return ;;
     esac
@@ -464,7 +503,8 @@ link_addons() {
 # Without this a fresh clone of the game had only its three built-in maps, and nothing
 # said why: the imported ones are optional content, so the catalogue just found none.
 content_links_for() {
-    local gi="$PROJECTS_DIR/$1/.gitignore"
+    [ "$MIN" = "1" ] && return 0
+    local gi; gi="$(gi_path "$1")"
     [ -f "$gi" ] || return 0
     awk '/^# bootstrap-link: /{src=$3; next} src!="" && /^\//{print $0 "\t" src} {src=""}' "$gi"
 }
@@ -635,30 +675,58 @@ play_game() {
 # the mode is read.
 ARGS=()
 only_raw="${DOT_ONLY:-}"
+games_raw=""; addons_raw=""; positional=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --copy)    COPY_ADDONS=1 ;;
         --ssh)     USE_HTTPS=0 ;;
         --https)   USE_HTTPS=1 ;;   # the default; still accepted
         --no-deps) NO_DEPS=1 ;;
-        --only)    [ $# -ge 2 ] || { echo "${RED}--only needs a name${OFF}" >&2; exit 2; }
-                   only_raw="$only_raw,$2"; shift ;;
-        --only=*)  only_raw="$only_raw,${1#--only=}" ;;
-        *)         ARGS+=("$1") ;;
+        --min)     MIN=1 ;;
+        --zees-games-min) MIN=1; positional="$positional,zees-games" ;;
+        --plan|--dry-run) PLAN=1 ;;
+        --only|--games|--addons)
+                   [ $# -ge 2 ] || { echo "${RED}$1 needs a name${OFF}" >&2; exit 2; }
+                   case "$1" in --only) only_raw="$only_raw,$2" ;; --games) games_raw="$games_raw,$2" ;; *) addons_raw="$addons_raw,$2" ;; esac
+                   shift ;;
+        --only=*)   only_raw="$only_raw,${1#--only=}" ;;
+        --games=*)  games_raw="$games_raw,${1#--games=}" ;;
+        --addons=*) addons_raw="$addons_raw,${1#--addons=}" ;;
+        --play)    ARGS+=("$@"); break ;;   # its argument is a game, not a selection
+        -*)        ARGS+=("$1") ;;
+        sync)      ARGS+=("$1") ;;
+        *)         positional="$positional,$1" ;;   # a bare name selects, like --only
     esac
     shift
 done
 set -- "${ARGS[@]+"${ARGS[@]}"}"
+only_raw="$only_raw$positional"
 
 # A name that matches nothing is an error, not an empty selection: an empty one
 # would quietly mean "everything", which is the opposite of what was asked.
-IFS=', ' read -ra _names <<< "$only_raw"
-for n in "${_names[@]+"${_names[@]}"}"; do
-    [ -n "$n" ] || continue
-    _hit="$(resolve_name "$n")"
-    [ -n "$_hit" ] || { echo "${RED}--only: no project called $n in projects.tsv${OFF}" >&2; exit 2; }
-    while read -r p; do ONLY+=("$p"); done <<< "$_hit"
-done
+select_names() {   # <flag> <kind: any|game|addon> <comma list>
+    local flag="$1" kind="$2" n hit p
+    IFS=', ' read -ra _names <<< "$3"
+    for n in "${_names[@]+"${_names[@]}"}"; do
+        [ -n "$n" ] || continue
+        hit="$(resolve_name "$n")"
+        [ -n "$hit" ] || { echo "${RED}$flag: no project or group called '$n' in projects.tsv (try --list for the games)${OFF}" >&2; exit 2; }
+        while read -r p; do
+            case "$kind" in
+                game)  games | grep -qxF "$p" || { echo "${RED}$flag: '$p' is not a game${OFF}" >&2; exit 2; } ;;
+                addon) ! games | grep -qxF "$p" || { echo "${RED}$flag: '$p' is a game, not an addon (use --games)${OFF}" >&2; exit 2; } ;;
+            esac
+            ONLY+=("$p")
+        done <<< "$hit"
+    done
+}
+select_names --only any "$only_raw"
+select_names --games game "$games_raw"
+select_names --addons addon "$addons_raw"
+# --min on its own means every game, base only.
+[ "$MIN" = "1" ] && [ ${#ONLY[@]} -eq 0 ] && select_names --min game "zees-games"
+# De-duplicate, keeping order.
+if [ ${#ONLY[@]} -gt 0 ]; then mapfile -t ONLY < <(printf '%s\n' "${ONLY[@]}" | awk '!s[$0]++'); fi
 
 mode="${1:-sync}"
 
@@ -766,6 +834,27 @@ install_tools() {
     ok "fastgmad" "$FASTGMAD_VERSION installed, linked at $prefix/bin/fastgmad"
 }
 
+# What a sync would clone and link for this selection, from .gitignore files alone. A
+# project that is not cloned is read from DOT_PLAN_FROM (default: the projects dir).
+plan() {
+    local p a path src
+    [ -n "$PLAN_FROM" ] || PLAN_FROM="$PROJECTS_DIR"
+    echo "selection: ${ONLY[*]:-everything}$([ "$MIN" = "1" ] && echo " (min: no content packs)")$([ "$NO_DEPS" = "1" ] && echo " (no deps)")"
+    while read -r p; do
+        [ -n "$p" ] || continue
+        if [ -d "$PROJECTS_DIR/$p/.git" ]; then echo "have $p"; else echo "clone $p"; fi
+    done <<< "$(selected)"
+    while read -r p; do
+        [ -n "$p" ] || continue
+        while read -r a; do [ -n "$a" ] && echo "link $p addon $a"; done <<< "$(links_for "$p")"
+        while IFS=$'\t' read -r path src; do
+            [ -n "$src" ] && echo "link $p content ${path#/} -> $src"
+        done <<< "$(content_links_for "$p")"
+    done <<< "$(link_targets)"
+}
+
+[ "$PLAN" = "1" ] && { plan; exit 0; }
+
 case "$mode" in
     --list|--play|--check|--status|--tools) : ;;   # must not create anything
     *) mkdir -p "$PROJECTS_DIR" ;;
@@ -806,10 +895,10 @@ case "$mode" in
         while read -r p; do [ -n "$p" ] && { link_addons "$p"; link_content "$p"; }; done <<< "$(link_targets)"
         ;;
     -h|--help)
-        sed -n '3,33p' "$REAL_SELF" | sed 's/^# \{0,1\}//'; exit 0
+        sed -n '3,45p' "$REAL_SELF" | sed 's/^# \{0,1\}//'; exit 0
         ;;
     *)
-        echo "usage: $0 [--links|--status|--check|--list|--play <game>]" >&2; exit 2
+        echo "usage: $0 [names...|zees-games] [--games a,b] [--addons x,y] [--min|--zees-games-min] [--plan] [--links|--status|--check|--list|--play <game>]" >&2; exit 2
         ;;
 esac
 
