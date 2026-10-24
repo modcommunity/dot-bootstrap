@@ -445,6 +445,12 @@ function Sync-Repo ($proj, $url) {
                 $errText = $pullErr -join "`n"
             }
         }
+        # A tag moved upstream: git refuses to overwrite the local one.
+        if ($errText -match 'would clobber existing tag|tag.*already exists') {
+            git @net -C $dir fetch -q --tags --force 2>&1 | Out-Null
+            $pullErr = @(git @net -C $dir pull -q --no-rebase --ff-only 2>&1 | ForEach-Object { "$_" })
+            $errText = $pullErr -join "`n"
+        }
         # Upstream history was rewritten (an amended commit): the local commits are
         # the old copies. Keep them on a backup branch, move to upstream, keep
         # uncommitted work (--keep refuses rather than overwrite it).
@@ -477,6 +483,8 @@ function Sync-Repo ($proj, $url) {
             Say  ''    '  commit or discard them, then run this again'
         } elseif ($alt -eq $origin) {
             Err $proj 'pull refused - diverged, or no upstream. Resolve by hand.'
+            $why = @($pullErr | Where-Object { $_ } | Select-Object -First 4) -join ' | '
+            if ($why) { Say '' "  git said: $why" }
         } elseif ($script:useHttps) {
             Err $proj 'pull failed over HTTPS too - diverged, no upstream, or not reachable. Resolve by hand.'
         } else {

@@ -416,6 +416,11 @@ sync_repo() {
             pull_err="$(git "${net[@]}" -C "$dir" pull -q --no-rebase --ff-only 2>&1 >/dev/null)"; pull_rc=$?
         fi
     fi
+    # A tag moved upstream: git refuses to overwrite the local one.
+    if [ $pull_rc -ne 0 ] && printf '%s' "$pull_err" | grep -qE 'would clobber existing tag|already exists'; then
+        git "${net[@]}" -C "$dir" fetch -q --tags --force >/dev/null 2>&1
+        pull_err="$(git "${net[@]}" -C "$dir" pull -q --no-rebase --ff-only 2>&1 >/dev/null)"; pull_rc=$?
+    fi
     # Upstream history was rewritten (an amended commit): the local commits are the
     # old copies. Keep them on a backup branch, move to upstream, keep uncommitted
     # work (--keep refuses rather than overwrite it).
@@ -454,7 +459,8 @@ sync_repo() {
                     err "$proj" "pull failed. origin is SSH; if you have no key here, drop --ssh, or run:"
                     say ""       "  git -C '$dir' remote set-url origin $(to_https "$origin")"
                 fi ;;
-            *)  err "$proj" "pull refused - diverged, or no upstream. Resolve by hand." ;;
+            *)  err "$proj" "pull refused - diverged, or no upstream. Resolve by hand."
+                say "" "  git said: $(printf '%s' "$pull_err" | head -4 | paste -sd'|' -)" ;;
         esac
     fi
 }
