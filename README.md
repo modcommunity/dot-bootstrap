@@ -159,6 +159,10 @@ So this asks the engine, resolves every `extends` chain down to the native class
 
 It needs `godot` on `PATH` (or `GODOT=` set) and defaults to scanning the directory the projects are cloned into.
 
+### dot-workbench comes with every game
+
+`dot-workbench` is in `projects.tsv`, and every game and `dot-game-template` lists `/addons/dot_workbench` in its `.gitignore`, so a normal bootstrap clones it once and links (Windows: copies) it into each game, with no extra step. `tools/check_workbench_link.sh` proves it: every game carries the line, `--plan` clones and links it, and a real offline `bootstrap.sh --only workbench` run in a scratch directory links dot-workbench with its dot-core, dot-ui, dot-menu and dot-settings.
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
