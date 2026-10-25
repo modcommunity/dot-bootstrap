@@ -87,6 +87,16 @@ The addons are copied (or linked) into the projects you named and nowhere else. 
 
 `game-arena` starts in warmup, running WARMUP then COUNTDOWN then LIVE, and nobody spawns until LIVE, about thirteen seconds in.
 
+### Converted maps need their art staged
+
+A game that draws converted maps from a shared store (`zombie-zone` today) reads their library textures and models from shared art stores that are not in any repository. Without them the maps still play, drawn with low-detail stand-ins, and the load screen says "Low-detail art". Players get the art as dot-cloud slices from a server that publishes them; a developer stages it once (about 2 GB) with dot-map's script, from the team's dev box or any copy of the stores:
+
+```bash
+dot-map/tools/stage_stores.sh zombie-zone-maps --from dev02:godot/zombie-zone-maps/.stores --game game-zombie-zone
+```
+
+It is not part of a plain sync because it is a large download and needs access to a copy of the stores. Details: [dot-map docs/content.md](https://github.com/modcommunity/dot-map/blob/main/docs/content.md#without-the-slices).
+
 ## Everything else
 
 | | |
