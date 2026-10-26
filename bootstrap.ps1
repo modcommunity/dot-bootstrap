@@ -15,6 +15,7 @@
         .\bootstrap.ps1 -Ssh            clone over SSH (to push from this machine); HTTPS is the default
         .\bootstrap.ps1 -Only arena,wipeout     only these, plus the addon and map repos they need
         .\bootstrap.ps1 -Only 'mg-*' -NoDeps    only these, and nothing they need
+        .\bootstrap.ps1 -DiscardGenerated       when an update is blocked, restore every modified .import/.uid file and retry
         .\bootstrap.ps1 game-arena mg-wipeout  the same as -Only (names, short forms, wildcards)
         .\bootstrap.ps1 -Games arena,wipeout -Addons dot-core   games and/or addons by kind
         .\bootstrap.ps1 zees-games             every game, with the addons and content it needs
@@ -95,6 +96,7 @@ param(
     [switch]$Ssh,
     [string[]]$Only = $(if ($env:DOT_ONLY) { $env:DOT_ONLY -split '[,\s]+' } else { @() }),
     [switch]$NoDeps,
+    [switch]$DiscardGenerated,
     [switch]$Min,
     [switch]$ZeesGamesMin,
     [switch]$Plan,
@@ -471,6 +473,20 @@ function Sync-Repo ($proj, $url) {
             }
         }
     }
+    # -DiscardGenerated: the automatic restore above only fires when git names
+    # nothing but .import/.uid files. Here every modified one goes, whatever git named.
+    if (-not $pullOk -and $DiscardGenerated -and (($pullErr -join "`n") -match 'would be overwritten|commit your changes or stash')) {
+        foreach ($line in @(git -C $dir status --porcelain 2>$null)) {
+            $f = "$line".Substring(3).Trim('"')
+            if ($f -notmatch '\.(uid|import)$') { continue }
+            git -C $dir ls-files --error-unmatch -- $f 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) { git -C $dir restore --staged --worktree -- $f 2>$null | Out-Null }
+            else { Remove-Item -LiteralPath (Join-Path $dir $f) -Force -ErrorAction SilentlyContinue }
+        }
+        $pullErr = @(git @net -C $dir pull -q --no-rebase --ff-only 2>&1 | ForEach-Object { "$_" })
+        $pullOk = ($LASTEXITCODE -eq 0)
+        $dirty = @(git -C $dir status --porcelain 2>$null).Count
+    }
     if (-not $pullOk) {
         $alt = ConvertTo-HttpsUrl $origin
         if ($dirty -gt 0 -and ($pullErr -join "`n") -match 'would be overwritten|commit your changes or stash') {
@@ -480,7 +496,7 @@ function Sync-Repo ($proj, $url) {
                        ForEach-Object { $_.Trim() } | Select-Object -First 5) -join ' '
             if (-not $files) { $files = 'see git status' }
             Warn $proj "dirty, not updated: the update changes files modified here ($files)"
-            Say  ''    '  commit or discard them, then run this again'
+            Say  ''    '  commit or discard them, then run this again (generated .import/.uid files: add -DiscardGenerated)'
         } elseif ($alt -eq $origin) {
             Err $proj 'pull refused - diverged, or no upstream. Resolve by hand.'
             $why = @($pullErr | Where-Object { $_ } | Select-Object -First 4) -join ' | '

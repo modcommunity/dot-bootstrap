@@ -15,6 +15,7 @@
 #   ./bootstrap.sh --ssh           clone over SSH (to push from this machine); HTTPS is the default
 #   ./bootstrap.sh --only arena,wipeout   only these, plus the addon and map repos they need
 #   ./bootstrap.sh --only 'mg-*' --no-deps  only these, and nothing they need
+#   ./bootstrap.sh --discard-generated   when an update is blocked, restore every modified .import/.uid file and retry
 #   ./bootstrap.sh game-arena mg-wipeout    the same as --only (names, short forms, globs)
 #   ./bootstrap.sh --games arena,wipeout --addons dot-core   games and/or addons by kind
 #   ./bootstrap.sh zees-games               every game, with the addons and content it needs
@@ -263,6 +264,7 @@ addon_source() {
 
 ONLY=()
 NO_DEPS=0
+DISCARD_GEN=0
 # --min: leave out content (maps, courses, worlds) and the optional packs a game marks
 # with "# bootstrap-optional" above their /addons/ line.
 MIN=0
@@ -438,6 +440,15 @@ sync_repo() {
             fi
         fi
     fi
+    # --discard-generated: the automatic restore above only fires when git names
+    # nothing but .import/.uid files. Here every modified one goes, whatever git named.
+    if [ $pull_rc -ne 0 ] && [ "$DISCARD_GEN" = "1" ] && printf '%s' "$pull_err" | grep -qE 'would be overwritten|commit your changes or stash'; then
+        git -C "$dir" status --porcelain 2>/dev/null | sed -n 's/^.. //p' | grep -E '\.(uid|import)$' | while IFS= read -r f; do
+            if git -C "$dir" ls-files --error-unmatch -- "$f" >/dev/null 2>&1; then git -C "$dir" restore --staged --worktree -- "$f" 2>/dev/null; else rm -f "$dir/$f"; fi
+        done
+        pull_err="$(git "${net[@]}" -C "$dir" pull -q --no-rebase --ff-only 2>&1 >/dev/null)"; pull_rc=$?
+        dirty=$(git -C "$dir" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+    fi
     if [ $pull_rc -eq 0 ]; then
         local after; after=$(git -C "$dir" rev-parse --short HEAD)
         local kept=""; [ "$dirty" -gt 0 ] && kept=" ${YLW}(kept $dirty uncommitted file(s))${OFF}"
@@ -449,7 +460,7 @@ sync_repo() {
         # between committing and discarding is made by somebody looking.
         local files; files="$(printf '%s\n' "$pull_err" | sed -n 's/^[[:space:]]\{1,\}\([^[:space:]].*\)$/\1/p' | grep -v '^Please\|^Aborting' | head -5 | paste -sd' ' -)"
         warn "$proj" "dirty, not updated: the update changes files modified here (${files:-see git status})"
-        say  ""      "  commit or discard them, then run this again"
+        say  ""      "  commit or discard them, then run this again (generated .import/.uid files: add --discard-generated)"
     else
         case "$origin" in
             *@*:*|ssh://*)
@@ -715,6 +726,7 @@ while [ $# -gt 0 ]; do
         --ssh)     USE_HTTPS=0 ;;
         --https)   USE_HTTPS=1 ;;   # the default; still accepted
         --no-deps) NO_DEPS=1 ;;
+        --discard-generated) DISCARD_GEN=1 ;;
         --min)     MIN=1 ;;
         --zees-games-min) MIN=1; positional="$positional,zees-games" ;;
         --plan|--dry-run) PLAN=1 ;;

@@ -54,6 +54,7 @@ You do not need all seventy-odd repositories to play one game. Name what you wan
 ./bootstrap.sh --only arena,playground     # short names: arena = game-arena, wipeout = mg-wipeout, core = dot-core
 ./bootstrap.sh --only 'mg-*'               # a wildcard
 ./bootstrap.sh --only dot-weapon --no-deps # just that repository, nothing it needs
+./bootstrap.sh --discard-generated         # an update blocked by editor-rewritten .import/.uid files: restore them and retry
 ./bootstrap.sh game-arena mg-wipeout       # bare names select, like --only
 ./bootstrap.sh --games arena,wipeout --addons dot-core   # by kind; --games refuses an addon, --addons a game
 ./bootstrap.sh zees-games                  # the group: every game, with its addons and content
@@ -72,6 +73,7 @@ You do not need all seventy-odd repositories to play one game. Name what you wan
 .\bootstrap.ps1 -Only wipeout
 .\bootstrap.ps1 -Only arena,playground
 .\bootstrap.ps1 -Only dot-weapon -NoDeps
+.\bootstrap.ps1 -DiscardGenerated
 ```
 
 The addons are copied (or linked) into the projects you named and nowhere else. The addon repositories it clones are only the sources for those copies, so their own `addons/` folders are left empty. **A plain `./bootstrap.sh` with no selection clones every repository in `projects.tsv` and links all of it**: every game, every maps repository, and the optional weapon and monster packs a game declares. **Content** is the maps, courses and worlds a game links with `# bootstrap-link:` and the packs it marks with `# bootstrap-optional`; a selection pulls it in with the game unless `--min` (`-Min`) is given, and `--min` alone means every game, base only (`--zees-games-min`). The group `zees-games` (alias `games`) is every `game-*` and `mg-*` project; `addons` is every `dot-*`. A name that matches no project or group stops the run with exit 2, because an empty selection would mean everything. `--plan` (`-Plan`) prints `clone`/`have` per repository and `link` per addon and content line without touching the disk (set `DOT_PLAN_FROM` to a checkout tree to read `.gitignore` files for repositories not cloned yet). `tools/check_content_links.sh` walks every game with it and fails if a link target is missing from `projects.tsv`, not cloned or not linked by default. A name that matches nothing stops the run, because an empty selection would mean everything. `--only` works with `--links` and `--status` too, and `DOT_ONLY=arena,wipeout` (`$env:DOT_ONLY` on Windows) makes a selection stick between runs. What a project needs is read from its `.gitignore` as it is cloned, so the selection holds no list either.
