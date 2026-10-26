@@ -15,6 +15,7 @@
         .\bootstrap.ps1 -Ssh            clone over SSH (to push from this machine); HTTPS is the default
         .\bootstrap.ps1 -Only arena,wipeout     only these, plus the addon and map repos they need
         .\bootstrap.ps1 -Only 'mg-*' -NoDeps    only these, and nothing they need
+        .\bootstrap.ps1 -Import                 import every game headless (the editor can crash on a first import); -Only narrows it
         .\bootstrap.ps1 -DiscardGenerated       when an update is blocked, restore every modified .import/.uid file and retry
         .\bootstrap.ps1 game-arena mg-wipeout  the same as -Only (names, short forms, wildcards)
         .\bootstrap.ps1 -Games arena,wipeout -Addons dot-core   games and/or addons by kind
@@ -97,6 +98,7 @@ param(
     [string[]]$Only = $(if ($env:DOT_ONLY) { $env:DOT_ONLY -split '[,\s]+' } else { @() }),
     [switch]$NoDeps,
     [switch]$DiscardGenerated,
+    [switch]$Import,
     [switch]$Min,
     [switch]$ZeesGamesMin,
     [switch]$Plan,
@@ -942,6 +944,15 @@ elseif ($Status)  {
 }
 elseif ($Links)   {
     foreach ($p in Get-LinkTargets) { Link-Addons $p; Link-Content $p }
+}
+elseif ($Import) {
+    $bin = Find-Godot
+    if (-not $bin) { Write-Host 'Godot was not found. Set $env:GODOT to the executable.' -ForegroundColor Red; exit 3 }
+    # Games only, whatever else the selection holds; no selection means every game.
+    $gameNames = @(Get-Games | ForEach-Object { $_.Name })
+    $names = if ($script:selection.Count -gt 0) { @($script:selection | Where-Object { $gameNames -contains $_ }) } else { $gameNames }
+    & (Join-Path $PSScriptRoot 'tools\import-all.ps1') -ProjectsDir $projectsDir -Godot $bin -Names $names
+    if ($LASTEXITCODE -ne 0) { $script:failed = $true }
 }
 elseif ($Tools) {
     if (-not (Install-Tools)) { $script:failed = $true }

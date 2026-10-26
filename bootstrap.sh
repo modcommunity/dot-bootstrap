@@ -15,6 +15,7 @@
 #   ./bootstrap.sh --ssh           clone over SSH (to push from this machine); HTTPS is the default
 #   ./bootstrap.sh --only arena,wipeout   only these, plus the addon and map repos they need
 #   ./bootstrap.sh --only 'mg-*' --no-deps  only these, and nothing they need
+#   ./bootstrap.sh --import              import every game headless (the editor can crash on a first import); --only narrows it
 #   ./bootstrap.sh --discard-generated   when an update is blocked, restore every modified .import/.uid file and retry
 #   ./bootstrap.sh game-arena mg-wipeout    the same as --only (names, short forms, globs)
 #   ./bootstrap.sh --games arena,wipeout --addons dot-core   games and/or addons by kind
@@ -901,7 +902,7 @@ plan() {
 [ "$PLAN" = "1" ] && { plan; exit 0; }
 
 case "$mode" in
-    --list|--play|--check|--status|--tools) : ;;   # must not create anything
+    --list|--play|--check|--status|--tools|--import) : ;;   # must not create anything
     *) mkdir -p "$PROJECTS_DIR" ;;
 esac
 
@@ -921,6 +922,12 @@ case "$mode" in
         ;;
     --content-keys)
         content_keys || fail=1
+        ;;
+    --import)
+        # Games only, whatever else the selection holds; no selection means every game.
+        bin="$(find_godot)" || { echo "${RED}Godot is not on PATH. Set GODOT=/path/to/godot.${OFF}" >&2; exit 3; }
+        mapfile -t _g < <(if [ ${#ONLY[@]} -gt 0 ]; then printf '%s\n' "${ONLY[@]}" | grep -xFf <(games); else games; fi)
+        "$SELF_DIR/tools/import-all.sh" "$PROJECTS_DIR" "$bin" "${_g[@]}" || fail=1
         ;;
     --list)
         list_games; exit 0
