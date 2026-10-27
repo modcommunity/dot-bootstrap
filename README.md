@@ -122,6 +122,25 @@ It is not part of a plain sync because it is a large download and needs access t
 - **Platforms**: Linux x86_64 and macOS (the macOS binary is checksum-pinned but untested here). On Windows `-Tools` unpacks into `%LOCALAPPDATA%\fastgmad\0.2.1`; dotbsp does not look there, so put that folder on `PATH` or set `DOTBSP_FASTGMAD`. The Windows path is untested.
 - **Why opt-in**: a plain sync needs git and nothing else. Making it part of the default path would add a network download of a binary to every bootstrap, and `--check` and `--status` must stay offline.
 
+## Fetching content from the CDN
+
+A repository that has content on the CDN (raw art stores, packs) carries a `content.lock.json` at its root: the one file that says what to fetch, pinned by hash (format: dot-cloud `docs/cdn-publish.md`). **One fetcher reads it**, `tools/fetch_lock.sh` (`tools/fetch_lock.ps1` on Windows); every repository's `fetch-content.sh` / `fetch-content.ps1` is a few lines that call it (macOS uses the `.sh`), and `./server fetch-lock` and `bootstrap` call it too. Every file is hash-checked, resumable, and fetched once: a present, stamped pack is "have".
+
+```bash
+../zombie-zone-maps/fetch-content.sh                 # one repository: everything its lock names
+tools/fetch_all.sh                                   # every lock file in the tree (games, addons, map repos, packs)
+tools/fetch_all.sh --only 'zombie-*'                 # only X: a repository, pack id, name half, `into` folder or kind; globs
+tools/fetch_all.sh --except zz-stores,mg-*-maps      # everything but X
+tools/fetch_lock.sh <repo>/content.lock.json --list  # what would be fetched, and why each other item is skipped
+.\tools\fetch_all.ps1 -Only zombie-zone-maps -Except zz-stores   # Windows
+```
+
+**Which CDN.** First one set wins: `--from` / `-From` (a full origin URL or a folder), `$DOT_PACKS_FROM` (`none` fetches nothing), `--cdn URL` or `$DOT_CDN_URL` (per run or per repository), `DOT_CDN_URL=` in **`dot-bootstrap/.env`** (one edit for every game and addon; copy `.env.example`, it is gitignored), then the lock's own `origin` and `mirrors`, then `https://dotgames.org`. A URL given this way is the site root and `/content` is added. The lock's origin comes before the default on purpose: a pin published to the dev bucket would not verify against production anyway (another signing key), so the lock decides unless somebody overrides it.
+
+**The download lists are respected.** With `cfg/content/addons.yml` / `games.yml` (and the `cfg/server/content/` layer; `tools/fetch_all.sh` borrows `dot-server-deploy/cfg` for repositories without a `cfg/`) a lock entry is dropped when a `remove:` entry names it (id, name half or glob), when `cfg/content/<name>/disabled` exists, or, when a list without `merge: true` names `pack:` entries, when it is a pack the list does not name. Packs named in the lists that the lock pins are fetched, so custom packs (models, weapons) come with their game. A name the lock does not pin is not fetched here: `./server install-games` fetches those from the origin by id.
+
+Packs (kind `pack`) are only mirrored when `--packs DIR` is given (`fetch_all.sh` and dot-server-deploy's wrapper pass `content/packs`); otherwise `DotCloudClient` mounts them at run time. To give a new repository the same, copy `fetch-content.sh` / `.ps1` from `zombie-zone-maps`.
+
 ## Publishing content from a fresh clone
 
 `dot-cloud` refuses an unsigned manifest, and it is right to: a mounted pack can contain scripts, so a client that mounts unsigned content runs whatever the server sent it. Publishing therefore needs a private key — and a private key is the one thing a clone can never carry. `dot-server-deploy/keys/` is gitignored precisely so one cannot arrive in a commit.

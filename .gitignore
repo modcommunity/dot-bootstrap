@@ -11,3 +11,6 @@ Thumbs.db
 
 # Godot downloaded by bootstrap -GetGodot / --get-godot
 /.godot-bin/
+
+# Per-machine CDN override (see .env.example)
+/.env
