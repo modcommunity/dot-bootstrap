@@ -560,8 +560,18 @@ link_content() {
     while IFS=$'\t' read -r path src; do
         [ -n "$path" ] || continue
         path="${path#/}"; path="${path%/}"
+        # The raw art stores (a maps repo's .stores) are in no repository: $DOT_STORES_FROM (an
+        # rsync source, a folder or the URL of a .tar) is where a checkout gets them.
+        if [ ! -d "$PROJECTS_DIR/$src" ] && [ "${src##*/}" = ".stores" ] && [ -d "$PROJECTS_DIR/${src%%/*}" ] \
+                && [ -n "${DOT_STORES_FROM:-}" ] && [ -x "$PROJECTS_DIR/dot-map/tools/stage_stores.sh" ]; then
+            "$PROJECTS_DIR/dot-map/tools/stage_stores.sh" "$PROJECTS_DIR/${src%%/*}" || warn "$proj" "staging $src from $DOT_STORES_FROM failed"
+        fi
         if [ ! -d "$PROJECTS_DIR/$src" ]; then
-            warn "$proj" "content missing: $src (clone ${src%%/*} for $path)"
+            if [ "${src##*/}" = ".stores" ]; then
+                warn "$proj" "art stores missing: $src is in no repository, so maps draw low-detail art. Set DOT_STORES_FROM (rsync source, folder or .tar URL of the pbr-library and model-library) and run bootstrap again, or run dot-map/tools/stage_stores.sh ${src%%/*} --from <src> --game $proj"
+            else
+                warn "$proj" "content missing: $src (clone ${src%%/*} for $path)"
+            fi
             continue
         fi
         # A real directory there may be the only copy of something; never delete it.

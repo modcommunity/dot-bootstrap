@@ -625,8 +625,31 @@ function Link-Content ($proj) {
             $path   = $Matches[1] -replace '/', '\'
             $target = Join-Path $projectsDir ($src -replace '/', '\')
             $link   = Join-Path $dir $path
+            # The raw art stores (a maps repo's .stores) are in no repository: $env:DOT_STORES_FROM,
+            # a folder or the URL of a .tar of pbr-library and model-library, is where a checkout gets them.
+            if (-not (Test-Path $target) -and (($src -split '/')[-1] -eq '.stores') -and $env:DOT_STORES_FROM `
+                    -and (Test-Path (Join-Path $projectsDir ($src -split '/')[0]))) {
+                New-Item -ItemType Directory -Force -Path $target | Out-Null
+                if ($env:DOT_STORES_FROM -match '^https?://') {
+                    $tar = Join-Path $env:TEMP 'dot-stores.tar'
+                    Invoke-WebRequest -Uri $env:DOT_STORES_FROM -OutFile $tar
+                    tar -xf $tar -C $target
+                    Remove-Item $tar -Force
+                } elseif (Test-Path $env:DOT_STORES_FROM) {
+                    Copy-Item -Path (Join-Path $env:DOT_STORES_FROM '*') -Destination $target -Recurse -Force -Exclude 'project', 'slices'
+                }
+                New-Item -ItemType File -Force -Path (Join-Path $target '.gdignore') | Out-Null
+                if (-not (Test-Path (Join-Path $target 'pbr-library'))) {
+                    Remove-Item $target -Recurse -Force
+                    Warn $proj "staging $src from $env:DOT_STORES_FROM failed (no pbr-library in it)"
+                }
+            }
             if (-not (Test-Path $target)) {
-                Warn $proj "content missing: $src (clone $(($src -split '/')[0]) for $path)"
+                if (($src -split '/')[-1] -eq '.stores') {
+                    Warn $proj "art stores missing: $src is in no repository, so maps draw low-detail art. Set `$env:DOT_STORES_FROM (a folder or the URL of a .tar of pbr-library and model-library) and run bootstrap again"
+                } else {
+                    Warn $proj "content missing: $src (clone $(($src -split '/')[0]) for $path)"
+                }
             } elseif ((Test-Path $link) -and -not (Get-Item $link -Force).LinkType -and -not $useCopy) {
                 Warn $proj "$path is a real directory, left alone (link it to $src by hand)"
             } else {
