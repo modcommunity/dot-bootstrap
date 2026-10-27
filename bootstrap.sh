@@ -380,6 +380,40 @@ sync_selected() {
 
 # --- Repositories ----------------------------------------------------------
 
+# The pull was refused because tracked files are modified here. Line-ending-only changes are
+# discarded; real edits are stashed, the pull retried, the stash re-applied (it stays saved
+# when that conflicts). Returns 0 when the pull went through.
+resolve_blocked_pull() {
+    local proj="$1" dir="$2" err="$3"; shift 3; local net=("$@")
+    local tracked=() f
+    while IFS= read -r f; do
+        [ -n "$f" ] && git -C "$dir" ls-files --error-unmatch -- "$f" >/dev/null 2>&1 && tracked+=("$f")
+    done < <(printf '%s\n' "$err" | sed -n 's/^[[:space:]]\{1,\}\([^[:space:]].*\)$/\1/p' | grep -v '^Please\|^Aborting\|^error')
+    if [ ${#tracked[@]} -eq 0 ]; then
+        while IFS= read -r f; do [ -n "$f" ] && tracked+=("$f"); done < <(git -C "$dir" status --porcelain --untracked-files=no 2>/dev/null | sed 's/^...//')
+    fi
+    [ ${#tracked[@]} -eq 0 ] && return 1
+    local real=()
+    for f in "${tracked[@]}"; do
+        if git -C "$dir" diff HEAD --ignore-space-at-eol --ignore-cr-at-eol --quiet -- "$f" 2>/dev/null; then
+            git -C "$dir" restore --staged --worktree -- "$f" 2>/dev/null
+            say "$proj" "${DIM}$f: line endings only, discarded${OFF}"
+        else real+=("$f"); fi
+    done
+    git "${net[@]}" -C "$dir" pull -q --no-rebase --ff-only >/dev/null 2>&1 && return 0
+    [ ${#real[@]} -eq 0 ] && return 1
+    git -C "$dir" stash push -q -m bootstrap-autostash -- "${real[@]}" >/dev/null 2>&1 || return 1
+    local pulled=1
+    git "${net[@]}" -C "$dir" pull -q --no-rebase --ff-only >/dev/null 2>&1 && pulled=0
+    if git -C "$dir" stash pop -q >/dev/null 2>&1; then
+        [ $pulled -eq 0 ] && say "$proj" "${GRN}stashed ${#real[@]} file(s) (${real[*]}), updated, reapplied${OFF}"
+        return $pulled
+    fi
+    git -C "$dir" reset -q --merge >/dev/null 2>&1
+    warn "$proj" "local edits to ${real[*]} conflict with the update and are kept in the stash 'bootstrap-autostash' (inspect: git -C '$dir' stash show -p)"
+    return $pulled
+}
+
 sync_repo() {
     local proj="$1"; local dir="$PROJECTS_DIR/$proj"; local url; url="$(url_for "$proj")"
 
@@ -481,6 +515,11 @@ sync_repo() {
         done
         pull_err="$(git "${net[@]}" -C "$dir" pull -q --no-rebase --ff-only 2>&1 >/dev/null)"; pull_rc=$?
         dirty=$(git -C "$dir" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+    fi
+    if [ $pull_rc -ne 0 ] && printf '%s' "$pull_err" | grep -qE 'would be overwritten|commit your changes or stash'; then
+        if resolve_blocked_pull "$proj" "$dir" "$pull_err" "${net[@]}"; then
+            pull_rc=0; dirty=$(git -C "$dir" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+        fi
     fi
     if [ $pull_rc -eq 0 ]; then
         local after; after=$(git -C "$dir" rev-parse --short HEAD)

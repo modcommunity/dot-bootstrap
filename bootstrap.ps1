@@ -389,6 +389,7 @@ function Sync-Many ($items) {
     }
     $defs = @{
         Sync = ${function:Sync-Repo}.ToString()
+        Block = ${function:Resolve-BlockedPull}.ToString()
         Conv = ${function:ConvertTo-HttpsUrl}.ToString()
         Args = ${function:Get-HttpsArgs}.ToString()
     }
@@ -405,6 +406,7 @@ function Sync-Many ($items) {
         ${function:ConvertTo-HttpsUrl} = [scriptblock]::Create($d.Conv)
         ${function:Get-HttpsArgs}      = [scriptblock]::Create($d.Args)
         ${function:Sync-Repo}          = [scriptblock]::Create($d.Sync)
+        ${function:Resolve-BlockedPull} = [scriptblock]::Create($d.Block)
         $projectsDir = $c.dir; $Hub = $c.hub; $DiscardGenerated = $c.discard
         $script:useHttps = $sh.https
         Sync-Repo $name $url
@@ -438,6 +440,47 @@ function Sync-Many ($items) {
     }
     $pool.Close(); $pool.Dispose()
     if ($shared.https) { $script:useHttps = $true }
+}
+
+# The pull was refused because tracked files are modified here. Whitespace/line-ending-only
+# changes are discarded; real edits are stashed, the pull retried and the stash re-applied.
+# Nothing with a real edit is ever reset: if it cannot be re-applied it stays in the stash.
+# Returns $true when the pull went through; $false leaves the tree as it was found.
+function Resolve-BlockedPull ($proj, $dir, $net, $pullErr) {
+    $named = @($pullErr | Where-Object { $_ -match '^\s+\S' -and $_ -notmatch '^\s*(Please|Aborting|error)' } | ForEach-Object { $_.Trim() })
+    $tracked = @()
+    foreach ($f in $named) {
+        git -C $dir ls-files --error-unmatch -- $f 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) { $tracked += $f }
+    }
+    if ($tracked.Count -eq 0) {
+        $tracked = @(git -C $dir status --porcelain --untracked-files=no 2>$null | ForEach-Object { "$_".Substring(3).Trim('"') })
+    }
+    if ($tracked.Count -eq 0) { return $false }
+    $real = @()
+    foreach ($f in $tracked) {
+        git -C $dir diff HEAD --ignore-space-at-eol --ignore-cr-at-eol --quiet -- $f 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            git -C $dir restore --staged --worktree -- $f 2>$null | Out-Null
+            Say $proj "${f}: line endings only, discarded" 'DarkGray'
+        } else { $real += $f }
+    }
+    git @net -C $dir pull -q --no-rebase --ff-only 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) { return $true }
+    if ($real.Count -eq 0) { return $false }
+    git -C $dir stash push -q -m bootstrap-autostash -- @real 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { return $false }
+    git @net -C $dir pull -q --no-rebase --ff-only 2>&1 | Out-Null
+    $pulled = ($LASTEXITCODE -eq 0)
+    git -C $dir stash pop -q 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        if ($pulled) { Say $proj "stashed $($real.Count) file(s) ($($real -join ' ')), updated, reapplied" 'Green' }
+        return $pulled
+    }
+    # Conflict: back to the pulled state; the stash stays saved.
+    git -C $dir reset -q --merge 2>&1 | Out-Null
+    Warn $proj "local edits to $($real -join ' ') conflict with the update and are kept in the stash 'bootstrap-autostash' (inspect: git -C `"$dir`" stash show -p)"
+    return $pulled
 }
 
 function Sync-Repo ($proj, $url) {
@@ -566,6 +609,12 @@ function Sync-Repo ($proj, $url) {
         $pullErr = @(git @net -C $dir pull -q --no-rebase --ff-only 2>&1 | ForEach-Object { "$_" })
         $pullOk = ($LASTEXITCODE -eq 0)
         $dirty = @(git -C $dir status --porcelain 2>$null).Count
+    }
+    if (-not $pullOk -and (($pullErr -join "`n") -match 'would be overwritten|commit your changes or stash')) {
+        if (Resolve-BlockedPull $proj $dir $net $pullErr) {
+            $pullOk = $true
+            $dirty = @(git -C $dir status --porcelain 2>$null).Count
+        }
     }
     if (-not $pullOk) {
         $alt = ConvertTo-HttpsUrl $origin
