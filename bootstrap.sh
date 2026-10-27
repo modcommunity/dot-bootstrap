@@ -18,7 +18,7 @@
 #   ./bootstrap.sh --only 'mg-*' --no-deps  only these, and nothing they need
 #   ./bootstrap.sh --jobs N              repositories synced and games imported at once (default: the CPU count; DOT_JOBS; 1 = one at a time)
 #   ./bootstrap.sh --import              import every game headless (the editor can crash on a first import); --only narrows it
-#   ./bootstrap.sh --get-godot          download the latest stable Godot into .godot-bin beside this script; every mode that runs Godot looks there
+#   ./bootstrap.sh --get-godot          download the latest stable Godot into .godot-bin beside this script; with --import, a selection or --discard-generated it carries on (sync, link, then import)
 #   ./bootstrap.sh --discard-generated   when an update is blocked, restore every modified .import/.uid file and retry
 #   ./bootstrap.sh game-arena mg-wipeout    the same as --only (names, short forms, globs)
 #   ./bootstrap.sh --games arena,wipeout --addons dot-core   games and/or addons by kind
@@ -800,6 +800,7 @@ play_game() {
 # --copy, --ssh, --https, --only and --no-deps may accompany any mode; strip them before
 # the mode is read.
 ARGS=()
+GET_GODOT=0; DO_IMPORT=0
 only_raw="${DOT_ONLY:-}"
 games_raw=""; addons_raw=""; positional=""
 # The raw art stores are fetched once from the published CC0 set unless DOT_STORES_FROM says otherwise
@@ -817,6 +818,8 @@ while [ $# -gt 0 ]; do
         --jobs=*)  JOBS="${1#--jobs=}" ;;
         --no-stores) DOT_STORES_FROM=none ;;
         --discard-generated) DISCARD_GEN=1 ;;
+        --get-godot) GET_GODOT=1 ;;
+        --import)  DO_IMPORT=1 ;;
         --min)     MIN=1 ;;
         --zees-games-min) MIN=1; positional="$positional,zees-games" ;;
         --plan|--dry-run) PLAN=1 ;;
@@ -865,6 +868,13 @@ select_names --addons addon "$addons_raw"
 if [ ${#ONLY[@]} -gt 0 ]; then mapfile -t ONLY < <(printf '%s\n' "${ONLY[@]}" | awk '!s[$0]++'); fi
 
 mode="${1:-sync}"
+# --get-godot and --import alone keep their own mode. With each other, --discard-generated or
+# a selection they carry on: download Godot, sync and link, then import (as bootstrap.ps1 does).
+if [ $# -eq 0 ]; then
+    if [ "$DO_IMPORT" = "1" ] && [ "$GET_GODOT" = "0" ] && [ "$DISCARD_GEN" = "0" ]; then mode=--import
+    elif [ "$GET_GODOT" = "1" ] && [ "$DO_IMPORT" = "0" ] && [ "$DISCARD_GEN" = "0" ]; then mode=--get-godot
+    fi
+fi
 
 content_keys() {
     # A CONTENT SIGNING KEYPAIR, for a developer who wants to PUBLISH packs locally.
@@ -996,6 +1006,16 @@ case "$mode" in
     *) mkdir -p "$PROJECTS_DIR" ;;
 esac
 
+run_import() {
+    # Games only, whatever else the selection holds; no selection means every game.
+    local bin; bin="$(find_godot)" || { echo "${RED}Godot not found. Run ./bootstrap.sh --get-godot, or set GODOT=/path/to/godot.${OFF}" >&2; exit 3; }
+    mapfile -t _g < <(if [ ${#ONLY[@]} -gt 0 ]; then printf '%s\n' "${ONLY[@]}" | grep -xFf <(games); else games; fi)
+    "$SELF_DIR/tools/import-all.sh" -j "$JOBS" "$PROJECTS_DIR" "$bin" "${_g[@]}" || fail=1
+}
+
+# Runs first so the rest of this run, including --import, finds it.
+[ "$GET_GODOT" = "1" ] && { get_godot || fail=1; }
+
 case "$mode" in
     --status)
         echo "projects: $PROJECTS_DIR"; echo
@@ -1014,13 +1034,10 @@ case "$mode" in
         content_keys || fail=1
         ;;
     --get-godot)
-        get_godot || fail=1
+        # Already downloaded above when it is the only thing asked for.
         ;;
     --import)
-        # Games only, whatever else the selection holds; no selection means every game.
-        bin="$(find_godot)" || { echo "${RED}Godot not found. Run ./bootstrap.sh --get-godot, or set GODOT=/path/to/godot.${OFF}" >&2; exit 3; }
-        mapfile -t _g < <(if [ ${#ONLY[@]} -gt 0 ]; then printf '%s\n' "${ONLY[@]}" | grep -xFf <(games); else games; fi)
-        "$SELF_DIR/tools/import-all.sh" -j "$JOBS" "$PROJECTS_DIR" "$bin" "${_g[@]}" || fail=1
+        run_import
         ;;
     --list)
         list_games; exit 0
@@ -1038,6 +1055,7 @@ case "$mode" in
         sync_selected
         echo
         while read -r p; do [ -n "$p" ] && { link_addons "$p"; link_content "$p"; }; done <<< "$(link_targets)"
+        [ "$DO_IMPORT" = "1" ] && run_import
         ;;
     -h|--help)
         sed -n '3,45p' "$REAL_SELF" | sed 's/^# \{0,1\}//'; exit 0
