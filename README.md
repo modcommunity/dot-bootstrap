@@ -180,3 +180,5 @@ It needs `godot` on `PATH` (or `GODOT=` set) and defaults to scanning the direct
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
+
+The raw art stores (`zombie-zone-maps/.stores`, about 1.6 GB of CC0 textures and models) are in no repository. Bootstrap downloads them once from `https://dev.dotgames.org/stores/zombie-zone-maps/zz-stores-cc0.tar` (SHA-256 checked) and keeps them, so later runs do not fetch again. Pass `-NoStores` (`--no-stores` in sh), or set `DOT_STORES_FROM=none`, to skip them (maps then draw low-detail art), or set `DOT_STORES_FROM` to a folder or another `.tar` URL to use your own. The Sketchfab models in the author's private store are not in the download.

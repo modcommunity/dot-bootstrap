@@ -14,6 +14,7 @@
 #   ./bootstrap.sh --links --copy  copy the addons instead of linking them
 #   ./bootstrap.sh --ssh           clone over SSH (to push from this machine); HTTPS is the default
 #   ./bootstrap.sh --only arena,wipeout   only these, plus the addon and map repos they need
+#   ./bootstrap.sh --no-stores              skip the raw art stores (about 1.6 GB, fetched once and kept); maps draw low-detail art
 #   ./bootstrap.sh --only 'mg-*' --no-deps  only these, and nothing they need
 #   ./bootstrap.sh --import              import every game headless (the editor can crash on a first import); --only narrows it
 #   ./bootstrap.sh --get-godot          download the latest stable Godot into .godot-bin beside this script; every mode that runs Godot looks there
@@ -564,12 +565,12 @@ link_content() {
         # The raw art stores (a maps repo's .stores) are in no repository: $DOT_STORES_FROM (an
         # rsync source, a folder or the URL of a .tar) is where a checkout gets them.
         if [ ! -d "$PROJECTS_DIR/$src" ] && [ "${src##*/}" = ".stores" ] && [ -d "$PROJECTS_DIR/${src%%/*}" ] \
-                && [ -n "${DOT_STORES_FROM:-}" ] && [ -x "$PROJECTS_DIR/dot-map/tools/stage_stores.sh" ]; then
+                && [ -n "${DOT_STORES_FROM:-}" ] && [ "$DOT_STORES_FROM" != none ] && [ -x "$PROJECTS_DIR/dot-map/tools/stage_stores.sh" ]; then
             "$PROJECTS_DIR/dot-map/tools/stage_stores.sh" "$PROJECTS_DIR/${src%%/*}" || warn "$proj" "staging $src from $DOT_STORES_FROM failed"
         fi
         if [ ! -d "$PROJECTS_DIR/$src" ]; then
             if [ "${src##*/}" = ".stores" ]; then
-                warn "$proj" "art stores missing: $src is in no repository, so maps draw low-detail art. Set DOT_STORES_FROM (rsync source, folder or .tar URL of the pbr-library and model-library) and run bootstrap again, or run dot-map/tools/stage_stores.sh ${src%%/*} --from <src> --game $proj"
+                warn "$proj" "art stores missing: $src is in no repository, so maps draw low-detail art. Run again without --no-stores, or set DOT_STORES_FROM (rsync source, folder or .tar URL of the pbr-library and model-library) and run bootstrap again, or run dot-map/tools/stage_stores.sh ${src%%/*} --from <src> --game $proj"
             else
                 warn "$proj" "content missing: $src (clone ${src%%/*} for $path)"
             fi
@@ -767,12 +768,16 @@ play_game() {
 ARGS=()
 only_raw="${DOT_ONLY:-}"
 games_raw=""; addons_raw=""; positional=""
+# The raw art stores are fetched once from the published CC0 set unless DOT_STORES_FROM says otherwise
+# (a folder, rsync source or .tar URL) or it is "none" (--no-stores); a present .stores is never refetched.
+DOT_STORES_FROM="${DOT_STORES_FROM-https://dev.dotgames.org/stores/zombie-zone-maps/zz-stores-cc0.tar}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --copy)    COPY_ADDONS=1 ;;
         --ssh)     USE_HTTPS=0 ;;
         --https)   USE_HTTPS=1 ;;   # the default; still accepted
         --no-deps) NO_DEPS=1 ;;
+        --no-stores) DOT_STORES_FROM=none ;;
         --discard-generated) DISCARD_GEN=1 ;;
         --min)     MIN=1 ;;
         --zees-games-min) MIN=1; positional="$positional,zees-games" ;;

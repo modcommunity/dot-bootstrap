@@ -15,6 +15,7 @@
         .\bootstrap.ps1 -Ssh            clone over SSH (to push from this machine); HTTPS is the default
         .\bootstrap.ps1 -Only arena,wipeout     only these, plus the addon and map repos they need
         .\bootstrap.ps1 -Only 'mg-*' -NoDeps    only these, and nothing they need
+        .\bootstrap.ps1 -NoStores              do not fetch the raw art stores (about 1.6 GB, once, kept); maps draw low-detail art. Or $env:DOT_STORES_FROM = 'none'
         .\bootstrap.ps1 -Import                 import every game headless (the editor can crash on a first import); -Only narrows it
         .\bootstrap.ps1 -GetGodot               download the latest stable Godot into .godot-bin beside this script, then carry on (sync, and -Import if given); every mode that runs Godot looks there
         .\bootstrap.ps1 -DiscardGenerated       when an update is blocked, restore every modified .import/.uid file and retry
@@ -98,6 +99,7 @@ param(
     [switch]$Ssh,
     [string[]]$Only = $(if ($env:DOT_ONLY) { $env:DOT_ONLY -split '[,\s]+' } else { @() }),
     [switch]$NoDeps,
+    [switch]$NoStores,
     [switch]$DiscardGenerated,
     [switch]$Import,
     [switch]$GetGodot,
@@ -627,28 +629,34 @@ function Link-Content ($proj) {
             $path   = $Matches[1] -replace '/', '\'
             $target = Join-Path $projectsDir ($src -replace '/', '\')
             $link   = Join-Path $dir $path
-            # The raw art stores (a maps repo's .stores) are in no repository: $env:DOT_STORES_FROM,
-            # a folder or the URL of a .tar of pbr-library and model-library, is where a checkout gets them.
-            if (-not (Test-Path $target) -and (($src -split '/')[-1] -eq '.stores') -and $env:DOT_STORES_FROM `
+            # The raw art stores (a maps repo's .stores) are in no repository. They are fetched once, from
+            # $env:DOT_STORES_FROM (a folder or the URL of a .tar) or else the published CC0 set, and kept; -NoStores
+            # or DOT_STORES_FROM=none skips them and the maps draw low-detail art.
+            $from = if ($env:DOT_STORES_FROM) { $env:DOT_STORES_FROM } else { 'https://dev.dotgames.org/stores/zombie-zone-maps/zz-stores-cc0.tar' }
+            if (-not (Test-Path $target) -and (($src -split '/')[-1] -eq '.stores') -and -not $NoStores -and $from -ne 'none' `
                     -and (Test-Path (Join-Path $projectsDir ($src -split '/')[0]))) {
                 New-Item -ItemType Directory -Force -Path $target | Out-Null
-                if ($env:DOT_STORES_FROM -match '^https?://') {
-                    $tar = Join-Path $env:TEMP 'dot-stores.tar'
-                    Invoke-WebRequest -Uri $env:DOT_STORES_FROM -OutFile $tar
-                    tar -xf $tar -C $target
+                if ($from -match '^https?://') {
+                    $tar = Join-Path ([IO.Path]::GetTempPath()) 'dot-stores.tar'
+                    Write-Host "downloading the art stores (about 1.6 GB, once) from $from"
+                    Invoke-WebRequest -UseBasicParsing -Uri $from -OutFile $tar
+                    $want = if ($from -eq 'https://dev.dotgames.org/stores/zombie-zone-maps/zz-stores-cc0.tar') { '9438f142a53aff4bf52f63dcb7973168210a991e77b0fd4944ee26d39022d62f' } else { $null }
+                    if ($want -and (Get-FileHash $tar -Algorithm SHA256).Hash.ToLower() -ne $want) {
+                        Warn $proj 'the downloaded art stores do not match their checksum; not used'
+                    } else { tar -xf $tar -C $target }
                     Remove-Item $tar -Force
-                } elseif (Test-Path $env:DOT_STORES_FROM) {
-                    Copy-Item -Path (Join-Path $env:DOT_STORES_FROM '*') -Destination $target -Recurse -Force -Exclude 'project', 'slices'
+                } elseif (Test-Path $from) {
+                    Copy-Item -Path (Join-Path $from '*') -Destination $target -Recurse -Force -Exclude 'project', 'slices'
                 }
                 New-Item -ItemType File -Force -Path (Join-Path $target '.gdignore') | Out-Null
                 if (-not (Test-Path (Join-Path $target 'pbr-library'))) {
                     Remove-Item $target -Recurse -Force
-                    Warn $proj "staging $src from $env:DOT_STORES_FROM failed (no pbr-library in it)"
+                    Warn $proj "staging $src from $from failed (no pbr-library in it)"
                 }
             }
             if (-not (Test-Path $target)) {
                 if (($src -split '/')[-1] -eq '.stores') {
-                    Warn $proj "art stores missing: $src is in no repository, so maps draw low-detail art. Set `$env:DOT_STORES_FROM (a folder or the URL of a .tar of pbr-library and model-library) and run bootstrap again"
+                    Warn $proj "art stores missing: $src is in no repository, so maps draw low-detail art. Run bootstrap again without -NoStores, or set `$env:DOT_STORES_FROM (a folder or the URL of a .tar of pbr-library and model-library)"
                 } else {
                     Warn $proj "content missing: $src (clone $(($src -split '/')[0]) for $path)"
                 }
