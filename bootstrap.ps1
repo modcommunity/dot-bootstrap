@@ -16,7 +16,7 @@
         .\bootstrap.ps1 -Only arena,wipeout     only these, plus the addon and map repos they need
         .\bootstrap.ps1 -Only 'mg-*' -NoDeps    only these, and nothing they need
         .\bootstrap.ps1 -NoStores              do not fetch the raw art stores (about 1.6 GB, once, kept); maps draw low-detail art. Or $env:DOT_STORES_FROM = 'none'
-        .\bootstrap.ps1 -Jobs N                games imported at once (default: the CPU count)
+        .\bootstrap.ps1 -Jobs N                repositories synced and games imported at most N at once (default: the CPU count; 1 = one at a time)
         .\bootstrap.ps1 -Import                 import every game headless (the editor can crash on a first import); -Only narrows it
         .\bootstrap.ps1 -GetGodot               download the latest stable Godot into .godot-bin beside this script, then carry on (sync, and -Import if given); every mode that runs Godot looks there
         .\bootstrap.ps1 -DiscardGenerated       when an update is blocked, restore every modified .import/.uid file and retry
@@ -341,19 +341,21 @@ function Get-Deps ($proj) {
 # -Sync, each one is cloned or pulled as it is reached, so its needs can be read.
 function Get-Selected ([switch]$Sync) {
     if ($script:selection.Count -eq 0) {
-        if ($Sync) { foreach ($p in Get-Projects) { Sync-Repo $p.Name $p.Url } }
+        if ($Sync) { Sync-Many @(Get-Projects) }
         return @(Get-Projects | ForEach-Object { $_.Name })
     }
-    $seen  = @{}
-    $queue = [System.Collections.Generic.Queue[string]]::new()
-    foreach ($p in $script:selection) { $queue.Enqueue($p) }
-    while ($queue.Count -gt 0) {
-        $p = $queue.Dequeue()
-        if ($seen.ContainsKey($p)) { continue }
-        $seen[$p] = $true
-        if ($Sync) { Sync-Repo $p ((Get-Projects | Where-Object { $_.Name -eq $p }).Url) }
+    # Dependencies are only known once a repository is on disk, so this goes in waves:
+    # sync everything queued (at most -Jobs at once), read what each names, queue what is new.
+    $seen = @{}
+    $wave = @($script:selection)
+    while ($wave.Count -gt 0) {
+        $batch = @()
+        foreach ($p in $wave) { if (-not $seen.ContainsKey($p)) { $seen[$p] = $true; $batch += $p } }
+        if ($batch.Count -eq 0) { break }
+        if ($Sync) { Sync-Many @($batch | ForEach-Object { $n = $_; Get-Projects | Where-Object { $_.Name -eq $n } }) }
+        $wave = @()
         if ($NoDeps) { continue }
-        foreach ($d in @(Get-Deps $p)) { $queue.Enqueue($d) }
+        foreach ($p in $batch) { foreach ($d in @(Get-Deps $p)) { $wave += $d } }
     }
     return @(Get-Projects | Where-Object { $seen.ContainsKey($_.Name) } | ForEach-Object { $_.Name })
 }
@@ -367,6 +369,48 @@ function Get-LinkTargets {
 }
 
 # --- Repositories ----------------------------------------------------------
+
+# Syncs the given projects (objects with Name and Url), at most $Jobs at once. Each
+# repository's lines are printed whole when it finishes, so output never interleaves,
+# and an error in any of them makes the run report one. -Jobs 1 (or Windows PowerShell
+# 5.1, which has no -Parallel) syncs one at a time, exactly as before.
+function Sync-Many ($items) {
+    $items = @($items)
+    if ($Jobs -le 1 -or $items.Count -le 1 -or $PSVersionTable.PSVersion.Major -lt 7) {
+        foreach ($i in $items) { Sync-Repo $i.Name $i.Url }
+        return
+    }
+    $defs = @{
+        Sync = ${function:Sync-Repo}.ToString()
+        Conv = ${function:ConvertTo-HttpsUrl}.ToString()
+        Args = ${function:Get-HttpsArgs}.ToString()
+    }
+    $shared = [hashtable]::Synchronized(@{ https = $script:useHttps })
+    $ctx = @{ dir = $projectsDir; hub = $Hub; discard = [bool]$DiscardGenerated }
+    $items | ForEach-Object -ThrottleLimit $Jobs -Parallel {
+        $d = $using:defs; $c = $using:ctx; $sh = $using:shared
+        $buf = [System.Collections.Generic.List[object]]::new()
+        $state = @{ failed = $false }
+        function Say  ($n, $m, $col = 'Gray') { $buf.Add(@($n, $m, $col)) }
+        function Warn ($n, $m)                { Say $n $m 'Yellow' }
+        function Err  ($n, $m)                { Say $n $m 'Red'; $state.failed = $true }
+        function Note-Https                   { $buf.Add(@('NOTE')) }
+        ${function:ConvertTo-HttpsUrl} = [scriptblock]::Create($d.Conv)
+        ${function:Get-HttpsArgs}      = [scriptblock]::Create($d.Args)
+        ${function:Sync-Repo}          = [scriptblock]::Create($d.Sync)
+        $projectsDir = $c.dir; $Hub = $c.hub; $DiscardGenerated = $c.discard
+        $script:useHttps = $sh.https
+        Sync-Repo $_.Name $_.Url
+        if ($script:useHttps) { $sh.https = $true }
+        [pscustomobject]@{ Lines = $buf.ToArray(); Failed = $state.failed }
+    } | ForEach-Object {
+        foreach ($l in $_.Lines) {
+            if ($l[0] -eq 'NOTE') { Note-Https } else { Say $l[0] $l[1] $l[2] }
+        }
+        if ($_.Failed) { $script:failed = $true }
+    }
+    if ($shared.https) { $script:useHttps = $true }
+}
 
 function Sync-Repo ($proj, $url) {
     $dir = Join-Path $projectsDir $proj
