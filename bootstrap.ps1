@@ -599,6 +599,55 @@ function Sync-Repo ($proj, $url) {
 
 # --- Links -----------------------------------------------------------------
 
+# Deletes a file or directory tree, retrying with a short backoff (a running editor or an
+# antivirus scan holds files for a moment). On persistent failure says so in ONE line and
+# returns $false; the caller carries on with the next thing.
+function Remove-Tree ($path, $proj) {
+    for ($try = 1; $try -le 4; $try++) {
+        try {
+            $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+            if ($item.LinkType) { [System.IO.Directory]::Delete($item.FullName, $false) }
+            else                { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop }
+            return $true
+        } catch {
+            if (-not (Test-Path -LiteralPath $path)) { return $true }
+            Start-Sleep -Milliseconds (300 * $try)
+        }
+    }
+    Err $proj "cannot delete ${path}: files are held open, likely a running Godot editor/import or antivirus. Close Godot (Get-Process godot*) and run again."
+    return $false
+}
+
+# Makes $dst a copy of $src. With robocopy (Windows) it is an incremental mirror and the
+# destination is never deleted first, so one locked file fails only itself; elsewhere
+# Copy-Item. $true when it worked.
+function Copy-Tree ($src, $dst, $proj) {
+    $rc = Get-Command robocopy -CommandType Application -ErrorAction SilentlyContinue
+    if ($rc) {
+        $mt = [Math]::Min(32, 2 * [Environment]::ProcessorCount)
+        $out = & $rc.Source $src $dst /MIR "/MT:$mt" /R:2 /W:1 /NFL /NDL /NJH /NJS /NP 2>&1
+        if ($LASTEXITCODE -ge 8) {
+            $why = @($out | Where-Object { "$_" -match '\S' } | Select-Object -Last 1) -join ''
+            Err $proj "copy to $dst incomplete (robocopy exit $LASTEXITCODE): some files are held open, likely a running Godot editor/import or antivirus. $why"
+            return $false
+        }
+        return $true
+    }
+    New-Item -ItemType Directory -Force -Path $dst | Out-Null
+    Copy-Item -Path (Join-Path $src '*') -Destination $dst -Recurse -Force -ErrorAction SilentlyContinue
+    return $true
+}
+
+# One warning when a Godot started from the projects folder is running: it holds files open.
+$script:godotWarned = $false
+function Warn-RunningGodot {
+    if ($script:godotWarned) { return }
+    $script:godotWarned = $true
+    $busy = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -like 'godot*' -and $_.Path -and $_.Path.StartsWith($projectsDir, [StringComparison]::OrdinalIgnoreCase) })
+    if ($busy.Count -gt 0) { Warn '' "Godot is running from $projectsDir (pid $(($busy | ForEach-Object { $_.Id }) -join ', ')); it can hold files open and make copies fail. Close it first." }
+}
+
 function Link-Addons ($proj) {
     # NOTHING here returns silently. The version this replaces began with
     # `if ($addons.Count -eq 0) { return }` before it had even looked at the
@@ -636,10 +685,12 @@ function Link-Addons ($proj) {
         # symlink. Remove-Item on a junction deletes the link, not the target,
         # but -Recurse on a directory link is ambiguous across PowerShell
         # versions, so use the directory-delete that is known not to follow it.
+        # In copy mode a real directory is mirrored over, never deleted first.
         if (Test-Path $link) {
             $item = Get-Item $link -Force
-            if ($item.LinkType) { [System.IO.Directory]::Delete($item.FullName, $false) }
-            else                { Remove-Item $link -Recurse -Force }
+            if ($item.LinkType -or -not $useCopy -or -not $item.PSIsContainer) {
+                if (-not (Remove-Tree $link $proj)) { continue }
+            }
         }
 
         # -Copy makes real folders instead of links. It is the family's own
@@ -652,9 +703,9 @@ function Link-Addons ($proj) {
         # to be re-run after pulling. That is why it is a switch and not the
         # default.
         if ($useCopy) {
-            Copy-Item -Path $target -Destination $link -Recurse -Force -ErrorAction SilentlyContinue
-            if (Test-Path (Join-Path $link 'plugin.cfg')) { $made++ }
-            else { Err $proj "copy failed: $addon" }
+            if (Copy-Tree $target $link $proj) {
+                if (Test-Path (Join-Path $link 'plugin.cfg')) { $made++ } else { Err $proj "copy failed: $addon" }
+            }
             continue
         }
 
@@ -744,20 +795,92 @@ function Link-Content ($proj) {
             } elseif ((Test-Path $link) -and -not (Get-Item $link -Force).LinkType -and -not $useCopy) {
                 Warn $proj "$path is a real directory, left alone (link it to $src by hand)"
             } else {
+                $ok = $true
                 if (Test-Path $link) {
                     $item = Get-Item $link -Force
-                    if ($item.LinkType) { [System.IO.Directory]::Delete($item.FullName, $false) }
-                    else                { Remove-Item $link -Recurse -Force }
+                    if ($item.LinkType -or -not $useCopy -or -not $item.PSIsContainer) { $ok = Remove-Tree $link $proj }
                 }
-                New-Item -ItemType Directory -Force -Path (Split-Path $link) | Out-Null
-                if ($useCopy) { Copy-Item -Path $target -Destination $link -Recurse -Force }
-                else          { New-Item -ItemType Junction -Path $link -Target $target | Out-Null }
-                $verb = if ($useCopy) { 'copied' } else { 'linked' }
-                Say $proj "$verb $path -> $src" 'DarkGray'
+                if ($ok) {
+                    New-Item -ItemType Directory -Force -Path (Split-Path $link) | Out-Null
+                    if ($useCopy) { $ok = Copy-Tree $target $link $proj }
+                    else          { New-Item -ItemType Junction -Path $link -Target $target | Out-Null }
+                }
+                if ($ok) {
+                    $verb = if ($useCopy) { 'copied' } else { 'linked' }
+                    Say $proj "$verb $path -> $src" 'DarkGray'
+                }
             }
         }
         $src = $null
     }
+}
+
+# A project whose content needs the one-off art-store download must not race another
+# project fetching the same store, so those are linked first, one at a time.
+function Test-NeedsStores ($proj) {
+    $gi = Get-GitignorePath $proj
+    (Test-Path $gi) -and [bool](Select-String -Path $gi -Pattern '^# bootstrap-link: \S*\.stores' -Quiet)
+}
+
+# Link-Addons and Link-Content for each project, at most $Jobs projects at once, each
+# project's lines printed whole when it finishes. Same RunspacePool as Sync-Many.
+function Link-Many ($targets) {
+    $targets = @($targets)
+    Warn-RunningGodot
+    if ($Jobs -le 1 -or $targets.Count -le 1) {
+        foreach ($p in $targets) { Link-Addons $p; Link-Content $p }
+        return
+    }
+    $serial = @($targets | Where-Object { Test-NeedsStores $_ })
+    $par    = @($targets | Where-Object { $serial -notcontains $_ })
+    foreach ($p in $serial) { Link-Addons $p; Link-Content $p }
+    if ($par.Count -le 1) { foreach ($p in $par) { Link-Addons $p; Link-Content $p }; return }
+    Write-Host "linking with $Jobs parallel jobs (PowerShell $($PSVersionTable.PSVersion))"
+
+    $iss = [initialsessionstate]::CreateDefault()
+    $me = $PSCommandPath
+    foreach ($f in Get-ChildItem function:) {
+        if ($f.ScriptBlock.File -eq $me -and $f.Name -notin @('Say', 'Warn', 'Err', 'Ok')) {
+            $iss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry($f.Name, $f.Definition)))
+        }
+    }
+    $vars = @{
+        projectsDir = $projectsDir; useCopy = $useCopy; listFile = $listFile; repoDir = $repoDir
+        NoStores = $NoStores; NoDeps = $NoDeps; Hub = $Hub; Jobs = $Jobs; Junction = $Junction
+        minMode = $script:minMode; selection = $script:selection; godotWarned = $true
+        useHttps = $script:useHttps; failed = $false
+        linksMade = 0; linkedProjects = 0; junctionFailures = 0
+    }
+    foreach ($k in $vars.Keys) { $iss.Variables.Add((New-Object System.Management.Automation.Runspaces.SessionStateVariableEntry($k, $vars[$k], ''))) }
+    $pre = 'function Say ($n, $m, $c = "Gray") { [void]$global:lines.Add(@($n, $m, $c)) }; function Warn ($n, $m) { Say $n $m "Yellow" }; function Ok ($n, $m) { Say $n $m "Green" }; function Err ($n, $m) { Say $n $m "Red"; $global:failed = $true }'
+    $worker = [scriptblock]::Create('param($proj); ' + $pre + '; $global:lines = New-Object System.Collections.ArrayList; $global:failed = $false; $global:linksMade = 0; $global:linkedProjects = 0; $global:junctionFailures = 0; Link-Addons $proj; Link-Content $proj; [pscustomobject]@{ Done = $true; Lines = $global:lines.ToArray(); Failed = $global:failed; Made = $global:linksMade; Projs = $global:linkedProjects; JF = $global:junctionFailures }')
+
+    $pool = [runspacefactory]::CreateRunspacePool(1, $Jobs, $iss, $Host)
+    $pool.Open()
+    $pending = New-Object System.Collections.ArrayList
+    foreach ($p in $par) {
+        $ps = [powershell]::Create()
+        $ps.RunspacePool = $pool
+        [void]$ps.AddScript($worker.ToString()).AddArgument($p)
+        [void]$pending.Add([pscustomobject]@{ Ps = $ps; Handle = $ps.BeginInvoke(); Name = $p })
+    }
+    while ($pending.Count -gt 0) {
+        foreach ($j in @($pending)) {
+            if (-not $j.Handle.IsCompleted) { continue }
+            $pending.Remove($j)
+            $res = @($j.Ps.EndInvoke($j.Handle))
+            if ($res.Count -eq 0 -or $j.Ps.HadErrors) { $crash = @($j.Ps.Streams.Error | Select-Object -First 1); Err $j.Name "link job failed: $crash" }
+            foreach ($r in $res) {
+                if (-not $r.PSObject.Properties['Done']) { continue }
+                foreach ($l in $r.Lines) { Say $l[0] $l[1] $l[2] }
+                if ($r.Failed) { $script:failed = $true }
+                $script:linksMade += $r.Made; $script:linkedProjects += $r.Projs; $script:junctionFailures += $r.JF
+            }
+            $j.Ps.Dispose()
+        }
+        if ($pending.Count -gt 0) { Start-Sleep -Milliseconds 40 }
+    }
+    $pool.Close(); $pool.Dispose()
 }
 
 # --- Reporting -------------------------------------------------------------
@@ -1096,6 +1219,7 @@ function Show-Plan {
 
 # Import every selected game; run on its own, or after the sync when -GetGodot or -DiscardGenerated asks for one.
 function Invoke-Import {
+    Warn-RunningGodot
     $bin = Find-Godot
     if (-not $bin) { Write-Host 'Godot was not found. Run .\bootstrap.ps1 -GetGodot, or set $env:GODOT to the executable.' -ForegroundColor Red; exit 3 }
     # Games only, whatever else the selection holds; no selection means every game.
@@ -1116,7 +1240,7 @@ elseif ($Status)  {
     foreach ($p in Get-Selected) { Status-Repo $p }
 }
 elseif ($Links)   {
-    foreach ($p in Get-LinkTargets) { Link-Addons $p; Link-Content $p }
+    Link-Many @(Get-LinkTargets)
 }
 elseif ($Import -and -not ($GetGodot -or $DiscardGenerated)) { Invoke-Import }
 elseif ($Tools) {
@@ -1137,7 +1261,7 @@ else {
     }
     Get-Selected -Sync | Out-Null
     Write-Host ''
-    foreach ($p in Get-LinkTargets) { Link-Addons $p; Link-Content $p }
+    Link-Many @(Get-LinkTargets)
     if ($Import) { Invoke-Import }
 }
 
