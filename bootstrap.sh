@@ -564,7 +564,11 @@ link_content() {
         path="${path#/}"; path="${path%/}"
         # The raw art stores (a maps repo's .stores) are in no repository: $DOT_STORES_FROM (an
         # rsync source, a folder or the URL of a .tar) is where a checkout gets them.
-        if [ ! -d "$PROJECTS_DIR/$src" ] && [ "${src##*/}" = ".stores" ] && [ -d "$PROJECTS_DIR/${src%%/*}" ] \
+        if { [ ! -d "$PROJECTS_DIR/$src" ] || [ -f "$PROJECTS_DIR/$src/.dot-pack" ]; } && [ "${src##*/}" = ".stores" ] && [ -z "$STORES_USER_SET" ] && [ "$DOT_STORES_FROM" != none ] \
+                && [ -f "$PROJECTS_DIR/${src%%/*}/content.lock.json" ] && [ -x "$PROJECTS_DIR/dot-bootstrap/tools/fetch_lock.sh" ]; then
+            "$PROJECTS_DIR/dot-bootstrap/tools/fetch_lock.sh" "$PROJECTS_DIR/${src%%/*}/content.lock.json" --only .stores \
+                && touch "$PROJECTS_DIR/$src/.gdignore" || warn "$proj" "fetching $src from content.lock.json failed"
+        elif [ ! -d "$PROJECTS_DIR/$src" ] && [ "${src##*/}" = ".stores" ] && [ -d "$PROJECTS_DIR/${src%%/*}" ] \
                 && [ -n "${DOT_STORES_FROM:-}" ] && [ "$DOT_STORES_FROM" != none ] && [ -x "$PROJECTS_DIR/dot-map/tools/stage_stores.sh" ]; then
             "$PROJECTS_DIR/dot-map/tools/stage_stores.sh" "$PROJECTS_DIR/${src%%/*}" || warn "$proj" "staging $src from $DOT_STORES_FROM failed"
         fi
@@ -770,6 +774,8 @@ only_raw="${DOT_ONLY:-}"
 games_raw=""; addons_raw=""; positional=""
 # The raw art stores are fetched once from the published CC0 set unless DOT_STORES_FROM says otherwise
 # (a folder, rsync source or .tar URL) or it is "none" (--no-stores); a present .stores is never refetched.
+# A maps repo with a content.lock.json gets them from the lock instead (tools/fetch_lock.sh), unless DOT_STORES_FROM is set.
+STORES_USER_SET="${DOT_STORES_FROM+set}"
 DOT_STORES_FROM="${DOT_STORES_FROM-https://dev.dotgames.org/stores/zombie-zone-maps/zz-stores-cc0.tar}"
 while [ $# -gt 0 ]; do
     case "$1" in
