@@ -771,6 +771,8 @@ function Get-GodotLatest {
         Write-Host "downloading $asset (about 80 MB)..."
         Invoke-WebRequest -UseBasicParsing -Uri "$base/$asset" -OutFile $zip
         $sums = (Invoke-WebRequest -UseBasicParsing -Uri "$base/SHA512-SUMS.txt").Content
+        # Served as application/octet-stream, so PowerShell hands back bytes, not text.
+        if ($sums -is [byte[]]) { $sums = [Text.Encoding]::UTF8.GetString($sums) }
         $want = ($sums -split "`n" | Where-Object { $_ -match [regex]::Escape($asset) + '\s*$' } | Select-Object -First 1) -split '\s+' | Select-Object -First 1
         if (-not $want) { Err 'godot' "no checksum listed for $asset; nothing installed"; return $false }
         $got = (Get-FileHash -Algorithm SHA512 $zip).Hash.ToLower()
