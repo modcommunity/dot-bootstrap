@@ -16,7 +16,7 @@
         .\bootstrap.ps1 -Only arena,wipeout     only these, plus the addon and map repos they need
         .\bootstrap.ps1 -Only 'mg-*' -NoDeps    only these, and nothing they need
         .\bootstrap.ps1 -Import                 import every game headless (the editor can crash on a first import); -Only narrows it
-        .\bootstrap.ps1 -GetGodot               download the latest stable Godot into .godot-bin beside this script; every mode that runs Godot looks there
+        .\bootstrap.ps1 -GetGodot               download the latest stable Godot into .godot-bin beside this script, then carry on (sync, and -Import if given); every mode that runs Godot looks there
         .\bootstrap.ps1 -DiscardGenerated       when an update is blocked, restore every modified .import/.uid file and retry
         .\bootstrap.ps1 game-arena mg-wipeout  the same as -Only (names, short forms, wildcards)
         .\bootstrap.ps1 -Games arena,wipeout -Addons dot-core   games and/or addons by kind
@@ -1005,7 +1005,20 @@ function Show-Plan {
     }
 }
 
+# Import every selected game; run on its own, or after the sync when -GetGodot or -DiscardGenerated asks for one.
+function Invoke-Import {
+    $bin = Find-Godot
+    if (-not $bin) { Write-Host 'Godot was not found. Run .\bootstrap.ps1 -GetGodot, or set $env:GODOT to the executable.' -ForegroundColor Red; exit 3 }
+    # Games only, whatever else the selection holds; no selection means every game.
+    $gameNames = @(Get-Games | ForEach-Object { $_.Name })
+    $names = if ($script:selection.Count -gt 0) { @($script:selection | Where-Object { $gameNames -contains $_ }) } else { $gameNames }
+    & (Join-Path $PSScriptRoot 'tools\import-all.ps1') -ProjectsDir $projectsDir -Godot $bin -Names $names
+    if ($LASTEXITCODE -ne 0) { $script:failed = $true }
+}
+
 if ($Plan)        { Show-Plan; exit 0 }
+# Runs first so the rest of this run, including -Import, finds it.
+if ($GetGodot)    { if (-not (Get-GodotLatest)) { $script:failed = $true } }
 if ($Play)        { Play-Game $Play; exit 0 }
 elseif ($List)    { List-Games; exit 0 }
 elseif ($Check)   { Check-List }
@@ -1016,18 +1029,7 @@ elseif ($Status)  {
 elseif ($Links)   {
     foreach ($p in Get-LinkTargets) { Link-Addons $p; Link-Content $p }
 }
-elseif ($GetGodot) {
-    if (-not (Get-GodotLatest)) { $script:failed = $true }
-}
-elseif ($Import) {
-    $bin = Find-Godot
-    if (-not $bin) { Write-Host 'Godot was not found. Run .\bootstrap.ps1 -GetGodot, or set $env:GODOT to the executable.' -ForegroundColor Red; exit 3 }
-    # Games only, whatever else the selection holds; no selection means every game.
-    $gameNames = @(Get-Games | ForEach-Object { $_.Name })
-    $names = if ($script:selection.Count -gt 0) { @($script:selection | Where-Object { $gameNames -contains $_ }) } else { $gameNames }
-    & (Join-Path $PSScriptRoot 'tools\import-all.ps1') -ProjectsDir $projectsDir -Godot $bin -Names $names
-    if ($LASTEXITCODE -ne 0) { $script:failed = $true }
-}
+elseif ($Import -and -not ($GetGodot -or $DiscardGenerated)) { Invoke-Import }
 elseif ($Tools) {
     if (-not (Install-Tools)) { $script:failed = $true }
 }
@@ -1047,6 +1049,7 @@ else {
     Get-Selected -Sync | Out-Null
     Write-Host ''
     foreach ($p in Get-LinkTargets) { Link-Addons $p; Link-Content $p }
+    if ($Import) { Invoke-Import }
 }
 
 Write-Host ''
