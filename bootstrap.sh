@@ -16,6 +16,7 @@
 #   ./bootstrap.sh --only arena,wipeout   only these, plus the addon and map repos they need
 #   ./bootstrap.sh --only 'mg-*' --no-deps  only these, and nothing they need
 #   ./bootstrap.sh --import              import every game headless (the editor can crash on a first import); --only narrows it
+#   ./bootstrap.sh --get-godot          download the latest stable Godot into .godot-bin beside this script; every mode that runs Godot looks there
 #   ./bootstrap.sh --discard-generated   when an update is blocked, restore every modified .import/.uid file and retry
 #   ./bootstrap.sh game-arena mg-wipeout    the same as --only (names, short forms, globs)
 #   ./bootstrap.sh --games arena,wipeout --addons dot-core   games and/or addons by kind
@@ -659,11 +660,46 @@ check_list() {
 # --- Playing ---------------------------------------------------------------
 
 find_godot() {
-    local c
+    local c e
+    # What --get-godot downloaded, newest version first.
+    e="$(ls -d "$SELF_DIR"/.godot-bin/*/Godot* 2>/dev/null | grep -v '\.\(zip\|tmp\)$' | sort -r | head -n1)"
+    [ -n "${GODOT:-}" ] || { [ -n "$e" ] && [ -x "$e" ] && { echo "$e"; return 0; }; }
     for c in "${GODOT:-}" godot godot4 /usr/local/bin/godot "$HOME/.local/bin/godot"; do
         [ -n "$c" ] && command -v "$c" >/dev/null 2>&1 && { command -v "$c"; return 0; }
     done
     return 1
+}
+
+# Latest stable Godot from the engine's own build repository, checked against the
+# SHA512-SUMS.txt published with the release, unpacked into .godot-bin/<version>.
+get_godot() {
+    local os arch asset tag base tmp want got dest api
+    case "$(uname -s)" in
+        Linux)  os=linux ;;
+        Darwin) os=macos ;;
+        *) echo "${RED}--get-godot supports Linux and macOS; on Windows use bootstrap.ps1 -GetGodot${OFF}" >&2; return 1 ;;
+    esac
+    api="$(curl -fsSL https://api.github.com/repos/godotengine/godot-builds/releases/latest)" || { echo "${RED}could not read the Godot release list${OFF}" >&2; return 1; }
+    tag="$(printf '%s' "$api" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
+    [ -n "$tag" ] || { echo "${RED}no release tag found${OFF}" >&2; return 1; }
+    if [ "$os" = macos ]; then asset="Godot_v${tag}_macos.universal.zip"
+    else
+        case "$(uname -m)" in aarch64|arm64) arch=arm64 ;; i?86) arch=x86_32 ;; *) arch=x86_64 ;; esac
+        asset="Godot_v${tag}_linux.${arch}.zip"
+    fi
+    dest="$SELF_DIR/.godot-bin/$tag"
+    if ls "$dest"/Godot* >/dev/null 2>&1; then echo "godot $tag already in $dest"; return 0; fi
+    base="https://github.com/godotengine/godot-builds/releases/download/$tag"
+    tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
+    echo "downloading $asset..."
+    curl -fSL -o "$tmp/$asset" "$base/$asset" || return 1
+    want="$(curl -fsSL "$base/SHA512-SUMS.txt" | awk -v a="$asset" '$2==a {print $1}')"
+    [ -n "$want" ] || { echo "${RED}no checksum listed for $asset; nothing installed${OFF}" >&2; return 1; }
+    got="$( (sha512sum "$tmp/$asset" 2>/dev/null || shasum -a 512 "$tmp/$asset") | cut -d' ' -f1)"
+    [ "$got" = "$want" ] || { echo "${RED}checksum mismatch (got $got); nothing installed${OFF}" >&2; return 1; }
+    mkdir -p "$dest" && unzip -q -o "$tmp/$asset" -d "$dest" || return 1
+    chmod +x "$dest"/Godot* 2>/dev/null || true
+    echo "godot $tag installed in $dest"
 }
 
 # A game is a project whose directory begins with game-. Every one of them sets
@@ -706,7 +742,7 @@ play_game() {
     fi
 
     local bin; bin="$(find_godot)" || {
-        echo "${RED}Godot is not on PATH. Set GODOT=/path/to/godot.${OFF}" >&2; exit 3; }
+        echo "${RED}Godot not found. Run ./bootstrap.sh --get-godot, or set GODOT=/path/to/godot.${OFF}" >&2; exit 3; }
 
     # Import first. Godot imports a file only when the editor (or --import) scans it, so a
     # game started straight after a pull has the new models' .glb and .import files and no
@@ -912,7 +948,7 @@ plan() {
 [ "$PLAN" = "1" ] && { plan; exit 0; }
 
 case "$mode" in
-    --list|--play|--check|--status|--tools|--import) : ;;   # must not create anything
+    --list|--play|--check|--status|--tools|--import|--get-godot) : ;;   # must not create anything
     *) mkdir -p "$PROJECTS_DIR" ;;
 esac
 
@@ -933,9 +969,12 @@ case "$mode" in
     --content-keys)
         content_keys || fail=1
         ;;
+    --get-godot)
+        get_godot || fail=1
+        ;;
     --import)
         # Games only, whatever else the selection holds; no selection means every game.
-        bin="$(find_godot)" || { echo "${RED}Godot is not on PATH. Set GODOT=/path/to/godot.${OFF}" >&2; exit 3; }
+        bin="$(find_godot)" || { echo "${RED}Godot not found. Run ./bootstrap.sh --get-godot, or set GODOT=/path/to/godot.${OFF}" >&2; exit 3; }
         mapfile -t _g < <(if [ ${#ONLY[@]} -gt 0 ]; then printf '%s\n' "${ONLY[@]}" | grep -xFf <(games); else games; fi)
         "$SELF_DIR/tools/import-all.sh" "$PROJECTS_DIR" "$bin" "${_g[@]}" || fail=1
         ;;

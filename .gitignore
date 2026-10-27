@@ -8,3 +8,6 @@
 # OS
 .DS_Store
 Thumbs.db
+
+# Godot downloaded by bootstrap -GetGodot / --get-godot
+/.godot-bin/

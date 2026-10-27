@@ -16,6 +16,7 @@
         .\bootstrap.ps1 -Only arena,wipeout     only these, plus the addon and map repos they need
         .\bootstrap.ps1 -Only 'mg-*' -NoDeps    only these, and nothing they need
         .\bootstrap.ps1 -Import                 import every game headless (the editor can crash on a first import); -Only narrows it
+        .\bootstrap.ps1 -GetGodot               download the latest stable Godot into .godot-bin beside this script; every mode that runs Godot looks there
         .\bootstrap.ps1 -DiscardGenerated       when an update is blocked, restore every modified .import/.uid file and retry
         .\bootstrap.ps1 game-arena mg-wipeout  the same as -Only (names, short forms, wildcards)
         .\bootstrap.ps1 -Games arena,wipeout -Addons dot-core   games and/or addons by kind
@@ -99,6 +100,7 @@ param(
     [switch]$NoDeps,
     [switch]$DiscardGenerated,
     [switch]$Import,
+    [switch]$GetGodot,
     [switch]$Min,
     [switch]$ZeesGamesMin,
     [switch]$Plan,
@@ -718,6 +720,14 @@ function Check-List {
 
 function Find-Godot {
     if ($env:GODOT -and (Test-Path $env:GODOT)) { return $env:GODOT }
+    # What -GetGodot downloaded, newest version first; the editor build rather than the console one.
+    $bin = Join-Path $repoDir '.godot-bin'
+    if (Test-Path $bin) {
+        $exe = Get-ChildItem $bin -Filter 'Godot*.exe' -Recurse -ErrorAction SilentlyContinue |
+               Where-Object { $_.Name -notlike '*_console*' } |
+               Sort-Object FullName -Descending | Select-Object -First 1
+        if ($exe) { return $exe.FullName }
+    }
     $cmd = Get-Command godot -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
     # Where a Windows install usually lands. Newest first, so a 4.7 wins over a 4.4.
@@ -741,6 +751,36 @@ function Find-Godot {
         }
     }
     return $null
+}
+
+# Latest stable Godot from the engine's own build repository, checked against the
+# SHA512-SUMS.txt published with the release, unpacked into .godot-bin\<version>.
+function Get-GodotLatest {
+    $root = Join-Path $repoDir '.godot-bin'
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
+    New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $rel = Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/godotengine/godot-builds/releases/latest'
+        $tag = $rel.tag_name
+        $dest = Join-Path $root $tag
+        if (Get-ChildItem $dest -Filter 'Godot*.exe' -ErrorAction SilentlyContinue) { Ok 'godot' "$tag already in $dest"; return $true }
+        $asset = "Godot_v$tag`_win64.exe.zip"
+        $base = "https://github.com/godotengine/godot-builds/releases/download/$tag"
+        $zip = Join-Path $tmp $asset
+        Write-Host "downloading $asset (about 80 MB)..."
+        Invoke-WebRequest -UseBasicParsing -Uri "$base/$asset" -OutFile $zip
+        $sums = (Invoke-WebRequest -UseBasicParsing -Uri "$base/SHA512-SUMS.txt").Content
+        $want = ($sums -split "`n" | Where-Object { $_ -match [regex]::Escape($asset) + '\s*$' } | Select-Object -First 1) -split '\s+' | Select-Object -First 1
+        if (-not $want) { Err 'godot' "no checksum listed for $asset; nothing installed"; return $false }
+        $got = (Get-FileHash -Algorithm SHA512 $zip).Hash.ToLower()
+        if ($got -ne $want.ToLower()) { Err 'godot' "checksum mismatch (got $got); nothing installed"; return $false }
+        New-Item -ItemType Directory -Force -Path $dest | Out-Null
+        Expand-Archive -Force -Path $zip -DestinationPath $dest
+        Ok 'godot' "$tag installed in $dest"
+        return $true
+    } catch { Err 'godot' $_.Exception.Message; return $false }
+    finally { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue }
 }
 
 # A game is a project whose directory begins with game- or mg- (a maps repository is not one). Every one of them sets
@@ -787,7 +827,7 @@ function Play-Game ($want) {
 
     $bin = Find-Godot
     if (-not $bin) {
-        Write-Host 'Godot was not found. Set $env:GODOT to the executable.' -ForegroundColor Red
+        Write-Host 'Godot was not found. Run .\bootstrap.ps1 -GetGodot, or set $env:GODOT to the executable.' -ForegroundColor Red
         exit 3
     }
 
@@ -859,7 +899,7 @@ function New-ContentKeys {
 
     $godot = Find-Godot
     if (-not $godot) {
-        Err 'content keys' 'Godot was not found. Set $env:GODOT to the executable.'
+        Err 'content keys' 'Godot was not found. Run .\bootstrap.ps1 -GetGodot, or set $env:GODOT to the executable.'
         return $false
     }
 
@@ -974,9 +1014,12 @@ elseif ($Status)  {
 elseif ($Links)   {
     foreach ($p in Get-LinkTargets) { Link-Addons $p; Link-Content $p }
 }
+elseif ($GetGodot) {
+    if (-not (Get-GodotLatest)) { $script:failed = $true }
+}
 elseif ($Import) {
     $bin = Find-Godot
-    if (-not $bin) { Write-Host 'Godot was not found. Set $env:GODOT to the executable.' -ForegroundColor Red; exit 3 }
+    if (-not $bin) { Write-Host 'Godot was not found. Run .\bootstrap.ps1 -GetGodot, or set $env:GODOT to the executable.' -ForegroundColor Red; exit 3 }
     # Games only, whatever else the selection holds; no selection means every game.
     $gameNames = @(Get-Games | ForEach-Object { $_.Name })
     $names = if ($script:selection.Count -gt 0) { @($script:selection | Where-Object { $gameNames -contains $_ }) } else { $gameNames }
