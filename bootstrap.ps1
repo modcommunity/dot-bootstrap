@@ -16,6 +16,7 @@
         .\bootstrap.ps1 -Only arena,wipeout     only these, plus the addon and map repos they need
         .\bootstrap.ps1 -Only 'mg-*' -NoDeps    only these, and nothing they need
         .\bootstrap.ps1 -NoStores              do not fetch the raw art stores (about 1.6 GB, once, kept); maps draw low-detail art. Or $env:DOT_STORES_FROM = 'none'
+        .\bootstrap.ps1 -Jobs N                games imported at once (default: the CPU count)
         .\bootstrap.ps1 -Import                 import every game headless (the editor can crash on a first import); -Only narrows it
         .\bootstrap.ps1 -GetGodot               download the latest stable Godot into .godot-bin beside this script, then carry on (sync, and -Import if given); every mode that runs Godot looks there
         .\bootstrap.ps1 -DiscardGenerated       when an update is blocked, restore every modified .import/.uid file and retry
@@ -99,6 +100,7 @@ param(
     [switch]$Ssh,
     [string[]]$Only = $(if ($env:DOT_ONLY) { $env:DOT_ONLY -split '[,\s]+' } else { @() }),
     [switch]$NoDeps,
+    [int]$Jobs = [Environment]::ProcessorCount,
     [switch]$NoStores,
     [switch]$DiscardGenerated,
     [switch]$Import,
@@ -1027,7 +1029,7 @@ function Invoke-Import {
     # Games only, whatever else the selection holds; no selection means every game.
     $gameNames = @(Get-Games | ForEach-Object { $_.Name })
     $names = if ($script:selection.Count -gt 0) { @($script:selection | Where-Object { $gameNames -contains $_ }) } else { $gameNames }
-    & (Join-Path $PSScriptRoot 'tools\import-all.ps1') -ProjectsDir $projectsDir -Godot $bin -Names $names
+    & (Join-Path $PSScriptRoot 'tools\import-all.ps1') -ProjectsDir $projectsDir -Godot $bin -Names $names -Jobs $Jobs
     if ($LASTEXITCODE -ne 0) { $script:failed = $true }
 }
 

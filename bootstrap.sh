@@ -16,6 +16,7 @@
 #   ./bootstrap.sh --only arena,wipeout   only these, plus the addon and map repos they need
 #   ./bootstrap.sh --no-stores              skip the raw art stores (about 1.6 GB, fetched once and kept); maps draw low-detail art
 #   ./bootstrap.sh --only 'mg-*' --no-deps  only these, and nothing they need
+#   ./bootstrap.sh --jobs N              repositories synced and games imported at once (default: the CPU count; DOT_JOBS; 1 = one at a time)
 #   ./bootstrap.sh --import              import every game headless (the editor can crash on a first import); --only narrows it
 #   ./bootstrap.sh --get-godot          download the latest stable Godot into .godot-bin beside this script; every mode that runs Godot looks there
 #   ./bootstrap.sh --discard-generated   when an update is blocked, restore every modified .import/.uid file and retry
@@ -267,6 +268,8 @@ addon_source() {
 
 ONLY=()
 NO_DEPS=0
+# Repositories synced and games imported at once; --jobs N, DOT_JOBS, else the CPU count.
+JOBS="${DOT_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
 DISCARD_GEN=0
 # --min: leave out content (maps, courses, worlds) and the optional packs a game marks
 # with "# bootstrap-optional" above their /addons/ line.
@@ -335,16 +338,43 @@ link_targets() {
     printf '%s\n' "${ONLY[@]}"
 }
 
+# Runs "$1 item" for every remaining argument, at most JOBS at once. Each job's output is
+# printed in one piece when it ends, so lines from different repositories never interleave,
+# and a job that reports an error makes the whole run report one.
+par_each() {
+    local fn="$1"; shift
+    if [ "$JOBS" -le 1 ] || [ $# -le 1 ]; then local x; for x in "$@"; do "$fn" "$x"; done; return; fi
+    local tmp; tmp="$(mktemp -d)"; local x i=0
+    for x in "$@"; do
+        i=$((i+1))
+        while [ "$(jobs -rp | wc -l)" -ge "$JOBS" ]; do wait -n 2>/dev/null || true; done
+        ( fail=0; out="$("$fn" "$x" 2>&1)"; [ -n "$out" ] && printf '%s\n' "$out"; [ "$fail" = 0 ] || : > "$tmp/$i.failed" ) &
+    done
+    wait
+    compgen -G "$tmp/*.failed" >/dev/null && fail=1
+    rm -rf "$tmp"
+}
+
 sync_selected() {
-    [ ${#ONLY[@]} -eq 0 ] && { while read -r p; do [ -n "$p" ] && sync_repo "$p"; done <<< "$(projects)"; return; }
-    local -A seen=(); local queue=("${ONLY[@]}") p d
-    while [ ${#queue[@]} -gt 0 ]; do
-        p="${queue[0]}"; queue=("${queue[@]:1}")
-        [ -n "${seen[$p]:-}" ] && continue
-        seen[$p]=1
-        sync_repo "$p"
-        [ "$NO_DEPS" = "1" ] && continue
-        while read -r d; do [ -n "$d" ] && queue+=("$d"); done <<< "$(deps_of "$p")"
+    if [ ${#ONLY[@]} -eq 0 ]; then
+        local all=(); mapfile -t all < <(projects)
+        par_each sync_repo "${all[@]}"; return
+    fi
+    # Dependencies are only known once a project is on disk, so it goes in waves: sync
+    # everything queued, read what each one names, queue what is new.
+    local -A seen=(); local wave=("${ONLY[@]}") next p d
+    while [ ${#wave[@]} -gt 0 ]; do
+        local batch=()
+        for p in "${wave[@]}"; do [ -n "${seen[$p]:-}" ] && continue; seen[$p]=1; batch+=("$p"); done
+        [ ${#batch[@]} -eq 0 ] && break
+        par_each sync_repo "${batch[@]}"
+        next=()
+        if [ "$NO_DEPS" != "1" ]; then
+            for p in "${batch[@]}"; do
+                while read -r d; do [ -n "$d" ] && next+=("$d"); done <<< "$(deps_of "$p")"
+            done
+        fi
+        wave=("${next[@]+"${next[@]}"}")
     done
 }
 
@@ -783,6 +813,8 @@ while [ $# -gt 0 ]; do
         --ssh)     USE_HTTPS=0 ;;
         --https)   USE_HTTPS=1 ;;   # the default; still accepted
         --no-deps) NO_DEPS=1 ;;
+        --jobs|-j) [ $# -ge 2 ] || { echo "${RED}$1 needs a number${OFF}" >&2; exit 2; }; JOBS="$2"; shift ;;
+        --jobs=*)  JOBS="${1#--jobs=}" ;;
         --no-stores) DOT_STORES_FROM=none ;;
         --discard-generated) DISCARD_GEN=1 ;;
         --min)     MIN=1 ;;
@@ -802,6 +834,7 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+case "$JOBS" in ''|*[!0-9]*|0) echo "${RED}--jobs needs a positive number, got '$JOBS'${OFF}" >&2; exit 2 ;; esac
 set -- "${ARGS[@]+"${ARGS[@]}"}"
 only_raw="$only_raw$positional"
 
@@ -987,7 +1020,7 @@ case "$mode" in
         # Games only, whatever else the selection holds; no selection means every game.
         bin="$(find_godot)" || { echo "${RED}Godot not found. Run ./bootstrap.sh --get-godot, or set GODOT=/path/to/godot.${OFF}" >&2; exit 3; }
         mapfile -t _g < <(if [ ${#ONLY[@]} -gt 0 ]; then printf '%s\n' "${ONLY[@]}" | grep -xFf <(games); else games; fi)
-        "$SELF_DIR/tools/import-all.sh" "$PROJECTS_DIR" "$bin" "${_g[@]}" || fail=1
+        "$SELF_DIR/tools/import-all.sh" -j "$JOBS" "$PROJECTS_DIR" "$bin" "${_g[@]}" || fail=1
         ;;
     --list)
         list_games; exit 0
