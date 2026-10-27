@@ -372,11 +372,18 @@ function Get-LinkTargets {
 
 # Syncs the given projects (objects with Name and Url), at most $Jobs at once. Each
 # repository's lines are printed whole when it finishes, so output never interleaves,
-# and an error in any of them makes the run report one. -Jobs 1 (or Windows PowerShell
-# 5.1, which has no -Parallel) syncs one at a time, exactly as before.
+# and an error in any of them makes the run report one. A RunspacePool, because it
+# exists in Windows PowerShell 5.1 too (ForEach-Object -Parallel is 7+ only).
+# -Jobs 1 syncs one at a time, exactly as before.
+$script:syncAnnounced = $false
 function Sync-Many ($items) {
     $items = @($items)
-    if ($Jobs -le 1 -or $items.Count -le 1 -or $PSVersionTable.PSVersion.Major -lt 7) {
+    if (-not $script:syncAnnounced) {
+        $script:syncAnnounced = $true
+        $mode = if ($Jobs -le 1) { 'serial (-Jobs 1)' } else { "$Jobs parallel jobs" }
+        Write-Host "syncing with $mode (PowerShell $($PSVersionTable.PSVersion))"
+    }
+    if ($Jobs -le 1 -or $items.Count -le 1) {
         foreach ($i in $items) { Sync-Repo $i.Name $i.Url }
         return
     }
@@ -387,9 +394,9 @@ function Sync-Many ($items) {
     }
     $shared = [hashtable]::Synchronized(@{ https = $script:useHttps })
     $ctx = @{ dir = $projectsDir; hub = $Hub; discard = [bool]$DiscardGenerated }
-    $items | ForEach-Object -ThrottleLimit $Jobs -Parallel {
-        $d = $using:defs; $c = $using:ctx; $sh = $using:shared
-        $buf = [System.Collections.Generic.List[object]]::new()
+    $worker = {
+        param($d, $c, $sh, $name, $url)
+        $buf = New-Object 'System.Collections.Generic.List[object]'
         $state = @{ failed = $false }
         function Say  ($n, $m, $col = 'Gray') { $buf.Add(@($n, $m, $col)) }
         function Warn ($n, $m)                { Say $n $m 'Yellow' }
@@ -400,15 +407,36 @@ function Sync-Many ($items) {
         ${function:Sync-Repo}          = [scriptblock]::Create($d.Sync)
         $projectsDir = $c.dir; $Hub = $c.hub; $DiscardGenerated = $c.discard
         $script:useHttps = $sh.https
-        Sync-Repo $_.Name $_.Url
+        Sync-Repo $name $url
         if ($script:useHttps) { $sh.https = $true }
         [pscustomobject]@{ Lines = $buf.ToArray(); Failed = $state.failed }
-    } | ForEach-Object {
-        foreach ($l in $_.Lines) {
-            if ($l[0] -eq 'NOTE') { Note-Https } else { Say $l[0] $l[1] $l[2] }
-        }
-        if ($_.Failed) { $script:failed = $true }
     }
+    $pool = [runspacefactory]::CreateRunspacePool(1, $Jobs)
+    $pool.Open()
+    $pending = New-Object System.Collections.ArrayList
+    foreach ($i in $items) {
+        $ps = [powershell]::Create()
+        $ps.RunspacePool = $pool
+        [void]$ps.AddScript($worker.ToString()).AddArgument($defs).AddArgument($ctx).AddArgument($shared).AddArgument($i.Name).AddArgument($i.Url)
+        [void]$pending.Add([pscustomobject]@{ Ps = $ps; Handle = $ps.BeginInvoke(); Name = $i.Name })
+    }
+    while ($pending.Count -gt 0) {
+        foreach ($j in @($pending)) {
+            if (-not $j.Handle.IsCompleted) { continue }
+            $pending.Remove($j)
+            $res = @($j.Ps.EndInvoke($j.Handle))
+            if ($j.Ps.HadErrors -and $res.Count -eq 0) { Err $j.Name 'sync job crashed'; }
+            foreach ($r in $res) {
+                foreach ($l in $r.Lines) {
+                    if ($l[0] -eq 'NOTE') { Note-Https } else { Say $l[0] $l[1] $l[2] }
+                }
+                if ($r.Failed) { $script:failed = $true }
+            }
+            $j.Ps.Dispose()
+        }
+        if ($pending.Count -gt 0) { Start-Sleep -Milliseconds 40 }
+    }
+    $pool.Close(); $pool.Dispose()
     if ($shared.https) { $script:useHttps = $true }
 }
 
