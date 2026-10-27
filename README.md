@@ -124,6 +124,8 @@ It is not part of a plain sync because it is a large download and needs access t
 
 ## Fetching content from the CDN
 
+**PowerShell.** `fetch_lock.ps1`, `fetch_all.ps1` and `dot-server-deploy/fetch-content.ps1` need PowerShell 7 (`pwsh`) on Linux and macOS, or the Windows PowerShell 5.1 that ships with Windows 10+. They were run on Linux under `pwsh` 7.6 against a local HTTP CDN and a folder (`-From`), and print the same fetched/skipped lines and write the same tree as `fetch_lock.sh`. Install on Debian: unpack the `powershell-<v>-linux-x64.tar.gz` release from github.com/PowerShell/PowerShell into `~/.local/powershell` and link `pwsh` into `~/.local/bin`.
+
 A repository that has content on the CDN (raw art stores, packs) carries a `content.lock.json` at its root: the one file that says what to fetch, pinned by hash (format: dot-cloud `docs/cdn-publish.md`). **One fetcher reads it**, `tools/fetch_lock.sh` (`tools/fetch_lock.ps1` on Windows); every repository's `fetch-content.sh` / `fetch-content.ps1` is a few lines that call it (macOS uses the `.sh`), and `./server fetch-lock` and `bootstrap` call it too. Every file is hash-checked, resumable, and fetched once: a present, stamped pack is "have".
 
 ```bash
