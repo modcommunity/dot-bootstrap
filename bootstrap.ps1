@@ -725,11 +725,17 @@ function Find-Godot {
         "$env:LOCALAPPDATA\Programs\Godot",
         "$env:ProgramFiles\Godot",
         "$env:USERPROFILE\scoop\apps\godot\current",
-        'C:\Godot'
+        'C:\Godot',
+        # Next to this clone (F:\Godot\tmc-dot-bootstrap -> F:\Godot), and the usual download places.
+        (Split-Path $repoDir -Parent),
+        "$env:USERPROFILE\Downloads",
+        "$env:USERPROFILE\Desktop"
     )
     foreach ($g in $guesses) {
-        if (Test-Path $g) {
-            $exe = Get-ChildItem $g -Filter 'Godot*.exe' -Recurse -ErrorAction SilentlyContinue |
+        if ($g -and (Test-Path $g)) {
+            # Two levels is enough for a release unzipped into its own folder, and keeps a big Downloads quick.
+            # The console build is listed with the editor; either runs --headless.
+            $exe = Get-ChildItem $g -Filter 'Godot*.exe' -Depth 2 -ErrorAction SilentlyContinue |
                    Sort-Object Name -Descending | Select-Object -First 1
             if ($exe) { return $exe.FullName }
         }
