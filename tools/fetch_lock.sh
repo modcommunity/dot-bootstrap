@@ -36,7 +36,7 @@ done
 [ "${DOT_PACKS_FROM:-}" = none ] || [ "$FROM" = none ] && { echo "fetch_lock: DOT_PACKS_FROM=none, nothing fetched"; exit 0; }
 command -v python3 >/dev/null || { echo "fetch_lock: python3 is needed" >&2; exit 2; }
 exec python3 -I - "$LOCK" "$ROOT" "$FROM" "$SKIP" "$ONLY" "$PACKS" "$HERE" "$CFG" "$CDN" "$LIST" <<'PY'
-import base64, fnmatch, hashlib, json, os, sys, time, urllib.request, urllib.error
+import base64, fnmatch, hashlib, json, os, sys, time, urllib.request, urllib.error, zlib
 lock, root, base, skip, only, packs, here, cfg, cdn, listing = sys.argv[1:11]
 skip = {s for s in skip.split(",") if s}; only = {s for s in only.split(",") if s}
 doc = json.load(open(lock))
@@ -138,12 +138,18 @@ def fetch(rel, dest, sha, retries=4):
             have = os.path.getsize(part) if os.path.exists(part) else 0
             url = bases[attempt % len(bases)] + "/" + rel
             r = get(url, have)
+            # The site stores some objects gzip-encoded and the CDN sends them so whatever was asked;
+            # the sha256 names the decoded bytes, and a range of a gzip stream cannot be resumed.
+            gz = r.headers.get("Content-Encoding", "").lower() == "gzip"
+            if gz and have: r.close(); r = get(url); have = 0
             if have and getattr(r, "status", 200) != 206: have = 0
+            z = zlib.decompressobj(31) if gz else None
             with open(part, "ab" if have else "wb") as f:
                 while True:
                     b = r.read(1 << 20)
                     if not b: break
-                    f.write(b)
+                    f.write(z.decompress(b) if z else b)
+                if z: f.write(z.flush())
             h = hashlib.sha256()
             with open(part, "rb") as f:
                 for b in iter(lambda: f.read(1 << 20), b""): h.update(b)
