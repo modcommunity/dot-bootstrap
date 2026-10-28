@@ -99,6 +99,7 @@ dot-weapon	git@github.com:modcommunity/dot-weapon.git
 dot-workbench	git@github.com:modcommunity/dot-workbench.git
 dot-weather	git@github.com:modcommunity/dot-weather.git
 dot-radio	git@github.com:zees-games/dot-radio.git
+dot-trail	git@github.com:zees-games/dot-trail.git
 game-arena	git@github.com:zees-games/game-arena.git
 arena-surf-dm-maps	git@github.com:zees-games/arena-surf-dm-maps.git
 arena-dm-maps	git@github.com:zees-games/arena-dm-maps.git
@@ -130,3 +131,4 @@ zombie-zone-maps	git@github.com:zees-games/zombie-zone-maps.git
 zz-modern-weapons	git@github.com:zees-games/zz-modern-weapons.git
 zz-medieval-weapons	git@github.com:zees-games/zz-medieval-weapons.git
 zz-historical-monsters	git@github.com:zees-games/zz-historical-monsters.git
+zz-ply-class-pack	git@github.com:zees-games/zz-ply-class-pack.git
