@@ -16,9 +16,12 @@ $work = {
     $log = Join-Path $d 'import-run.txt'
     $ok = $false
     foreach ($pass in 1, 2) {
-        # Piping makes PowerShell wait for the GUI-subsystem executable to exit.
-        & $Godot --headless --path $d --import 2>&1 | Out-File -Encoding utf8 $log
-        if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+        # Piping makes PowerShell wait for the GUI-subsystem executable to exit. The output is held in memory so a log another process has open (a stale Godot, antivirus) cannot fail the import.
+        $out = & $Godot --headless --path $d --import 2>&1
+        $code = $LASTEXITCODE
+        try { $out | Out-File -Encoding utf8 $log -ErrorAction Stop }
+        catch { $log = Join-Path $d ("import-run-{0}.txt" -f [Guid]::NewGuid().ToString('N').Substring(0, 8)); $out | Out-File -Encoding utf8 $log -ErrorAction SilentlyContinue }
+        if ($code -eq 0) { $ok = $true; break }
     }
     if ($ok) { Remove-Item $log -ErrorAction SilentlyContinue; "ok|imported  $p" }
     else { "bad|FAILED twice: $p, output in $log" }
