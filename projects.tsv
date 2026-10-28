@@ -101,6 +101,7 @@ dot-weather	git@github.com:modcommunity/dot-weather.git
 dot-radio	git@github.com:zees-games/dot-radio.git
 game-arena	git@github.com:zees-games/game-arena.git
 arena-surf-dm-maps	git@github.com:zees-games/arena-surf-dm-maps.git
+arena-dm-maps	git@github.com:zees-games/arena-dm-maps.git
 game-g2gfast	git@github.com:zees-games/game-g2gfast.git
 g2gfast-maps	git@github.com:zees-games/g2gfast-maps.git
 game-hide-n-seek	git@github.com:zees-games/game-hide-n-seek.git
