@@ -640,6 +640,11 @@ link_content() {
         elif [ ! -d "$PROJECTS_DIR/$src" ] && [ "${src##*/}" = ".stores" ] && [ -d "$PROJECTS_DIR/${src%%/*}" ] \
                 && [ -n "${DOT_STORES_FROM:-}" ] && [ "$DOT_STORES_FROM" != none ] && [ -x "$PROJECTS_DIR/dot-map/tools/stage_stores.sh" ]; then
             "$PROJECTS_DIR/dot-map/tools/stage_stores.sh" "$PROJECTS_DIR/${src%%/*}" || warn "$proj" "staging $src from $DOT_STORES_FROM failed"
+        elif [ "${src##*/}" != ".stores" ] && [ "$src" != "${src%%/*}" ] && [ -f "$PROJECTS_DIR/${src%%/*}/content.lock.json" ] \
+                && [ -x "$PROJECTS_DIR/dot-bootstrap/tools/fetch_lock.sh" ]; then
+            # Content kept out of git (arena-dm-maps' maps) is pinned in the repo's lock under the linked folder.
+            "$PROJECTS_DIR/dot-bootstrap/tools/fetch_lock.sh" "$PROJECTS_DIR/${src%%/*}/content.lock.json" --only "${src#*/}/*" \
+                || warn "$proj" "fetching $src from content.lock.json failed"
         fi
         if [ ! -d "$PROJECTS_DIR/$src" ]; then
             if [ "${src##*/}" = ".stores" ]; then

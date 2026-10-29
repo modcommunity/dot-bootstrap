@@ -834,6 +834,10 @@ function Link-Content ($proj) {
                     Remove-Item $target -Recurse -Force
                     Warn $proj "staging $src from $from failed (no pbr-library in it)"
                 }
+            } elseif ((($src -split '/')[-1] -ne '.stores') -and $src.Contains('/') -and (Test-Path $lockFile) -and (Test-Path $fetcher)) {
+                # Content kept out of git (arena-dm-maps' maps) is pinned in the repo's lock under the linked folder.
+                & $fetcher $lockFile -Only (($src -split '/', 2)[1] + '/*')
+                if ($LASTEXITCODE -ne 0) { Warn $proj "fetching $src from content.lock.json failed" }
             }
             if (-not (Test-Path $target)) {
                 if (($src -split '/')[-1] -eq '.stores') {
