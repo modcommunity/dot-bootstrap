@@ -21,6 +21,7 @@ jobs:
     validate:
         uses: modcommunity/dot-ci/.github/workflows/validate.yml@v1
         with:
+            efficiency: true
             godot: false
             shell-command: 'bash -n bootstrap.sh && python3 -m py_compile tools/shadowed_methods.py && ./bootstrap.sh --check >/dev/null && ./bootstrap.sh --list >/dev/null'
         secrets:
