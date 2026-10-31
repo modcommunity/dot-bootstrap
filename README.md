@@ -200,6 +200,10 @@ It needs `godot` on `PATH` (or `GODOT=` set) and defaults to scanning the direct
 
 `dot-workbench` is in `projects.tsv`, and every game and `dot-game-template` lists `/addons/dot_workbench` in its `.gitignore`, so a normal bootstrap clones it once and links (Windows: copies) it into each game, with no extra step. `tools/check_workbench_link.sh` proves it: every game carries the line, `--plan` clones and links it, and a real offline `bootstrap.sh --only workbench` run in a scratch directory links dot-workbench with its dot-core, dot-ui, dot-menu and dot-settings.
 
+### tools/gpu.sh: the GPU-box runner
+
+`tools/gpu.sh` (`~/godot/gpu.sh` is a wrapper that execs it, so every game's `tools/*.sh` keeps calling `../gpu.sh`) runs bakes, screenshots, frame timings and whole `game.sh` suites on the always-on GPU boxes (`staging` laptop, `staging02` desktop) over SSH, because dev02 has no GPU. Each box has a `~/gpu/.gate` (one job admitted at a time) and `~/gpu/.lock` (the GPU itself, shared `-s` by read-only users), always taken with `flock -o` so a child that outlives the job cannot inherit and hold them; a busy or unreachable box answers 75/76 and the caller falls back to the next box or to dev02. Shot runs use a shim `xvfb-run` that starts its own Xvfb and stops exactly that pid on exit. A leaked Xvfb that still holds a lock is cleared by the admin on the box (find the holder in `/proc/<pid>/fd`, confirm it is an Xvfb with no job above it, `kill` it): the user runs that kill, never an agent, and the script never kills a process it did not start.
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
