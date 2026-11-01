@@ -638,8 +638,8 @@ link_content() {
             "$PROJECTS_DIR/dot-bootstrap/tools/fetch_lock.sh" "$PROJECTS_DIR/${src%%/*}/content.lock.json" --only .stores \
                 && touch "$PROJECTS_DIR/$src/.gdignore" || warn "$proj" "fetching $src from content.lock.json failed"
         elif [ ! -d "$PROJECTS_DIR/$src" ] && [ "${src##*/}" = ".stores" ] && [ -d "$PROJECTS_DIR/${src%%/*}" ] \
-                && [ -n "${DOT_STORES_FROM:-}" ] && [ "$DOT_STORES_FROM" != none ] && [ -x "$PROJECTS_DIR/dot-map/tools/stage_stores.sh" ]; then
-            "$PROJECTS_DIR/dot-map/tools/stage_stores.sh" "$PROJECTS_DIR/${src%%/*}" || warn "$proj" "staging $src from $DOT_STORES_FROM failed"
+                && [ -n "${DOT_STORES_FROM:-}" ] && [ "$DOT_STORES_FROM" != none ] && [ -x "$PROJECTS_DIR/dot-map-convert/tools/stage_stores.sh" ]; then
+            "$PROJECTS_DIR/dot-map-convert/tools/stage_stores.sh" "$PROJECTS_DIR/${src%%/*}" || warn "$proj" "staging $src from $DOT_STORES_FROM failed"
         elif [ "${src##*/}" != ".stores" ] && [ "$src" != "${src%%/*}" ] && [ -f "$PROJECTS_DIR/${src%%/*}/content.lock.json" ] \
                 && [ -x "$PROJECTS_DIR/dot-bootstrap/tools/fetch_lock.sh" ]; then
             # Content kept out of git (arena-dm-maps' maps) is pinned in the repo's lock under the linked folder.
@@ -648,7 +648,7 @@ link_content() {
         fi
         if [ ! -d "$PROJECTS_DIR/$src" ]; then
             if [ "${src##*/}" = ".stores" ]; then
-                warn "$proj" "art stores missing: $src is in no repository, so maps draw low-detail art. Run again without --no-stores, or set DOT_STORES_FROM (rsync source, folder or .tar URL of the pbr-library and model-library) and run bootstrap again, or run dot-map/tools/stage_stores.sh ${src%%/*} --from <src> --game $proj"
+                warn "$proj" "art stores missing: $src is in no repository, so maps draw low-detail art. Run again without --no-stores, or set DOT_STORES_FROM (rsync source, folder or .tar URL of the pbr-library and model-library) and run bootstrap again, or run dot-map-convert/tools/stage_stores.sh ${src%%/*} --from <src> --game $proj"
             else
                 warn "$proj" "content missing: $src (clone ${src%%/*} for $path)"
             fi
@@ -979,8 +979,8 @@ PY
 
 FASTGMAD_VERSION="0.2.1"
 install_tools() {
-    # fastgmad, the community addon-archive (.gma) extractor that dot-map's BSP importer
-    # (tools/bsp/dotbsp/gma.py) shells out to. Opt-in rather than part of a plain sync,
+    # fastgmad, the community addon-archive (.gma) extractor that dot-map-convert's BSP importer
+    # (dotbsp/gma.py in dot-map-convert) shells out to. Opt-in rather than part of a plain sync,
     # because a plain sync needs git and nothing else, and this is a download of a binary.
     # Pinned to one release and refused unless its SHA-256 matches the value below, which
     # was checked against the release's own digest: the importer runs this on archives

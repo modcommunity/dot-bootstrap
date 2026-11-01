@@ -708,7 +708,7 @@ py_cmd() {
 	top=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 	[[ ${#stage[@]} -gt 0 ]] || stage=("$top")
 	[[ ${#pull[@]} -gt 0 ]] || pull=("$top")
-	stage+=("$ROOT/dot-map/tools/bsp")
+	stage+=("$ROOT/dot-map-convert")
 
 	local box=
 	if [[ ${GPU_OFFLOAD:-1} != 0 ]]; then
@@ -739,7 +739,7 @@ py_cmd() {
 		args+=("$a")
 	done
 	local cmd
-	cmd="mkdir -p $(printf '%q' "$PY_ROOT$PWD") && cd $(printf '%q' "$PY_ROOT$PWD") && HOME=$(printf '%q' "$PY_ROOT$HOME") PYTHONPATH=$(printf '%q' "$PY_ROOT$ROOT/dot-map/tools/bsp")\${PYTHONPATH:+:\$PYTHONPATH} MPLBACKEND=Agg flock -o -s ~/gpu/.lock timeout ${GPU_TIMEOUT:-3600} $(printf '%q ' "${args[@]}")"
+	cmd="mkdir -p $(printf '%q' "$PY_ROOT$PWD") && cd $(printf '%q' "$PY_ROOT$PWD") && HOME=$(printf '%q' "$PY_ROOT$HOME") PYTHONPATH=$(printf '%q' "$PY_ROOT$ROOT/dot-map-convert")\${PYTHONPATH:+:\$PYTHONPATH} MPLBACKEND=Agg flock -o -s ~/gpu/.lock timeout ${GPU_TIMEOUT:-3600} $(printf '%q ' "${args[@]}")"
 	local rc=0
 	"${SSH[@]}" "bash -lc $(printf '%q' "$cmd")" || rc=$?
 	for d in "${pull[@]}"; do

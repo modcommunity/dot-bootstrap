@@ -56,6 +56,7 @@ dot-loadout	git@github.com:modcommunity/dot-loadout.git
 dot-locale	git@github.com:modcommunity/dot-locale.git
 dot-log	git@github.com:modcommunity/dot-log
 dot-map	git@github.com:modcommunity/dot-map.git
+dot-map-convert	git@github.com:modcommunity/dot-map-convert.git
 dot-match	git@github.com:modcommunity/dot-match.git
 dot-matchmaking	git@github.com:modcommunity/dot-matchmaking.git
 dot-menu	git@github.com:modcommunity/dot-menu.git
