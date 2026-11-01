@@ -808,7 +808,7 @@ function Link-Content ($proj) {
             # or DOT_STORES_FROM=none skips them and the maps draw low-detail art.
             $from = if ($env:DOT_STORES_FROM) { $env:DOT_STORES_FROM } else { 'https://dev.dotgames.org/stores/zombie-zone-maps/zz-stores-cc0.tar' }
             $lockFile = Join-Path $projectsDir (($src -split '/')[0] + '\content.lock.json')
-            $fetcher = Join-Path $projectsDir 'dot-bootstrap\tools\fetch_lock.ps1'
+            $fetcher = Join-Path $PSScriptRoot 'tools\fetch_lock.ps1'
             if ((($src -split '/')[-1] -eq '.stores') -and -not $NoStores -and -not $env:DOT_STORES_FROM -and (Test-Path $lockFile) -and (Test-Path $fetcher) `
                     -and (-not (Test-Path $target) -or (Test-Path (Join-Path $target '.dot-pack')))) {
                 & $fetcher $lockFile -Only '.stores'

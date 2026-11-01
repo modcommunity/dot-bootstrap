@@ -634,16 +634,16 @@ link_content() {
         # The raw art stores (a maps repo's .stores) are in no repository: $DOT_STORES_FROM (an
         # rsync source, a folder or the URL of a .tar) is where a checkout gets them.
         if { [ ! -d "$PROJECTS_DIR/$src" ] || [ -f "$PROJECTS_DIR/$src/.dot-pack" ]; } && [ "${src##*/}" = ".stores" ] && [ -z "$STORES_USER_SET" ] && [ "$DOT_STORES_FROM" != none ] \
-                && [ -f "$PROJECTS_DIR/${src%%/*}/content.lock.json" ] && [ -x "$PROJECTS_DIR/dot-bootstrap/tools/fetch_lock.sh" ]; then
-            "$PROJECTS_DIR/dot-bootstrap/tools/fetch_lock.sh" "$PROJECTS_DIR/${src%%/*}/content.lock.json" --only .stores \
+                && [ -f "$PROJECTS_DIR/${src%%/*}/content.lock.json" ] && [ -x "$REPO_DIR/tools/fetch_lock.sh" ]; then
+            "$REPO_DIR/tools/fetch_lock.sh" "$PROJECTS_DIR/${src%%/*}/content.lock.json" --only .stores \
                 && touch "$PROJECTS_DIR/$src/.gdignore" || warn "$proj" "fetching $src from content.lock.json failed"
         elif [ ! -d "$PROJECTS_DIR/$src" ] && [ "${src##*/}" = ".stores" ] && [ -d "$PROJECTS_DIR/${src%%/*}" ] \
                 && [ -n "${DOT_STORES_FROM:-}" ] && [ "$DOT_STORES_FROM" != none ] && [ -x "$PROJECTS_DIR/dot-map-convert/tools/stage_stores.sh" ]; then
             "$PROJECTS_DIR/dot-map-convert/tools/stage_stores.sh" "$PROJECTS_DIR/${src%%/*}" || warn "$proj" "staging $src from $DOT_STORES_FROM failed"
         elif [ "${src##*/}" != ".stores" ] && [ "$src" != "${src%%/*}" ] && [ -f "$PROJECTS_DIR/${src%%/*}/content.lock.json" ] \
-                && [ -x "$PROJECTS_DIR/dot-bootstrap/tools/fetch_lock.sh" ]; then
+                && [ -x "$REPO_DIR/tools/fetch_lock.sh" ]; then
             # Content kept out of git (arena-dm-maps' maps) is pinned in the repo's lock under the linked folder.
-            "$PROJECTS_DIR/dot-bootstrap/tools/fetch_lock.sh" "$PROJECTS_DIR/${src%%/*}/content.lock.json" --only "${src#*/}/*" \
+            "$REPO_DIR/tools/fetch_lock.sh" "$PROJECTS_DIR/${src%%/*}/content.lock.json" --only "${src#*/}/*" \
                 || warn "$proj" "fetching $src from content.lock.json failed"
         fi
         if [ ! -d "$PROJECTS_DIR/$src" ]; then
