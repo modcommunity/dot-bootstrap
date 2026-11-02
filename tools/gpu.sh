@@ -399,6 +399,8 @@ offer_on() {
 	coproc LANE { "${SSH[@]}" "bash -c $(printf '%q' "$GUARD_FN"$'\n'"$REMOTE_SUITE") _ $(printf '%q ' \
 		"$project" "$SUITE_SLOTS" "$SUITE_MIN_GB" "$SUITE_MAX_GB" "$who" "$DESKTOP_GUARD" "${UW_LIMIT:-5400}" "${UW_KIND:-game}" "${@:2}")"; }
 	lane_out=${LANE[0]} lane_in=${LANE[1]} lane_pid=$LANE_PID
+	# bash closes the coproc fds when it reaps the ssh; a dup survives that, so the last read cannot hit EBADF.
+	exec {lane_out}<&"${LANE[0]}"
 	back_to_queue() {
 		[[ -n "${1:-}" ]] && echo "gpu.sh: $1; back to the local queue" >&2
 		exec {lane_in}>&- 2>/dev/null || true
