@@ -94,6 +94,7 @@ set -euo pipefail
 
 KEY="${GPU_KEY:-$HOME/.ssh/gpu-laptop}"
 GPU_INDEX="${GPU_INDEX:-0}"
+WT_ROOT="${WT_ROOT:-$HOME/wt}"
 ROOT="${GODOT_ROOT:-$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)}"
 REMOTE_ROOT="gpu/godot"
 # Absolute, because remote_locked quotes every argument and a quoted $HOME stays literal.
@@ -209,8 +210,13 @@ unwrap() {
 # the command under the wrappers is in UW_REST, its limit in UW_LIMIT and its kind in UW_KIND.
 offer_eligible() {
 	[[ "${GPU_OFFLOAD:-1}" != 0 ]] || return 1
+	# A project is a checkout under $ROOT or a worktree under $WT_ROOT (~/wt/<repo>-<task>); every
+	# builder works in a worktree, so refusing them kept all builder suites in dev02's queue.
 	project="${PWD#"$ROOT"/}"
-	[[ "$PWD" == "$ROOT/$project" && "$project" != */* && -f "$PWD/project.godot" ]] || return 1
+	PROJ_DIR=$PWD
+	if [[ "$PWD" == "$WT_ROOT"/* && "${PWD#"$WT_ROOT"/}" != */* ]]; then project="${PWD#"$WT_ROOT"/}"
+	else [[ "$PWD" == "$ROOT/$project" && "$project" != */* ]] || return 1; fi
+	[[ -f "$PWD/project.godot" ]] || return 1
 	unwrap "$@"
 	set -- "${UW_REST[@]}"
 	[[ ${#UW_ENV[@]} == 0 ]] || return 1
@@ -259,12 +265,12 @@ offer_eligible() {
 # sources for ../<existing sibling>, plus names in <project>/.gpu-siblings and $GPU_SIBLINGS.
 # Only git repositories count (godot/tools and inspirations/ are not). Prints one name per line.
 needed_siblings() {
-	local p=$1 n
+	local p=$1 n d=${PROJ_DIR:-$ROOT/$1}
 	{
-		( cd "$ROOT/$p" && { git ls-files -z -- '*.gd' '*.sh' '*.tscn' '*.yml' '*.cfg' '*.json' '*.py' 2>/dev/null ||
+		( cd "$d" && { git ls-files -z -- '*.gd' '*.sh' '*.tscn' '*.yml' '*.cfg' '*.json' '*.py' 2>/dev/null ||
 			find . -type f \( -name '*.gd' -o -name '*.sh' -o -name '*.tscn' \) -not -path './.godot/*' -print0; } |
 			xargs -0 -r grep -hoE '\.\./[A-Za-z0-9_][A-Za-z0-9_.-]*' 2>/dev/null | sed 's|^\.\./||' | sort -u )
-		[[ -f $ROOT/$p/.gpu-siblings ]] && sed 's/#.*//' "$ROOT/$p/.gpu-siblings"
+		[[ -f $d/.gpu-siblings ]] && sed 's/#.*//' "$d/.gpu-siblings"
 		printf '%s\n' ${GPU_SIBLINGS:-}
 	} | while read -r n; do
 		[[ -n $n && $n != "$p" && $n != . && $n != .. && -e $ROOT/$n/.git && $n =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] && echo "$n"
@@ -414,10 +420,10 @@ offer_on() {
 	"${SSH[@]}" "mkdir -p ~/gpu/ws/$project/$project" || back_to_queue "cannot make the workspace on $BOX"
 	rsync -az --delete --copy-links --exclude '.godot/' --exclude '.git/' --exclude 'screenshots/' \
 		-e "ssh -i $KEY -o BatchMode=yes -o ConnectTimeout=10" \
-		"$ROOT/$project/" "$HOST:gpu/ws/$project/$project/" || back_to_queue "copying $project to $BOX failed"
+		"$PROJ_DIR/" "$HOST:gpu/ws/$project/$project/" || back_to_queue "copying $project to $BOX failed"
 	local sibarg; sibarg=$(IFS=,; echo "${sibs[*]}"); : "${sibarg:=-}"
 	[[ $sibarg == - ]] && sibarg=
-	if [[ ${UW_KIND:-game} == game ]] && list=$(git -C "$ROOT/$project" ls-files '*.gd' 2>/dev/null); then
+	if [[ ${UW_KIND:-game} == game ]] && list=$(git -C "$PROJ_DIR" ls-files '*.gd' 2>/dev/null); then
 		{ printf 'go git %s\n%s\n' "${sibarg:-,}" "$list" >&"$lane_in"; } 2>/dev/null || true
 	else
 		{ printf 'go none %s\n' "${sibarg:-,}" >&"$lane_in"; } 2>/dev/null || true
@@ -432,9 +438,9 @@ offer_on() {
 	# report a result nobody saw.
 	[[ -n $rc ]] || { lane_pid=; back_to_queue "lost $BOX mid-run"; }
 	if [[ ${UW_KIND:-game} == game ]]; then
-		mkdir -p "$ROOT/$project/.godot/test-logs"
+		mkdir -p "$PROJ_DIR/.godot/test-logs"
 		rsync -az -e "ssh -i $KEY -o BatchMode=yes -o ConnectTimeout=10" \
-			"$HOST:gpu/ws/$project/$project/.godot/test-logs/" "$ROOT/$project/.godot/test-logs/" ||
+			"$HOST:gpu/ws/$project/$project/.godot/test-logs/" "$PROJ_DIR/.godot/test-logs/" ||
 			echo "gpu.sh: could not copy the suite logs back from $BOX" >&2
 	fi
 	exit "$rc"
