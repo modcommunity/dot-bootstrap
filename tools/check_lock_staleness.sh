@@ -3,7 +3,8 @@
 #
 #   tools/check_lock_staleness.sh [--max-behind N] [--fail]    default N=20, report only
 #
-# Same version rule as dot-game-template/tools/check-lock.sh (sort -V); distances come from the
+# Same version rule as dot-game-template/tools/check-lock.sh (sort -V), copied on purpose: the template is
+# copied by third parties, so this must not source it. Change both together. Distances come from the
 # sibling addon checkouts. Never edits a lock: bump with the game's tools/sync-lock.sh.
 set -uo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"; sib="$(cd "$here/.." && pwd)"
