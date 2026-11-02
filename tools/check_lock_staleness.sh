@@ -2,6 +2,7 @@
 # Reports games whose addons.lock pins an addon more than N commits behind its newest tag/main.
 #
 #   tools/check_lock_staleness.sh [--max-behind N] [--fail]    default N=20, report only
+# Default list: game-*, mg-*, dot-game-template, dot-server-deploy (LOCK_GAMES overrides).
 #
 # Same version rule as dot-game-template/tools/check-lock.sh (sort -V), copied on purpose: the template is
 # copied by third parties, so this must not source it. Change both together. Distances come from the
@@ -12,7 +13,7 @@ max=20; fail=0; stale=0
 while [ $# -gt 0 ]; do
     case "$1" in --max-behind) max="$2"; shift ;; --fail) fail=1 ;; esac; shift
 done
-games=${LOCK_GAMES:-$(grep -v "^[[:space:]]*#" "$here/projects.tsv" | cut -f1 | grep -E "^(game|mg)-" | grep -v -- "-maps$")}
+games=${LOCK_GAMES:-$(grep -v "^[[:space:]]*#" "$here/projects.tsv" | cut -f1 | grep -E "^((game|mg)-|dot-game-template$|dot-server-deploy$)" | grep -v -- "-maps$")}
 for g in $games; do
     [ -d "$sib/$g" ] || { echo "$g: not checked out"; continue; }
     lock="$(git -C "$sib/$g" show HEAD:addons.lock 2>/dev/null)" || { echo "$g: no committed addons.lock"; continue; }
