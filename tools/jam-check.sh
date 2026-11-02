@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# Prints one line per jam condition, only when the set of conditions changes (loop with --watch).
-# Jam: a dev02 build slot held over 40 min, a heavy waiter over 30 min, a GPU box with 0 free slots and no job listed,
-# a free build slot while live tickets wait over 3 min, or live tickets with nothing running for 3 min.
-# Gotcha: a waiting heavy reads /etc/heavy.conf once at start, so after a threshold change the old waiters keep
-# the old value and block the FIFO; restart them (or kill the stale tickets) rather than expecting the new value.
+# One line per jam condition (dev02 slot held over 40 min, heavy waiter over 30 min, GPU box with 0 slots and no job,
+# free slot while tickets wait over 3 min, tickets with nothing running for 3 min), only when the set changes; loop with --watch.
+# Gotcha: a waiting heavy reads /etc/heavy.conf once, so after a threshold change restart the old waiters.
 once() {
 	now=$(date +%s); st=$(timeout 90 heavy --status 2>&1)
 	while read -r hhmmss; do
