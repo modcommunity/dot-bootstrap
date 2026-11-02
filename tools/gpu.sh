@@ -299,7 +299,7 @@ stage_sibling() {
 		"${SSH[@]}" "mkdir -p ~/gpu/sib/$name" || { rm -f "$list"; return 1; }
 		local tmp="gpu/sib/$name/.tmp.$fp.$$"
 		rsync -a --copy-links --from0 --files-from="$list" "${rs[@]}" \
-			--link-dest="\$HOME/gpu/sib/$name/latest/" "$src/" "$HOST:$tmp/" || { rm -f "$list"; return 1; }
+			--link-dest="$REMOTE_HOME/gpu/sib/$name/latest/" "$src/" "$HOST:$tmp/" || { rm -f "$list"; return 1; }
 		"${SSH[@]}" "cd ~/gpu/sib/$name && touch .tmp.$fp.$$/.complete && { mv -T .tmp.$fp.$$ $fp 2>/dev/null || rm -rf .tmp.$fp.$$; } && ln -sfn $fp latest" || { rm -f "$list"; return 1; }
 	fi
 	rm -f "$list"
