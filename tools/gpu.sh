@@ -765,7 +765,7 @@ case "${1:-}" in
 		;;
 	capacity)
 		# One line per box: the slots heavy can still hand it. heavy --status prints this.
-		for b in ${GPU_SUITE_BOXES:-staging staging02}; do
+		for b in ${GPU_SUITE_BOXES:-staging02 staging}; do
 			set_box "$b"
 			read -r free total gb state < <(box_capacity)
 			printf '%-10s %s/%s suite slots free, %s GB free, %s\n' "$BOX" "$free" "$total" "$gb" "$state"
@@ -869,16 +869,14 @@ case "${1:-}" in
 	offer)
 		# Called by heavy while a build-lane job waits. 75 (EX_TEMPFAIL) is "not taken":
 		# heavy keeps waiting here and offers again later. Any other code is the suite's.
-		# The laptop first: its link is four times faster, so the copy costs less.
 		shift
 		offer_eligible "$@" || { [[ ${GPU_OFFER_VERBOSE:-0} == 1 ]] && echo "gpu.sh: not a suite these boxes can run" >&2; exit 75; }
-		# Most free slots first (the laptop first on a tie: its link is faster).
-		order=$(for b in ${GPU_SUITE_BOXES:-staging staging02}; do
+		# The desktop (staging02) first whenever it is up and has a slot, the laptop otherwise, dev02 last.
+		order=$(for b in ${GPU_SUITE_BOXES:-staging02 staging}; do
 			down="${HEAVY_DIR:-/var/tmp/heavy}/gpu-down.$b"
 			[[ -e $down && $(( $(date +%s) - $(stat -c %Y "$down") )) -lt 300 ]] && continue
-			cap=$( set_box "$b"; box_capacity )
-			echo "${cap%% *} $b"
-		done | sort -s -k1,1nr | awk '{print $2}')
+			echo "$b"
+		done)
 		for b in $order; do
 			# A box that did not answer is skipped for 5 minutes: heavy offers every 15 s,
 			# and a 10 s connect timeout each time would be most of the wait.
