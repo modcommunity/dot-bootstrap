@@ -125,7 +125,8 @@ tf = os.environ.get("DOT_PACKS_TOKEN_FILE", "")
 if tf: tok = open(tf).read().strip()
 
 def get(url, start=0):
-    h = {}
+    # Cloudflare refuses the default Python-urllib agent (error 1010) on dev.dotgames.org.
+    h = {"User-Agent": "dot-bootstrap-fetch-lock/1"}
     if tok: h["Authorization"] = "Bearer " + tok
     if start: h["Range"] = "bytes=%d-" % start
     return urllib.request.urlopen(urllib.request.Request(url, headers=h), timeout=60)
