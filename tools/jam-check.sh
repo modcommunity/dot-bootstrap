@@ -11,7 +11,16 @@ once() {
 		[ $(( (now-t)/60 )) -gt 40 ] && echo "SLOT HELD $(( (now-t)/60 )) min since $hhmmss"
 	done < <(grep -E '^busy +build' <<<"$st" | sed -E 's/.* since ([0-9:]{8}).*/\1/')
 	held=$(cat /var/tmp/heavy/*.who 2>/dev/null | sed -n 's/.* pid \([0-9]*\) since.*/\1/p' | tr '\n' ' ')
-	ps -eo etimes,pid,cmd | awk -v held=" $held" '$3=="bash" && $4 ~ /heavy$/ && $5=="--" && $1>1800 && index(held, " " $2 " ")==0 {printf "WAITER %d min: %s\n", $1/60, substr($0, index($0,$6), 90)}'
+	# a heavy whose job was offloaded to a GPU box shows as "running: who since T: [game: ]cmd" under the box; each such line
+	# excuses one local waiter with the same command tail that started before T (two identical commands stay distinguished)
+	off=$(mktemp); while read -r hhmmss cmd; do
+		t=$(date -d "$hhmmss" +%s 2>/dev/null) || continue; [ "$t" -gt "$now" ] && t=$((t-86400)); printf '%s\t%s\n' "$t" "$cmd"
+	done < <(sed -nE 's/^ +running: [^ ]+ since ([0-9:]{8}): (.*)$/\1 \2/p' <<<"$st") > "$off"
+	ps -eo etimes,pid,cmd | awk -v held=" $held" -v now="$now" -v off="$off" 'BEGIN {while ((getline l < off) > 0) {split(l, a, "\t"); n++; ot[n]=a[1]; oc[n]=a[2]}}
+		$3=="bash" && $4 ~ /heavy$/ && $5=="--" && $1>1800 && index(held, " " $2 " ")==0 {
+			cmd=substr($0, index($0,$6)); sub(/^timeout [0-9]+ /, "", cmd); start=now-$1; for (i=1; i<=n; i++) if (!used[i] && ot[i]>=start-5 && index(oc[i], cmd)) {used[i]=1; next}
+			printf "WAITER %d min: %s\n", $1/60, substr(cmd, 1, 90)}'
+	rm -f "$off"
 	# a full box with no listed job is normal while a GPU job runs; only report it once it has persisted 15 min
 	seen=$HOME/.cache/jam-check-boxes; mkdir -p "$HOME/.cache"; touch "$seen"; keep=
 	while read -r box line; do
