@@ -288,8 +288,7 @@ linked_siblings() {
 		t=$(readlink "$l") && [[ $t == ../* ]] || continue
 		n=${t#../}; rel=${n#*/}; n=${n%%/*}
 		[[ $n =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ && -e $ROOT/$n/.git && $rel != "${t#../}" ]] || continue
-		rel=$(dirname "$rel")
-		printf '%s\t%s\t%s\n' "$n" "$(basename "$l")" "$rel"
+		printf '%s\t%s\t%s\n' "$n" "$(basename "$l")" "$t"
 	done < <(find "$1" -maxdepth 1 -type l)
 }
 
@@ -456,19 +455,15 @@ offer_on() {
 		sibs+=("$kv")
 	done
 	"${SSH[@]}" "mkdir -p ~/gpu/ws/$project/$project" || back_to_queue "cannot make the workspace on $BOX"
-	rsync -az --delete --copy-links --exclude '.godot/' --exclude '.git/' --exclude 'screenshots/' \
+	local ex=() lk lt
+	while IFS=$'\t' read -r _ lk lt; do ex+=(--exclude "/$lk"); done < <(linked_siblings "$PROJ_DIR")
+	rsync -az --delete --copy-links --exclude '.godot/' --exclude '.git/' --exclude 'screenshots/' "${ex[@]}" \
 		-e "ssh -i $KEY -o BatchMode=yes -o ConnectTimeout=10" \
 		"$PROJ_DIR/" "$HOST:gpu/ws/$project/$project/" || back_to_queue "copying $project to $BOX failed"
-	local ln lk lr dd data
-	while IFS=$'\t' read -r n _ lr; do
-		data=model-library
-		[[ -f $ROOT/$n/.gpu-data ]] && data=$(sed 's/#.*//' "$ROOT/$n/.gpu-data")
-		for dd in $data; do
-			[[ $dd =~ ^[A-Za-z0-9_][A-Za-z0-9_./-]*$ && $dd != *..* && -d $ROOT/$n/$dd ]] || continue
-			ln=; for kv in "${sibs[@]}"; do [[ $kv == "$n="* ]] && ln=${kv#*=}; done
-			"${SSH[@]}" "t=~/gpu/ws/$project/$project/$lr/$dd; rm -rf \$t; mkdir -p \$(dirname \$t) && cp -al ~/gpu/sib/$n/$ln/$dd \$t" ||
-				back_to_queue "linking $n/$dd into the workspace on $BOX failed"
-		done
+
+	while IFS=$'\t' read -r _ lk lt; do
+		"${SSH[@]}" "cd ~/gpu/ws/$project/$project && rm -rf ./$lk && ln -s $lt ./$lk" </dev/null ||
+			back_to_queue "linking $lk into the workspace on $BOX failed"
 	done < <(linked_siblings "$PROJ_DIR")
 	local sibarg; sibarg=$(IFS=,; echo "${sibs[*]}"); : "${sibarg:=-}"
 	[[ $sibarg == - ]] && sibarg=
