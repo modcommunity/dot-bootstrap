@@ -203,8 +203,8 @@ unwrap() {
 
 # Exit 1 unless the command is one a box can run from a copy of the project:
 #   [timeout N] ./game.sh [--no-parse] [--timeout N] test [suite...]        (UW_KIND=game)
-#   [timeout N] godot --headless --path . [--quit-after N] res://x.tscn [-- args]   (UW_KIND=godot)
-# run from a project's own directory. Anything else may depend on dev02 (dot-server-deploy's
+#   [timeout N] godot --headless --path . [--quit-after N] res://x.tscn | --script res://x.gd [-- args]   (UW_KIND=godot)
+# either may follow `env K=V` words (names that carry a secret, a path or this box's settings stay local); run from a project's own directory. Anything else may depend on dev02 (dot-server-deploy's
 # data, the dev01 tunnels, a --godot binary that only exists here) or write results back into
 # the project (--import, --script tools, exports), so it stays in the local queue. On success
 # the command under the wrappers is in UW_REST, its limit in UW_LIMIT and its kind in UW_KIND.
@@ -219,7 +219,13 @@ offer_eligible() {
 	[[ -f "$PWD/project.godot" ]] || return 1
 	unwrap "$@"
 	set -- "${UW_REST[@]}"
-	[[ ${#UW_ENV[@]} == 0 ]] || return 1
+	local kv name
+	for kv in "${UW_ENV[@]}"; do
+		name=${kv%%=*}
+		# Names that change where a job runs or what it may read stay local.
+		[[ $name =~ ^(GPU_|HEAVY_|PATH$|HOME$|LD_|XDG_|GODOT$|SSH_|DISPLAY$) || $name =~ (TOKEN|KEY|SECRET|PASS|CRED) ]] && return 1
+		[[ $kv =~ ^[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_./:,+=@%-]*$ ]] || return 1
+	done
 	if [[ "${1:-}" == godot ]]; then
 		shift
 		local headless=0 path=0 scene=0 tail=0 a
@@ -234,6 +240,7 @@ offer_eligible() {
 				--verbose|--disable-render-loop|--no-header) ;;
 				--) tail=1 ;;
 				res://*.tscn) [[ $scene == 0 && $a =~ ^res://[A-Za-z0-9_./-]+$ && $a != *..* ]] || return 1; scene=1 ;;
+				--script) [[ $scene == 0 && ${1:-} =~ ^res://[A-Za-z0-9_./-]+\.gd$ && ${1:-} != *..* ]] || return 1; scene=1; shift ;;
 				*) return 1 ;;
 			esac
 		done
@@ -399,6 +406,7 @@ if grep -qE 'SCRIPT ERROR|Parse error|Could not resolve class' "$ilog"; then
 	grep -E -A2 'SCRIPT ERROR|Parse error|Could not resolve class' "$ilog" | head -15
 	echo "__GPU_SUITE_RC=1"; exit 0
 fi
+while [[ ${1:-} =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; do export "$1"; shift; done
 if [ "$kind" = godot ]; then set -- "$GODOT" "$@"; else set -- ./game.sh "$@"; fi
 nice -n 5 timeout "$limit" systemd-run --user --scope --quiet --collect -p MemoryMax="${max_gb}G" -p MemorySwapMax=0 -- \
 	"$@" </dev/null 7>&- 9>&- {f}>&-
@@ -933,7 +941,7 @@ case "${1:-}" in
 			down="${HEAVY_DIR:-/var/tmp/heavy}/gpu-down.$b"
 			[[ -e $down && $(( $(date +%s) - $(stat -c %Y "$down") )) -lt 300 ]] && continue
 			set +e
-			( set -e; set_box "$b"; offer_on "$down" "${UW_REST[@]}" )
+			( set -e; set_box "$b"; offer_on "$down" "${UW_REST[0]}" "${UW_ENV[@]}" "${UW_REST[@]:1}" )
 			rc=$?
 			set -e
 			[[ $rc == 75 ]] || exit "$rc"
