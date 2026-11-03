@@ -368,11 +368,23 @@ cd "$ws/$project" || exit 3
 export XDG_RUNTIME_DIR=/run/user/$(id -u) GODOT=$HOME/gpu/bin/godot GPU_LS_FILES=$list
 export PATH=$HOME/gpu/suite/.shim:$PATH
 # The class cache stays here between runs; a stale one reads as "Identifier not declared".
-nice -n 5 timeout 1800 "$GODOT" --headless --path . --import >/dev/null 2>&1 </dev/null 7>&- 9>&- {f}>&-
+ilog=$HOME/gpu/suite/$project.import.log
+nice -n 5 timeout 1800 "$GODOT" --headless --path . --import >"$ilog" 2>&1 </dev/null 7>&- 9>&- {f}>&-
+# A parse error only shows as a suite hung until its timeout; stop here and say it.
+if grep -qE 'SCRIPT ERROR|Parse error|Could not resolve class' "$ilog"; then
+	echo "gpu.sh: import of $project failed on the box:"
+	grep -E -A2 'SCRIPT ERROR|Parse error|Could not resolve class' "$ilog" | head -15
+	echo "__GPU_SUITE_RC=1"; exit 0
+fi
 if [ "$kind" = godot ]; then set -- "$GODOT" "$@"; else set -- ./game.sh "$@"; fi
 nice -n 5 timeout "$limit" systemd-run --user --scope --quiet --collect -p MemoryMax="${max_gb}G" -p MemorySwapMax=0 -- \
 	"$@" </dev/null 7>&- 9>&- {f}>&-
-echo "__GPU_SUITE_RC=$?"
+rc=$?
+# A hung or failed suite often has only the engine's real message in its log.
+if [ "$rc" -ne 0 ]; then
+	grep -hE -A2 'SCRIPT ERROR|Parse error|Could not resolve class' .godot/test-logs/*.log 2>/dev/null | head -15
+fi
+echo "__GPU_SUITE_RC=$rc"
 EOF
 
 # What the current box (set_box) can take right now, as one line: "<free> <total> <free GB> <state>".
