@@ -272,9 +272,25 @@ needed_siblings() {
 			xargs -0 -r grep -hoE '\.\./[A-Za-z0-9_][A-Za-z0-9_.-]*' 2>/dev/null | sed 's|^\.\./||' | sort -u )
 		[[ -f $d/.gpu-siblings ]] && sed 's/#.*//' "$d/.gpu-siblings"
 		printf '%s\n' ${GPU_SIBLINGS:-}
+		linked_siblings "$d" | cut -f1
 	} | while read -r n; do
 		[[ -n $n && $n != "$p" && $n != . && $n != .. && -e $ROOT/$n/.git && $n =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] && echo "$n"
 	done | sort -u
+}
+
+# Top-level links of a project into a sibling repo (worlds -> ../maps-repo/worlds). The copy follows
+# them (--copy-links), so the sibling's git-ignored data next to the target (../maps-repo/model-library,
+# which a world's licence names as ../../model-library) must be put beside the copied link.
+# Prints "<sibling>\t<link name>\t<target's parent inside the sibling, '.' for its root>".
+linked_siblings() {
+	local l t n rel
+	while IFS= read -r l; do
+		t=$(readlink "$l") && [[ $t == ../* ]] || continue
+		n=${t#../}; rel=${n#*/}; n=${n%%/*}
+		[[ $n =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ && -e $ROOT/$n/.git && $rel != "${t#../}" ]] || continue
+		rel=$(dirname "$rel")
+		printf '%s\t%s\t%s\n' "$n" "$(basename "$l")" "$rel"
+	done < <(find "$1" -maxdepth 1 -type l)
 }
 
 # Stages one sibling into the box's content-addressed store, ~/gpu/sib/<name>/<fingerprint>/,
@@ -282,7 +298,7 @@ needed_siblings() {
 # untracked-unignored files (path, size, mtime), so an unchanged sibling costs one ssh round
 # trip and no copy; a changed one is copied with hard links to the previous version for every
 # file that did not change. Only source files go (git ls-files -co), never build/ or data/
-# output, which is why a 4 GB sibling is 40 MB over. A version is immutable once
+# output, which is why a 4 GB sibling is 40 MB over (plus its .gpu-data directories, default model-library). A version is immutable once
 # renamed into place, so a job reading it is never disturbed by the next stage.
 stage_sibling() {
 	local name=$1 src="$ROOT/$1" fp list
@@ -293,6 +309,14 @@ stage_sibling() {
 	else
 		( cd "$src" && find . -type f -not -path './.godot/*' -not -path './.git/*' -printf '%P\0' ) >"$list"
 	fi
+	# Git-ignored data the project reads at runtime (a map repo's regenerated model-library/): listed in the
+	# sibling's .gpu-data (one directory per line), default model-library. Never .godot/ or pbr-library/ (hundreds of MB).
+	local dd data=model-library
+	[[ -f $src/.gpu-data ]] && data=$(sed 's/#.*//' "$src/.gpu-data")
+	for dd in $data; do
+		[[ $dd =~ ^[A-Za-z0-9_][A-Za-z0-9_./-]*$ && $dd != *..* && $dd != .godot* && -d $src/$dd ]] &&
+			( cd "$src" && find "$dd" -type f -print0 ) >>"$list"
+	done
 	fp=$( { cat "$list"; ( cd "$src" && xargs -0 -r stat -L -c '%s %Y' -- <"$list" 2>/dev/null ); } | sha1sum | cut -c1-16 )
 	local rs=(-e "ssh -i $KEY -o BatchMode=yes -o ConnectTimeout=10")
 	if ! "${SSH[@]}" "[ -f ~/gpu/sib/$name/$fp/.complete ] && touch ~/gpu/sib/$name/$fp/.complete"; then
@@ -435,6 +459,17 @@ offer_on() {
 	rsync -az --delete --copy-links --exclude '.godot/' --exclude '.git/' --exclude 'screenshots/' \
 		-e "ssh -i $KEY -o BatchMode=yes -o ConnectTimeout=10" \
 		"$PROJ_DIR/" "$HOST:gpu/ws/$project/$project/" || back_to_queue "copying $project to $BOX failed"
+	local ln lk lr dd data
+	while IFS=$'\t' read -r n _ lr; do
+		data=model-library
+		[[ -f $ROOT/$n/.gpu-data ]] && data=$(sed 's/#.*//' "$ROOT/$n/.gpu-data")
+		for dd in $data; do
+			[[ $dd =~ ^[A-Za-z0-9_][A-Za-z0-9_./-]*$ && $dd != *..* && -d $ROOT/$n/$dd ]] || continue
+			ln=; for kv in "${sibs[@]}"; do [[ $kv == "$n="* ]] && ln=${kv#*=}; done
+			"${SSH[@]}" "t=~/gpu/ws/$project/$project/$lr/$dd; rm -rf \$t; mkdir -p \$(dirname \$t) && cp -al ~/gpu/sib/$n/$ln/$dd \$t" ||
+				back_to_queue "linking $n/$dd into the workspace on $BOX failed"
+		done
+	done < <(linked_siblings "$PROJ_DIR")
 	local sibarg; sibarg=$(IFS=,; echo "${sibs[*]}"); : "${sibarg:=-}"
 	[[ $sibarg == - ]] && sibarg=
 	if [[ ${UW_KIND:-game} == game ]] && list=$(git -C "$PROJ_DIR" ls-files '*.gd' 2>/dev/null); then
