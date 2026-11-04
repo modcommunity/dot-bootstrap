@@ -625,6 +625,12 @@ content_links_for() {
     awk '/^# bootstrap-link: /{src=$3; next} src!="" && /^\//{print $0 "\t" src} {src=""}' "$gi"
 }
 
+# A maps repo's lock pins its art stores only when an item goes `into` ".stores"; a lock that pins just the maps
+# (arena-dm-maps) must fall through to $DOT_STORES_FROM instead of fetching nothing.
+lock_lists_stores() {
+    [ -f "$1" ] && grep -Eq '"into"[[:space:]]*:[[:space:]]*"\.stores"' "$1"
+}
+
 link_content() {
     local proj="$1"; local dir="$PROJECTS_DIR/$proj" path src rel up
     [ -d "$dir" ] || return 0
@@ -634,7 +640,7 @@ link_content() {
         # The raw art stores (a maps repo's .stores) are in no repository: $DOT_STORES_FROM (an
         # rsync source, a folder or the URL of a .tar) is where a checkout gets them.
         if { [ ! -d "$PROJECTS_DIR/$src" ] || [ -f "$PROJECTS_DIR/$src/.dot-pack" ]; } && [ "${src##*/}" = ".stores" ] && [ -z "$STORES_USER_SET" ] && [ "$DOT_STORES_FROM" != none ] \
-                && [ -f "$PROJECTS_DIR/${src%%/*}/content.lock.json" ] && [ -x "$REPO_DIR/tools/fetch_lock.sh" ]; then
+                && lock_lists_stores "$PROJECTS_DIR/${src%%/*}/content.lock.json" && [ -x "$REPO_DIR/tools/fetch_lock.sh" ]; then
             "$REPO_DIR/tools/fetch_lock.sh" "$PROJECTS_DIR/${src%%/*}/content.lock.json" --only .stores \
                 && touch "$PROJECTS_DIR/$src/.gdignore" || warn "$proj" "fetching $src from content.lock.json failed"
         elif [ ! -d "$PROJECTS_DIR/$src" ] && [ "${src##*/}" = ".stores" ] && [ -d "$PROJECTS_DIR/${src%%/*}" ] \
