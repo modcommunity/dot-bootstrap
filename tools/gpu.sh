@@ -745,7 +745,8 @@ route_cmd() {
 			shot_cmd --route "${pre[@]}" "$project" "${cmd[@]}" ;;
 	esac
 	local sentinel="${HEAVY_DIR:-/var/tmp/heavy}/prefer-offload"
-	if [[ ${HEAVY_PREFER_OFFLOAD:-0} == 1 ]] || [[ -e $sentinel && $(( $(date +%s) - $(stat -c %Y "$sentinel") )) -lt 43200 ]]; then exec "${BASH_SOURCE[0]}" offer "$@"; fi
+	# Offload first by default (2026-11-04): the staging boxes sit idle while dev02 queues. HEAVY_PREFER_OFFLOAD=0 keeps a job here.
+	if [[ ${HEAVY_PREFER_OFFLOAD:-1} == 1 ]] || [[ -e $sentinel && $(( $(date +%s) - $(stat -c %Y "$sentinel") )) -lt 43200 ]]; then exec "${BASH_SOURCE[0]}" offer "$@"; fi
 	exit 75
 }
 
