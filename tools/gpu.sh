@@ -827,7 +827,7 @@ publish_cmd() {
 	for v in "${outs[@]}"; do "${SSH[@]}" "mkdir -p $(printf '%q' "$v")"; done
 
 	local rcmd limit=${UW_LIMIT:-3600}
-	rcmd="cd $(printf '%q' "$rroot/$project") && export GODOT=\${GODOT:-$rhome/gpu/bin/godot} && { timeout 600 \"\$GODOT\" --headless --path $(printf '%q' "$rroot/dot-cloud") --import >/dev/null 2>&1 || true; } && exec nice -n 5 timeout -k 30 $limit env $(printf '%q ' "${envs[@]}") $(printf '%q ' "${cmd[0]}" "${args[@]}")"
+	rcmd="cd $(printf '%q' "$rroot/$project") && export GODOT=\${GODOT:-$rhome/gpu/bin/godot} && { timeout 600 \"\$GODOT\" --headless --path $(printf '%q' "$rroot/dot-cloud") --import >/dev/null 2>&1 || true; } && exec nice -n 5 timeout -k 30 $limit env ${envs[@]+$(printf '%q ' "${envs[@]}")}$(printf '%q ' "${cmd[0]}" "${args[@]}")"
 	local rc=0
 	"${SSH[@]}" "flock -o -s ~/gpu/.lock bash -lc $(printf '%q' "$rcmd")" || rc=$?
 
