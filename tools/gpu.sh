@@ -32,6 +32,10 @@
 #                                            emulation) on staging02's 31 GB, the laptop when the desktop is off,
 #                                            and here under `heavy` when neither answers. The current git repo is
 #                                            staged and pulled back by default; see py_cmd.
+#   ./gpu.sh publish [env K=V...] tools/publish.sh [args]   (from a project dir)
+#                                            a dev02-short-of-memory pack publish on staging02 (GPU_PUBLISH_BOX); the box's own
+#                                            creator-token-<dev|prod> is used, lock and --out come back; see publish_cmd.
+#                                            heavy routes tools/publish*.sh there itself; GPU_PUBLISH=0 keeps one local
 #   ./gpu.sh offer ./game.sh [opts] test [suites...]
 #   ./gpu.sh offer godot --headless --path . res://examples/x.tscn
 #                                            heavy's offload hook: run a waiting suite or plain headless run on a box's
@@ -727,6 +731,12 @@ route_cmd() {
 	[[ "$PWD" == "$ROOT/$project" && "$project" != */* && -f "$PWD/project.godot" ]] || exit 75
 	unwrap "$@"
 	case "${UW_REST[0]:-}" in
+		tools/publish*.sh|./tools/publish*.sh)
+			# On by default (a dev publish ran end to end from the box); GPU_PUBLISH=0, in the env or the command's, keeps it here.
+			local kv want=${GPU_PUBLISH:-1}
+			for kv in "${UW_ENV[@]}"; do [[ $kv == GPU_PUBLISH=* ]] && want=${kv#GPU_PUBLISH=}; done
+			[[ $want == 1 ]] || exit 75
+			publish_cmd --route "$@" ;;
 		tools/screenshot*.sh|./tools/screenshot*.sh|tools/shot*.sh|./tools/shot*.sh|tools/camera_check*.sh|./tools/camera_check*.sh|./game.sh|game.sh)
 			[[ ${UW_REST[0]} != *game.sh || ${UW_REST[1]:-} == shot ]] || exit 75
 			local pre=() cmd=("${UW_REST[@]}")
@@ -737,6 +747,99 @@ route_cmd() {
 	local sentinel="${HEAVY_DIR:-/var/tmp/heavy}/prefer-offload"
 	if [[ ${HEAVY_PREFER_OFFLOAD:-0} == 1 ]] || [[ -e $sentinel && $(( $(date +%s) - $(stat -c %Y "$sentinel") )) -lt 43200 ]]; then exec "${BASH_SOURCE[0]}" offer "$@"; fi
 	exit 75
+}
+
+# gpu.sh publish [--local-ok] [env K=V...] tools/publish*.sh [args]   (run from a project directory)
+# Runs a pack publish on a staging box (default staging02, GPU_PUBLISH_BOX) because dev02 is short of
+# memory. The project, the dot-cloud checkout and every ../sibling the command names are copied to the
+# box with addon links resolved (the publisher excludes only what publish.sh says, same as here); the
+# token is the box's own ~/.config/dot/creator-token-<dev|prod>, chosen from the site and never sent,
+# printed or put in argv. Afterwards content.lock.json, the --lock file and --out dir come back, and the
+# exit code is the publish's. With --route (heavy's hook) a box that is down is exit 75 = run it here.
+publish_cmd() {
+	local route=0
+	[[ ${1:-} == --route ]] && { route=1; shift; }
+	local fail=die; [[ $route == 1 ]] && fail=defer
+	defer() { echo "gpu.sh: publish stays on dev02: $*" >&2; exit 75; }
+	unwrap "$@"
+	local project="${PWD#"$ROOT"/}"
+	[[ "$PWD" == "$ROOT/$project" && "$project" != */* && -f "$PWD/project.godot" ]] || $fail "run it from a project directory under $ROOT"
+	local cmd=("${UW_REST[@]}") envs=() kv
+	[[ ${cmd[0]:-} == tools/publish*.sh || ${cmd[0]:-} == ./tools/publish*.sh ]] || $fail "not a publish command: ${cmd[*]:0:1}"
+	for kv in "${UW_ENV[@]}"; do
+		[[ $kv == GPU_PUBLISH=* ]] && continue
+		[[ ${kv%%=*} =~ (TOKEN|KEY|SECRET|PASS|CRED) && ${kv%%=*} != DOT_CLI_TOKEN_FILE ]] && $fail "a secret in the command's environment stays local"
+		envs+=("$kv")
+	done
+	[[ -z ${DOT_CLI_TOKEN:-} ]] || $fail "DOT_CLI_TOKEN is set; it would have to travel, so it stays local"
+	set_box "${GPU_PUBLISH_BOX:-staging02}"
+	"${SSH[@]}" true 2>/dev/null || $fail "$BOX_DESC does not answer"
+	local rroot="$REMOTE_HOME/$REMOTE_ROOT" rhome=$REMOTE_HOME
+
+	# Arguments: local paths under the tree or $HOME become the box's; --lock, --out and --site are noted.
+	local args=() lockfiles=("$PWD/content.lock.json") outs=() site=${DOT_SITE:-} has_token=0 a prev= v
+	for kv in "${envs[@]}"; do [[ $kv == DOT_SITE=* ]] && site=${kv#DOT_SITE=}; [[ $kv == DOT_CLI_TOKEN_FILE=* ]] && has_token=1; done
+	[[ -z ${DOT_CLI_TOKEN_FILE:-} ]] || has_token=1
+	for a in "${cmd[@]:1}"; do
+		case $prev in
+			--site) site=$a ;;
+			--token-file) has_token=1 ;;
+			--lock) v=$a; [[ $v == /* ]] || v=$PWD/$v; lockfiles+=("$v") ;;
+			--out) v=$a; [[ $v == /* ]] || v=$PWD/$v; outs+=("$v") ;;
+		esac
+		[[ $a == --site=* ]] && site=${a#--site=}
+		prev=$a
+		a=${a//"$ROOT"/$rroot}; a=${a//"$HOME"/$rhome}
+		args+=("$a")
+	done
+	if [[ $has_token == 0 ]]; then
+		case $site in
+			*moddingcommunity.com*) envs+=("DOT_CLI_TOKEN_FILE=$rhome/.config/dot/creator-token-prod") ;;
+			*tmcdev.net*|*dev.dotgames.org*) envs+=("DOT_CLI_TOKEN_FILE=$rhome/.config/dot/creator-token-dev") ;;
+		esac
+	fi
+	local tok
+	for kv in "${envs[@]}"; do [[ $kv == DOT_CLI_TOKEN_FILE=* ]] && { tok=${kv#*=}; "${SSH[@]}" "[ -s $(printf '%q' "$tok") ]" || $fail "no token file $tok on $BOX_DESC"; }; done
+
+	# Projects to copy: this one, dot-cloud, and every $ROOT/<name> or ../<name> the arguments name
+	# (not the ../ references in scripts: some siblings are GBs). Links are resolved in the copy.
+	local want=("$project" dot-cloud) n
+	for a in "${cmd[@]:1}"; do
+		[[ $a == "$ROOT"/* ]] && { n=${a#"$ROOT"/}; want+=("${n%%/*}"); }
+		[[ $a == ../* ]] && { n=${a#../}; want+=("${n%%/*}"); }
+	done
+	local rs=(-e "ssh -i $KEY -o BatchMode=yes -o ConnectTimeout=10") seen=" "
+	for n in "${want[@]}"; do
+		[[ $seen == *" $n "* || ! $n =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ || ! -d $ROOT/$n ]] && continue
+		seen+="$n "
+		"${SSH[@]}" "mkdir -p ~/$REMOTE_ROOT/$n"
+		echo "gpu.sh: copying $n to $BOX_DESC" >&2
+		rsync -az --delete --copy-links --exclude '.godot/' --exclude '.git/' --exclude '__pycache__/' -e "ssh -i $KEY -o BatchMode=yes -o ConnectTimeout=10" \
+			"$ROOT/$n/" "$HOST:$REMOTE_ROOT/$n/" || $fail "copying $n failed"
+	done
+	# A lock or output path outside the tree is copied over at the same absolute path.
+	for v in "${lockfiles[@]}"; do
+		[[ $v == "$ROOT"/* ]] && continue
+		"${SSH[@]}" "mkdir -p $(printf '%q' "$(dirname "$v")")"
+		[[ ! -e $v ]] || rsync -a "${rs[@]}" "$v" "$HOST:$v"
+	done
+	for v in "${outs[@]}"; do "${SSH[@]}" "mkdir -p $(printf '%q' "$v")"; done
+
+	local rcmd limit=${UW_LIMIT:-3600}
+	rcmd="cd $(printf '%q' "$rroot/$project") && export GODOT=\${GODOT:-$rhome/gpu/bin/godot} && { timeout 600 \"\$GODOT\" --headless --path $(printf '%q' "$rroot/dot-cloud") --import >/dev/null 2>&1 || true; } && exec nice -n 5 timeout -k 30 $limit env $(printf '%q ' "${envs[@]}") $(printf '%q ' "${cmd[0]}" "${args[@]}")"
+	local rc=0
+	"${SSH[@]}" "flock -o -s ~/gpu/.lock bash -lc $(printf '%q' "$rcmd")" || rc=$?
+
+	# Results come back even after a failure: a publish that died after finalize has already written the lock line.
+	for v in "${lockfiles[@]}"; do
+		local rv=$v; [[ $v == "$ROOT"/* ]] && rv="$rroot/${v#"$ROOT"/}"
+		rsync -a "${rs[@]}" "$HOST:$rv" "$v" 2>/dev/null || true
+	done
+	for v in "${outs[@]}"; do
+		local rv=$v; [[ $v == "$ROOT"/* ]] && rv="$rroot/${v#"$ROOT"/}"
+		mkdir -p "$v"; rsync -a "${rs[@]}" "$HOST:$rv/" "$v/" || true
+	done
+	exit "$rc"
 }
 
 # Python jobs that hold a whole map in memory (BSP converters, route planners, nav emulation)
@@ -838,6 +941,10 @@ case "${1:-}" in
 	route)
 		shift
 		route_cmd "$@"
+		;;
+	publish)
+		shift
+		publish_cmd "$@"
 		;;
 	blender)
 		# Blender 4.3 on the desktop's RTX 2070 (Cycles: pass `--cycles-device OPTIX` after the
@@ -949,7 +1056,7 @@ case "${1:-}" in
 		exit 75
 		;;
 	*)
-		sed -n '3,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+		sed -n "3,44p" "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 		exit 2
 		;;
 esac
