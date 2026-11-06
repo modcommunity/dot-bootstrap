@@ -265,7 +265,16 @@ offer_eligible() {
 		esac
 	done
 	[[ $seen_test == 1 ]] || return 1
-	for s in "$@"; do [[ $s =~ ^[A-Za-z0-9_]+(\.tscn)?$ ]] || return 1; done
+	local suites=()
+	while [[ $# -gt 0 ]]; do
+		if [[ $1 == -- ]]; then
+			# One suite plus `-- --map=<id>`: the id is a bare name, so it is safe to forward.
+			[[ ${#suites[@]} == 1 && $# == 2 && $2 =~ ^--map=[A-Za-z0-9_.-]+$ ]] || return 1
+			break
+		fi
+		suites+=("$1"); shift
+	done
+	for s in "${suites[@]}"; do [[ $s =~ ^[A-Za-z0-9_]+(\.tscn)?$ ]] || return 1; done
 	UW_REST=(./game.sh "${UW_REST[@]:1}")
 	UW_KIND=game
 }

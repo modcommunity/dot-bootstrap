@@ -26,6 +26,15 @@ run no env X='a b' ./game.sh --no-parse test headless_a
 run no godot --headless --path . --import
 run no godot --headless --path . --script res://../x.gd
 run no tools/check_pinned_parse.sh game-x
+run yes ./game.sh --no-parse test headless_maps -- --map=sunken_resort
+run yes timeout 900 ./game.sh --no-parse test headless_maps -- --map=a-b.c_1
+run no ./game.sh --no-parse test headless_maps -- --map=a/b
+run no ./game.sh --no-parse test headless_maps -- '--map=a;b'
+run no ./game.sh --no-parse test headless_maps -- --map=
+run no ./game.sh --no-parse test headless_maps -- --other=x
+run no ./game.sh --no-parse test headless_maps -- --map=a extra
+run no ./game.sh --no-parse test a b -- --map=x
+run no ./game.sh --no-parse test -- --map=x
 run no ./game.sh shot
 rm -rf "$proj"
 [[ $fail == 0 ]] && echo "all passed" || { echo "$fail failed"; exit 1; }
