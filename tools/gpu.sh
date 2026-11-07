@@ -25,6 +25,7 @@
 #                                            and copy every new *.png back to the same path. --stage/--pull copy extra
 #                                            directories over/back (same absolute path). No box: one WARN line, runs here.
 #                                            GPU_OFFLOAD=0 stays local. heavy calls `route` for tools/screenshot*.sh, tools/camera_check*.sh,
+#                                            tools/render*.sh, tools/filmstrip*.sh, tools/*_shot.sh, tools/*_screenshot.sh,
 #                                            tools/shot*.sh and game.sh shot before it takes a local slot.
 #   ./gpu.sh blender [--stage DIR] [--pull DIR] -- <blender args>   Blender 4.3 on staging02's RTX 2070 (shared lock)
 #   ./gpu.sh py [--stage DIR]... [--pull DIR]... -- python3 <script> [args]
@@ -737,7 +738,7 @@ route_cmd() {
 			for kv in "${UW_ENV[@]}"; do [[ $kv == GPU_PUBLISH=* ]] && want=${kv#GPU_PUBLISH=}; done
 			[[ $want == 1 ]] || exit 75
 			publish_cmd --route "$@" ;;
-		tools/screenshot*.sh|./tools/screenshot*.sh|tools/shot*.sh|./tools/shot*.sh|tools/camera_check*.sh|./tools/camera_check*.sh|./game.sh|game.sh)
+		tools/screenshot*.sh|./tools/screenshot*.sh|tools/shot*.sh|./tools/shot*.sh|tools/camera_check*.sh|./tools/camera_check*.sh|tools/render*.sh|./tools/render*.sh|tools/filmstrip*.sh|./tools/filmstrip*.sh|tools/*_shot.sh|./tools/*_shot.sh|tools/*_screenshot.sh|./tools/*_screenshot.sh|./game.sh|game.sh)
 			[[ ${UW_REST[0]} != *game.sh || ${UW_REST[1]:-} == shot ]] || exit 75
 			local pre=() cmd=("${UW_REST[@]}")
 			[[ -z $UW_LIMIT ]] || pre=(--timeout "$UW_LIMIT")
