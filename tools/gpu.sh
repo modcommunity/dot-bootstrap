@@ -142,7 +142,11 @@ set_box() {
 		           SUITE_SLOTS=${GPU_SUITE_SLOTS:-3} SUITE_MAX_GB=${GPU_SUITE_MAX_GB:-6} DESKTOP_GUARD=0 ;;
 		staging02) HOST=gamedev@staging02.deacon.internal; BOX_DESC="the desktop (staging02)"
 		           SUITE_SLOTS=${GPU_SUITE_SLOTS:-5} SUITE_MAX_GB=${GPU_SUITE_MAX_GB:-7} DESKTOP_GUARD=1 ;;
-		*) die "unknown GPU_BOX '$BOX' (staging or staging02)" ;;
+		# ph-tmc-dev (2026-11-07): a build/test VM, no GPU, 40 vCPUs, 112 GB, 320 GB disk. Suites and python jobs only (it is in
+		# no shot or exclusive list); ~/gpu/janitor.sh keeps the disk under budget. Nobody sits at it, so no desktop guard.
+		ph)        HOST=gamedev@ph-tmc-dev.deacon.internal; BOX_DESC="the build VM (ph)"
+		           SUITE_SLOTS=${GPU_SUITE_SLOTS:-12} SUITE_MAX_GB=${GPU_SUITE_MAX_GB:-7} DESKTOP_GUARD=0 ;;
+		*) die "unknown GPU_BOX '$BOX' (staging, staging02 or ph)" ;;
 	esac
 	HOST=${GPU_HOST:-$HOST}
 	SSH=(ssh "${SSH_OPTS[@]}" "$HOST")
@@ -964,7 +968,7 @@ py_cmd() {
 
 	local box=
 	if [[ ${GPU_OFFLOAD:-1} != 0 ]]; then
-		for b in ${GPU_BOX:-staging02 staging}; do
+		for b in ${GPU_BOX:-ph staging02 staging}; do
 			set_box "$b"
 			if "${SSHQ[@]}" true 2>/dev/null; then box=$b; break; fi
 		done
@@ -1017,7 +1021,7 @@ case "${1:-}" in
 		;;
 	capacity)
 		# One line per box: the slots heavy can still hand it. heavy --status prints this.
-		for b in ${GPU_SUITE_BOXES:-staging02 staging}; do
+		for b in ${GPU_SUITE_BOXES:-ph staging02 staging}; do
 			set_box "$b"
 			read -r free total gb state < <(box_capacity)
 			printf '%-10s %s/%s suite slots free, %s GB free, %s\n' "$BOX" "$free" "$total" "$gb" "$state"
@@ -1181,8 +1185,8 @@ case "${1:-}" in
 		# heavy keeps waiting here and offers again later. Any other code is the suite's.
 		shift
 		offer_eligible "$@" || { [[ ${GPU_OFFER_VERBOSE:-0} == 1 ]] && echo "gpu.sh: not a suite these boxes can run" >&2; exit 75; }
-		# The desktop (staging02) first whenever it is up and has a slot, the laptop otherwise, dev02 last.
-		order=$(for b in ${GPU_SUITE_BOXES:-staging02 staging}; do
+		# The build VM (ph, 12 slots) first, then the desktop (staging02), then the laptop, dev02 last.
+		order=$(for b in ${GPU_SUITE_BOXES:-ph staging02 staging}; do
 			down="${HEAVY_DIR:-/var/tmp/heavy}/gpu-down.$b"
 			[[ -e $down && $(( $(date +%s) - $(stat -c %Y "$down") )) -lt 300 ]] && continue
 			echo "$b"
