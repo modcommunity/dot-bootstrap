@@ -481,8 +481,14 @@ export PATH=$HOME/gpu/suite/.shim:$PATH
 # The class cache stays here between runs; a stale one reads as "Identifier not declared".
 ilog=$HOME/gpu/suite/$project.import.log
 nice -n 5 timeout 1800 "$GODOT" --headless --path . --import >"$ilog" 2>&1 </dev/null 7>&- 9>&- {f}>&-
+# A stale class cache (a script gained a class_name or a member since the last run here) reads as
+# "Could not resolve external class member"; one import over a cleared cache fixes it, so retry once.
+if grep -qE 'SCRIPT ERROR|Parse error|Could not resolve' "$ilog"; then
+	rm -f .godot/global_script_class_cache.cfg .godot/uid_cache.bin
+	nice -n 5 timeout 1800 "$GODOT" --headless --path . --import >"$ilog" 2>&1 </dev/null 7>&- 9>&- {f}>&-
+fi
 # A parse error only shows as a suite hung until its timeout; stop here and say it.
-if grep -qE 'SCRIPT ERROR|Parse error|Could not resolve class' "$ilog"; then
+if grep -qE 'SCRIPT ERROR|Parse error|Could not resolve' "$ilog"; then
 	echo "gpu.sh: import of $project failed on the box:"
 	grep -E -A2 'SCRIPT ERROR|Parse error|Could not resolve class' "$ilog" | head -15
 	echo "__GPU_SUITE_RC=1"; exit 0
@@ -575,9 +581,13 @@ offer_on() {
 	[[ -n $rc ]] || { lane_pid=; back_to_queue "lost $BOX mid-run"; }
 	if [[ ${UW_KIND:-game} == game ]]; then
 		mkdir -p "$PROJ_DIR/.godot/test-logs"
-		rsync -az -e "$RSH" \
-			"$HOST:gpu/ws/$project/$project/.godot/test-logs/" "$PROJ_DIR/.godot/test-logs/" ||
-			echo "gpu.sh: could not copy the suite logs back from $BOX" >&2
+		if "${SSHQ[@]}" "[ -d gpu/ws/$project/$project/.godot/test-logs ]"; then
+			rsync -az -e "$RSH" \
+				"$HOST:gpu/ws/$project/$project/.godot/test-logs/" "$PROJ_DIR/.godot/test-logs/" ||
+				echo "gpu.sh: could not copy the suite logs back from $BOX" >&2
+		else
+			echo "gpu.sh: no suite logs on $BOX: the run stopped before any suite started (see the output above, e.g. missing addons/.stores links: run hv, which links them first)" >&2
+		fi
 	fi
 	exit "$rc"
 }
