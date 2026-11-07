@@ -11,10 +11,21 @@
 #
 #   ./gpu.sh status                          GPU, load and who holds the lock, on each box
 #   ./gpu.sh sync <project>                  copy godot/<project> to the laptop
-#   ./gpu.sh run  <project> [godot args...]  sync, then run Godot there on the 1660 Ti
+#   ./gpu.sh run  <project> [godot args...]  sync, then run Godot there on the 1660 Ti. run, exec and browser-shot take the
+#                                            lock exclusively, so they wait out every suite and shot on the box: they go to the
+#                                            laptop, or to the desktop when it has the shorter wait (GPU_BOX pins one,
+#                                            GPU_EXCL_BOXES sets the order); pull then reads from the box run used
 #   ./gpu.sh exec <command...>               any shell command there, under the lock
 #   ./gpu.sh pull <project> <path> [dir]     copy a file or folder back into dir (default: its folder here)
 #   ./gpu.sh browser-shot <url> <out.png>    load a page in the laptop's Chrome (WebGL2 on the 1660 Ti), save a frame
+#   ./gpu.sh cdp-run [--port N] [--serve PORT] -- <command...>
+#                                            cdp for one command: waits for a box with no suite running, tunnels Chrome, runs the
+#                                            command with GPU_CDP_URL set (a Playwright check connectOverCDP's to it instead of
+#                                            launching SwiftShader), then closes the tunnel; exit 75 when no box frees up
+#   ./gpu.sh cdp-run [--port N] [--serve PORT] -- <command...>
+#                                            cdp for one command: waits for a box with no suite running, tunnels Chrome, runs the
+#                                            command with GPU_CDP_URL set (a Playwright check connectOverCDP's to it instead of
+#                                            launching SwiftShader), then closes the tunnel; exit 75 when no box frees up
 #   ./gpu.sh cdp [port]                      Chrome there with its DevTools port tunnelled to localhost:<port>
 #                                            (default 9222); Playwright here: chromium.connectOverCDP("http://127.0.0.1:9222")
 #                                            GPU_CDP_SERVE=8000 also tunnels the laptop's 127.0.0.1:8000 back to this machine's :8000,
@@ -25,7 +36,13 @@
 #                                            and copy every new *.png back to the same path. --stage/--pull copy extra
 #                                            directories over/back (same absolute path). No box: one WARN line, runs here.
 #                                            GPU_OFFLOAD=0 stays local. heavy calls `route` for tools/screenshot*.sh, tools/camera_check*.sh,
-#                                            tools/shot*.sh and game.sh shot before it takes a local slot.
+#                                            tools/render*.sh, tools/filmstrip*.sh, tools/*_shot.sh, tools/*_shots.sh,
+#                                            tools/*_screenshot.sh, tools/*_preview.sh, tools/*killview*.sh, tools/verify_ui*.sh,
+#                                            tools/shot*.sh and game.sh shot before it takes a local slot. Each game's own
+#                                            copy of a screenshot tool (its Xvfb, its LIBGL_ALWAYS_SOFTWARE) is routed by name
+#                                            and needs no edit: the box's godot shim sets the renderer (a pinned gl_compatibility
+#                                            stays Mesa's software GL there, as before), and tools/visual_check.sh stays local
+#                                            because its goldens were rendered on llvmpipe.
 #   ./gpu.sh blender [--stage DIR] [--pull DIR] -- <blender args>   Blender 4.3 on staging02's RTX 2070 (shared lock)
 #   ./gpu.sh py [--stage DIR]... [--pull DIR]... -- python3 <script> [args]
 #                                            a memory-hungry Python job (the BSP converters, route planners, nav
@@ -97,7 +114,8 @@
 set -euo pipefail
 
 KEY="${GPU_KEY:-$HOME/.ssh/gpu-laptop}"
-GPU_INDEX="${GPU_INDEX:-0}"
+# Empty: `run` finds the NVIDIA card by name on whichever box it lands on.
+GPU_INDEX="${GPU_INDEX:-}"
 WT_ROOT="${WT_ROOT:-$HOME/wt}"
 ROOT="${GODOT_ROOT:-$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)}"
 REMOTE_ROOT="gpu/godot"
@@ -127,8 +145,18 @@ set_box() {
 		*) die "unknown GPU_BOX '$BOX' (staging or staging02)" ;;
 	esac
 	HOST=${GPU_HOST:-$HOST}
-	SSH=(ssh -i "$KEY" -o BatchMode=yes -o ConnectTimeout=10 "$HOST")
+	SSH=(ssh "${SSH_OPTS[@]}" "$HOST")
+	SSHQ=(timeout -k 5 "$PROBE_T" "${SSH[@]}")
 }
+# Every ssh/rsync/scp carries ServerAlive*: ConnectTimeout only bounds the TCP connect, so a link that
+# dies later (or a box that rebooted mid-session) would block for ever; three missed 5 s probes drop it.
+# SSH is for work that may run long. SSHQ is for liveness checks, probes, handshakes and small setup
+# commands: a hard `timeout` as well (GPU_PROBE_TIMEOUT, default 25 s), because a remote command that
+# stalls (loginctl on a box that just rebooted held an offer for 19 minutes, 2026-11-07) keeps the link
+# alive. A timed-out probe is an ssh failure, so the box counts as unavailable.
+PROBE_T="${GPU_PROBE_TIMEOUT:-25}"
+SSH_OPTS=(-i "$KEY" -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
+RSH="ssh -i $KEY -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3"
 set_box "${GPU_BOX:-staging}"
 
 project_dir() {
@@ -138,10 +166,10 @@ project_dir() {
 
 sync_project() {
 	project_dir "$1"
-	"${SSH[@]}" "mkdir -p ~/$REMOTE_ROOT/$1"
+	"${SSHQ[@]}" "mkdir -p ~/$REMOTE_ROOT/$1"
 	rsync -az --delete --copy-links \
 		--exclude '.godot/' --exclude '.git/' --exclude 'screenshots/' \
-		-e "ssh -i $KEY -o BatchMode=yes" \
+		-e "$RSH" \
 		"$ROOT/$1/" "$HOST:$REMOTE_ROOT/$1/"
 }
 
@@ -151,6 +179,46 @@ remote_locked() {
 	local cmd
 	cmd=$(printf '%q ' "$@")
 	"${SSH[@]}" "flock -o ~/gpu/.gate flock -o ~/gpu/.lock bash -lc $(printf '%q' "$cmd")"
+}
+
+# How long an exclusive job (a bake, a frame timing, exec) would queue on the current box
+# (set_box): "<score> <suites running>", empty when it does not answer. The lock is a
+# reader/writer pair: suites and shots hold ~/gpu/.lock shared, so an exclusive job waits out
+# every one of them (a suite runs up to 90 minutes), while ~/gpu/.gate, which it takes first,
+# only keeps new suites out. Score = suites running + 100 if another exclusive job is waiting
+# + 1000 if one is running.
+box_excl_score() {
+	"${SSHQ[@]}" "bash -c $(printf '%q' 'cd ~/gpu 2>/dev/null || { echo "0 0"; exit 0; }
+busy=0; sc=0
+for n in $(seq 1 "$1"); do exec {f}>>"suite.$n.lock"; flock -n "$f" || busy=$((busy+1)); exec {f}>&-; done
+exec 9>>.lock; flock -n -s 9 || sc=$((sc+1000))
+flock -n .gate true || sc=$((sc+100))
+echo "$((sc+busy)) $busy"') _ ${GPU_SUITE_SLOTS:-5}" 2>/dev/null
+}
+
+# Picks the box an exclusive job (run, exec, browser-shot) queues on: GPU_BOX if set, else the
+# one with the shortest wait among GPU_EXCL_BOXES (default: the laptop first, then the desktop),
+# so a bake does not sit behind a long suite on one box while the other is idle. A tie keeps
+# the earlier box, and a box that does not answer is skipped. Sets BOX via set_box; exits 2
+# when none answers.
+pick_box() {
+	[[ -z ${GPU_BOX:-} ]] || return 0
+	local b best= bestscore= score busy bestbusy=0 first=
+	for b in ${GPU_EXCL_BOXES:-staging staging02}; do
+		set_box "$b"
+		read -r score busy < <(box_excl_score) || true
+		[[ -n ${score:-} ]] || continue
+		[[ -n $first ]] || first=$b
+		if [[ -z $bestscore ]] || (( score < bestscore )); then best=$b bestscore=$score bestbusy=$busy; fi
+		(( score == 0 )) && break
+		score=
+	done
+	[[ -n $best ]] || die "no GPU box answers (./gpu.sh status)"
+	set_box "$best"
+	if (( bestscore >= 1000 )); then echo "gpu.sh: $BOX_DESC is running an exclusive job; this one queues behind it" >&2
+	elif (( bestscore >= 100 )); then echo "gpu.sh: $BOX_DESC has an exclusive job waiting; this one queues behind it" >&2
+	elif (( bestscore > 0 )); then echo "gpu.sh: $BOX_DESC has $bestbusy suite(s)/shot(s) running; this job starts when they end" >&2; fi
+	if [[ $best != "$first" ]]; then echo "gpu.sh: using $BOX_DESC ($first is busier)" >&2; fi
 }
 
 # The free memory a suite needs to start (slots and ceiling are per box, in set_box).
@@ -328,13 +396,13 @@ stage_sibling() {
 			( cd "$src" && find "$dd" -type f -print0 ) >>"$list"
 	done
 	fp=$( { cat "$list"; ( cd "$src" && xargs -0 -r stat -L -c '%s %Y' -- <"$list" 2>/dev/null ); } | sha1sum | cut -c1-16 )
-	local rs=(-e "ssh -i $KEY -o BatchMode=yes -o ConnectTimeout=10")
-	if ! "${SSH[@]}" "[ -f ~/gpu/sib/$name/$fp/.complete ] && touch ~/gpu/sib/$name/$fp/.complete"; then
-		"${SSH[@]}" "mkdir -p ~/gpu/sib/$name" || { rm -f "$list"; return 1; }
+	local rs=(-e "$RSH")
+	if ! "${SSHQ[@]}" "[ -f ~/gpu/sib/$name/$fp/.complete ] && touch ~/gpu/sib/$name/$fp/.complete"; then
+		"${SSHQ[@]}" "mkdir -p ~/gpu/sib/$name" || { rm -f "$list"; return 1; }
 		local tmp="gpu/sib/$name/.tmp.$fp.$$"
 		rsync -a --copy-links --from0 --files-from="$list" "${rs[@]}" \
 			--link-dest="$REMOTE_HOME/gpu/sib/$name/latest/" "$src/" "$HOST:$tmp/" || { rm -f "$list"; return 1; }
-		"${SSH[@]}" "cd ~/gpu/sib/$name && touch .tmp.$fp.$$/.complete && { mv -T .tmp.$fp.$$ $fp 2>/dev/null || rm -rf .tmp.$fp.$$; } && ln -sfn $fp latest" || { rm -f "$list"; return 1; }
+		"${SSHQ[@]}" "cd ~/gpu/sib/$name && touch .tmp.$fp.$$/.complete && { mv -T .tmp.$fp.$$ $fp 2>/dev/null || rm -rf .tmp.$fp.$$; } && ln -sfn $fp latest" || { rm -f "$list"; return 1; }
 	fi
 	rm -f "$list"
 	echo "$name=$fp"
@@ -426,7 +494,7 @@ EOF
 # state is ok, gpu (an exclusive GPU job holds it), gate (one is waiting), person (the desktop
 # guard), or full. Used to send a job to the box with the most room, and by `capacity`/`status`.
 box_capacity() {
-	"${SSH[@]}" "bash -c $(printf '%q' "$GUARD_FN"$'\n''cd ~/gpu 2>/dev/null || { echo "0 0 0 nodir"; exit 0; }
+	"${SSHQ[@]}" "bash -c $(printf '%q' "$GUARD_FN"$'\n''cd ~/gpu 2>/dev/null || { echo "0 0 0 nodir"; exit 0; }
 slots=$1 guard=$2; free=0; state=ok
 for n in $(seq 1 "$slots"); do exec {f}>>"suite.$n.lock"; flock -n "$f" && free=$((free+1)); exec {f}>&-; done
 avail=$(awk '"'"'/MemAvailable/ {print int($2/1048576)}'"'"' /proc/meminfo)
@@ -443,7 +511,7 @@ offer_on() {
 	local down=$1; shift
 	who="$(whoami)@$(hostname -s) since $(date +%H:%M:%S): $project: $*"
 	trap '' PIPE  # a box that vanishes mid-handshake is a 75, not a SIGPIPE death
-	coproc LANE { "${SSH[@]}" "bash -c $(printf '%q' "$GUARD_FN"$'\n'"$REMOTE_SUITE") _ $(printf '%q ' \
+	coproc LANE { exec "${SSH[@]}" "bash -c $(printf '%q' "$GUARD_FN"$'\n'"$REMOTE_SUITE") _ $(printf '%q ' \
 		"$project" "$SUITE_SLOTS" "$SUITE_MIN_GB" "$SUITE_MAX_GB" "$who" "$DESKTOP_GUARD" "${UW_LIMIT:-5400}" "${UW_KIND:-game}" "${@:2}")"; }
 	lane_out=${LANE[0]} lane_in=${LANE[1]} lane_pid=$LANE_PID
 	# bash closes the coproc fds when it reaps the ssh; a dup survives that, so the last read cannot hit EBADF.
@@ -456,8 +524,11 @@ offer_on() {
 		exit 75
 	}
 	reply=
-	read -r -t 30 -u "$lane_out" reply || true
-	if [[ -z $reply ]]; then mkdir -p "$(dirname "$down")"; touch "$down"; else rm -f "$down"; fi
+	read -r -t "${GPU_HANDSHAKE_TIMEOUT:-30}" -u "$lane_out" reply || true
+	if [[ -z $reply ]]; then
+		mkdir -p "$(dirname "$down")"; touch "$down"
+		echo "gpu.sh: WARN $BOX did not answer in time; treating it as unavailable (running locally)" >&2
+	else rm -f "$down"; fi
 	# GPU_OFFER_VERBOSE=1 says why a box said no (heavy offers every 15 s, so it is quiet by default).
 	[[ $reply == OK ]] || back_to_queue "$([[ ${GPU_OFFER_VERBOSE:-0} == 1 ]] && echo "$BOX: ${reply:-no answer}")"
 	echo "heavy: $BOX_DESC took this suite: $project: $*" >&2
@@ -466,15 +537,15 @@ offer_on() {
 		kv=$(stage_sibling "$n") || back_to_queue "staging $n on $BOX failed"
 		sibs+=("$kv")
 	done
-	"${SSH[@]}" "mkdir -p ~/gpu/ws/$project/$project" || back_to_queue "cannot make the workspace on $BOX"
+	"${SSHQ[@]}" "mkdir -p ~/gpu/ws/$project/$project" || back_to_queue "cannot make the workspace on $BOX"
 	local ex=() lk lt
 	while IFS=$'\t' read -r _ lk lt; do ex+=(--exclude "/$lk"); done < <(linked_siblings "$PROJ_DIR")
 	rsync -az --delete --copy-links --exclude '.godot/' --exclude '.git/' --exclude 'screenshots/' "${ex[@]}" \
-		-e "ssh -i $KEY -o BatchMode=yes -o ConnectTimeout=10" \
+		-e "$RSH" \
 		"$PROJ_DIR/" "$HOST:gpu/ws/$project/$project/" || back_to_queue "copying $project to $BOX failed"
 
 	while IFS=$'\t' read -r _ lk lt; do
-		"${SSH[@]}" "cd ~/gpu/ws/$project/$project && rm -rf ./$lk && ln -s $lt ./$lk" </dev/null ||
+		"${SSHQ[@]}" "cd ~/gpu/ws/$project/$project && rm -rf ./$lk && ln -s $lt ./$lk" </dev/null ||
 			back_to_queue "linking $lk into the workspace on $BOX failed"
 	done < <(linked_siblings "$PROJ_DIR")
 	local sibarg; sibarg=$(IFS=,; echo "${sibs[*]}"); : "${sibarg:=-}"
@@ -495,7 +566,7 @@ offer_on() {
 	[[ -n $rc ]] || { lane_pid=; back_to_queue "lost $BOX mid-run"; }
 	if [[ ${UW_KIND:-game} == game ]]; then
 		mkdir -p "$PROJ_DIR/.godot/test-logs"
-		rsync -az -e "ssh -i $KEY -o BatchMode=yes -o ConnectTimeout=10" \
+		rsync -az -e "$RSH" \
 			"$HOST:gpu/ws/$project/$project/.godot/test-logs/" "$PROJ_DIR/.godot/test-logs/" ||
 			echo "gpu.sh: could not copy the suite logs back from $BOX" >&2
 	fi
@@ -618,16 +689,16 @@ shot_on() {
 	local down=$1 limit=$2; shift 2
 	local reply rc= line d
 	trap '' PIPE
-	reply=$("${SSH[@]}" "bash -c $(printf '%q' "$GUARD_FN"$'\n'"$REMOTE_SHOT") _ probe $(printf '%q ' \
+	reply=$("${SSHQ[@]}" "bash -c $(printf '%q' "$GUARD_FN"$'\n'"$REMOTE_SHOT") _ probe $(printf '%q ' \
 		"$project" "$DESKTOP_GUARD" 5 "$limit")" 2>/dev/null | tail -1) || true
 	if [[ -z $reply ]]; then mkdir -p "$(dirname "$down")"; touch "$down"; exit 76; else rm -f "$down"; fi
 	[[ $reply == OK ]] || { [[ ${GPU_OFFER_VERBOSE:-0} == 1 ]] && echo "gpu.sh: $BOX: $reply" >&2; exit 75; }
-	local rs=(-e "ssh -i $KEY -o BatchMode=yes -o ConnectTimeout=10")
-	"${SSH[@]}" "mkdir -p ~/gpu/shot/$project" && \
+	local rs=(-e "$RSH")
+	"${SSHQ[@]}" "mkdir -p ~/gpu/shot/$project" && \
 	rsync -az --delete --copy-links --exclude '.godot/' --exclude '.git/' --exclude 'screenshots/' \
 		"${rs[@]}" "$ROOT/$project/" "$HOST:gpu/shot/$project/" || { echo "gpu.sh: copying $project to $BOX failed" >&2; exit 75; }
 	for d in "${SHOT_STAGE[@]}"; do
-		"${SSH[@]}" "mkdir -p $(printf '%q' "$d")" && rsync -az "${rs[@]}" "$d/" "$HOST:$d/" || exit 75
+		"${SSHQ[@]}" "mkdir -p $(printf '%q' "$d")" && rsync -az "${rs[@]}" "$d/" "$HOST:$d/" || exit 75
 	done
 	echo "gpu.sh: $BOX_DESC takes this frame: $project: $*" >&2
 	while IFS= read -r line; do
@@ -647,11 +718,11 @@ shot_on() {
 	while IFS= read -r f; do
 		[[ -n $f ]] || continue
 		check_frame "$ROOT/$project/$f" || bad=1
-	done < <("${SSH[@]}" "cat ~/gpu/shot/$project.files" 2>/dev/null)
+	done < <("${SSHQ[@]}" "cat ~/gpu/shot/$project.files" 2>/dev/null)
 	# 77 = blank: shot_cmd stops offloading and renders here, with a visible message.
 	if [[ $bad == 1 && $rc == 0 ]]; then
 		echo "gpu.sh: WARN $BOX returned a blank frame (see above); discarding it" >&2
-		while IFS= read -r f; do [[ -n $f ]] && rm -f "$ROOT/$project/$f"; done < <("${SSH[@]}" "cat ~/gpu/shot/$project.files" 2>/dev/null)
+		while IFS= read -r f; do [[ -n $f ]] && rm -f "$ROOT/$project/$f"; done < <("${SSHQ[@]}" "cat ~/gpu/shot/$project.files" 2>/dev/null)
 		exit 77
 	fi
 	exit "$rc"
@@ -737,7 +808,7 @@ route_cmd() {
 			for kv in "${UW_ENV[@]}"; do [[ $kv == GPU_PUBLISH=* ]] && want=${kv#GPU_PUBLISH=}; done
 			[[ $want == 1 ]] || exit 75
 			publish_cmd --route "$@" ;;
-		tools/screenshot*.sh|./tools/screenshot*.sh|tools/shot*.sh|./tools/shot*.sh|tools/camera_check*.sh|./tools/camera_check*.sh|./game.sh|game.sh)
+		tools/screenshot*.sh|./tools/screenshot*.sh|tools/shot*.sh|./tools/shot*.sh|tools/camera_check*.sh|./tools/camera_check*.sh|tools/render*.sh|./tools/render*.sh|tools/filmstrip*.sh|./tools/filmstrip*.sh|tools/*_shot.sh|./tools/*_shot.sh|tools/*_shots.sh|./tools/*_shots.sh|tools/*_screenshot.sh|./tools/*_screenshot.sh|tools/*_preview.sh|./tools/*_preview.sh|tools/*killview*.sh|./tools/*killview*.sh|tools/verify_ui*.sh|./tools/verify_ui*.sh|./game.sh|game.sh)
 			[[ ${UW_REST[0]} != *game.sh || ${UW_REST[1]:-} == shot ]] || exit 75
 			local pre=() cmd=("${UW_REST[@]}")
 			[[ -z $UW_LIMIT ]] || pre=(--timeout "$UW_LIMIT")
@@ -774,7 +845,7 @@ publish_cmd() {
 	done
 	[[ -z ${DOT_CLI_TOKEN:-} ]] || $fail "DOT_CLI_TOKEN is set; it would have to travel, so it stays local"
 	set_box "${GPU_PUBLISH_BOX:-staging02}"
-	"${SSH[@]}" true 2>/dev/null || $fail "$BOX_DESC does not answer"
+	"${SSHQ[@]}" true 2>/dev/null || $fail "$BOX_DESC does not answer"
 	local rroot="$REMOTE_HOME/$REMOTE_ROOT" rhome=$REMOTE_HOME
 
 	# Arguments: local paths under the tree or $HOME become the box's; --lock, --out and --site are noted.
@@ -800,7 +871,7 @@ publish_cmd() {
 		esac
 	fi
 	local tok
-	for kv in "${envs[@]}"; do [[ $kv == DOT_CLI_TOKEN_FILE=* ]] && { tok=${kv#*=}; "${SSH[@]}" "[ -s $(printf '%q' "$tok") ]" || $fail "no token file $tok on $BOX_DESC"; }; done
+	for kv in "${envs[@]}"; do [[ $kv == DOT_CLI_TOKEN_FILE=* ]] && { tok=${kv#*=}; "${SSHQ[@]}" "[ -s $(printf '%q' "$tok") ]" || $fail "no token file $tok on $BOX_DESC"; }; done
 
 	# Projects to copy: this one, dot-cloud, and every $ROOT/<name> or ../<name> the arguments name
 	# (not the ../ references in scripts: some siblings are GBs). Links are resolved in the copy.
@@ -809,22 +880,22 @@ publish_cmd() {
 		[[ $a == "$ROOT"/* ]] && { n=${a#"$ROOT"/}; want+=("${n%%/*}"); }
 		[[ $a == ../* ]] && { n=${a#../}; want+=("${n%%/*}"); }
 	done
-	local rs=(-e "ssh -i $KEY -o BatchMode=yes -o ConnectTimeout=10") seen=" "
+	local rs=(-e "$RSH") seen=" "
 	for n in "${want[@]}"; do
 		[[ $seen == *" $n "* || ! $n =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ || ! -d $ROOT/$n ]] && continue
 		seen+="$n "
-		"${SSH[@]}" "mkdir -p ~/$REMOTE_ROOT/$n"
+		"${SSHQ[@]}" "mkdir -p ~/$REMOTE_ROOT/$n"
 		echo "gpu.sh: copying $n to $BOX_DESC" >&2
-		rsync -az --delete --copy-links --exclude '.godot/' --exclude '.git/' --exclude '__pycache__/' -e "ssh -i $KEY -o BatchMode=yes -o ConnectTimeout=10" \
+		rsync -az --delete --copy-links --exclude '.godot/' --exclude '.git/' --exclude '__pycache__/' -e "$RSH" \
 			"$ROOT/$n/" "$HOST:$REMOTE_ROOT/$n/" || $fail "copying $n failed"
 	done
 	# A lock or output path outside the tree is copied over at the same absolute path.
 	for v in "${lockfiles[@]}"; do
 		[[ $v == "$ROOT"/* ]] && continue
-		"${SSH[@]}" "mkdir -p $(printf '%q' "$(dirname "$v")")"
+		"${SSHQ[@]}" "mkdir -p $(printf '%q' "$(dirname "$v")")"
 		[[ ! -e $v ]] || rsync -a "${rs[@]}" "$v" "$HOST:$v"
 	done
-	for v in "${outs[@]}"; do "${SSH[@]}" "mkdir -p $(printf '%q' "$v")"; done
+	for v in "${outs[@]}"; do "${SSHQ[@]}" "mkdir -p $(printf '%q' "$v")"; done
 
 	local rcmd limit=${UW_LIMIT:-3600}
 	rcmd="cd $(printf '%q' "$rroot/$project") && export GODOT=\${GODOT:-$rhome/gpu/bin/godot} && { timeout 600 \"\$GODOT\" --headless --path $(printf '%q' "$rroot/dot-cloud") --import >/dev/null 2>&1 || true; } && exec nice -n 5 timeout -k 30 $limit env ${envs[@]+$(printf '%q ' "${envs[@]}")}$(printf '%q ' "${cmd[0]}" "${args[@]}")"
@@ -876,7 +947,7 @@ py_cmd() {
 	if [[ ${GPU_OFFLOAD:-1} != 0 ]]; then
 		for b in ${GPU_BOX:-staging02 staging}; do
 			set_box "$b"
-			if "${SSH[@]}" true 2>/dev/null; then box=$b; break; fi
+			if "${SSHQ[@]}" true 2>/dev/null; then box=$b; break; fi
 		done
 	fi
 	if [[ -z $box ]]; then
@@ -887,10 +958,10 @@ py_cmd() {
 	echo "gpu.sh py: on $BOX_DESC: $*" >&2
 	"${SSH[@]}" "[ -x $PY_VENV/bin/python3 ] || { python3 -m venv $PY_VENV && $PY_VENV/bin/pip -q install numpy matplotlib pillow || { rm -rf $PY_VENV; false; }; }" >&2 ||
 		die "py: could not make the venv on $BOX"
-	local rs=(-e "ssh -i $KEY -o BatchMode=yes -o ConnectTimeout=10")
+	local rs=(-e "$RSH")
 	for d in "${stage[@]}"; do
 		[[ -d $d ]] || continue
-		"${SSH[@]}" "mkdir -p $(printf '%q' "$PY_ROOT$d")"
+		"${SSHQ[@]}" "mkdir -p $(printf '%q' "$PY_ROOT$d")"
 		rsync -az --delete --copy-links --exclude '.git/' --exclude '.godot/' "${rs[@]}" "$d/" "$HOST:$PY_ROOT$d/" ||
 			die "py: copying $d to $BOX failed"
 	done
@@ -917,7 +988,7 @@ case "${1:-}" in
 		for b in ${GPU_BOX:-staging staging02}; do
 		set_box "$b"
 		echo "== $BOX_DESC"
-		"${SSH[@]}" 'nvidia-smi --query-gpu=name,driver_version,utilization.gpu,memory.used,memory.total --format=csv,noheader;
+		"${SSHQ[@]}" 'nvidia-smi --query-gpu=name,driver_version,utilization.gpu,memory.used,memory.total --format=csv,noheader;
 			uptime;
 			if flock -n ~/gpu/.lock true 2>/dev/null; then echo "lock: free"; else echo "lock: HELD"; fi;
 			for w in ~/gpu/suite.*.who; do [ -e "$w" ] || continue; flock -n "${w%.who}.lock" true 2>/dev/null ||
@@ -931,7 +1002,7 @@ case "${1:-}" in
 			set_box "$b"
 			read -r free total gb state < <(box_capacity)
 			printf '%-10s %s/%s suite slots free, %s GB free, %s\n' "$BOX" "$free" "$total" "$gb" "$state"
-			"${SSH[@]}" 'for w in ~/gpu/suite.*.who; do [ -e "$w" ] || continue; flock -n "${w%.who}.lock" true 2>/dev/null ||
+			"${SSHQ[@]}" 'for w in ~/gpu/suite.*.who; do [ -e "$w" ] || continue; flock -n "${w%.who}.lock" true 2>/dev/null ||
 				echo "           running: $(cat "$w")"; done' 2>/dev/null || true
 		done
 		;;
@@ -963,8 +1034,8 @@ case "${1:-}" in
 				*) break ;;
 			esac
 		done
-		rs=(-e "ssh -i $KEY -o BatchMode=yes -o ConnectTimeout=10")
-		for d in "${SHOT_STAGE[@]}"; do "${SSH[@]}" "mkdir -p $(printf '%q' "$d")" && rsync -az "${rs[@]}" "$d/" "$HOST:$d/"; done
+		rs=(-e "$RSH")
+		for d in "${SHOT_STAGE[@]}"; do "${SSHQ[@]}" "mkdir -p $(printf '%q' "$d")" && rsync -az "${rs[@]}" "$d/" "$HOST:$d/"; done
 		# Shared lock, like a suite or a shot: a render does not need the box to itself and must not wait out a suite.
 		rc=0; "${SSH[@]}" "flock -o -s ~/gpu/.lock timeout ${GPU_TIMEOUT:-1800} $REMOTE_HOME/gpu/blender/blender $(printf '%q ' "$@")" || rc=$?
 		for d in "${SHOT_PULL[@]}"; do mkdir -p "$d"; rsync -az "${rs[@]}" "$HOST:$d/" "$d/" || true; done
@@ -979,6 +1050,10 @@ case "${1:-}" in
 		;;
 	run)
 		project="${2:-}"
+		project_dir "$project"
+		pick_box
+		# `pull` reads this to look on the box that ran it.
+		mkdir -p "$HOME/.cache" && echo "$BOX" > "$HOME/.cache/gpu-last-box.$project"
 		sync_project "$project"
 		shift 2
 		# A project directory the box has not seen has no .godot (sync leaves it out), and a
@@ -986,32 +1061,37 @@ case "${1:-}" in
 		# first, headless, whenever the class cache is missing or a source is newer than it (new glbs left
 		# "Cannot open file .godot/imported/...scn" on a box that had imported before).
 		remote_locked bash -c "cd $(printf '%q' "$REMOTE_HOME/$REMOTE_ROOT/$project") && { [ -f .godot/global_script_class_cache.cfg ] && [ -z \"\$(find . -path ./.godot -prune -o \\( -name \"*.import\" -o -name \"*.glb\" -o -name \"*.gd\" \\) -newer .godot/global_script_class_cache.cfg -print -quit)\" ] || timeout 900 $REMOTE_HOME/gpu/bin/godot --headless --path . --import >/dev/null 2>&1 </dev/null; }; true"
+		idx=$GPU_INDEX
+		[[ -n $idx ]] || idx=$("${SSHQ[@]}" "vulkaninfo --summary 2>/dev/null | awk '/^GPU[0-9]+:/ {g=substr(\$1,4)+0} /deviceName.*NVIDIA/ {print g; exit}'" 2>/dev/null) || true
 		remote_locked timeout -k 15 "${GPU_TIMEOUT:-1800}" xvfb-run -a -s "-screen 0 1920x1080x24" \
 			"$REMOTE_HOME/gpu/bin/godot" --path "$REMOTE_HOME/$REMOTE_ROOT/$project" \
-			--rendering-driver vulkan --gpu-index "$GPU_INDEX" "$@"
+			--rendering-driver vulkan --gpu-index "${idx:-0}" "$@"
 		;;
 	exec)
 		shift
 		[[ $# -gt 0 ]] || die "exec what?"
+		pick_box
 		remote_locked "$@"
 		;;
 	pull)
 		project_dir "${2:-}"
 		[[ -n "${3:-}" ]] || die "pull which path inside $2?"
+		[[ -n ${GPU_BOX:-} || ! -f "$HOME/.cache/gpu-last-box.$2" ]] || set_box "$(cat "$HOME/.cache/gpu-last-box.$2")"
 		# dest is a directory the path lands IN (rsync semantics), by default its own folder here.
 		dest="${4:-$ROOT/$2/$(dirname "$3")}"
 		mkdir -p "$dest"
-		rsync -az -e "ssh -i $KEY -o BatchMode=yes" "$HOST:$REMOTE_ROOT/$2/$3" "$dest/"
+		rsync -az -e "$RSH" "$HOST:$REMOTE_ROOT/$2/$3" "$dest/"
 		;;
 	browser-shot)
 		url="${2:-}"; out="${3:-}"
 		[[ -n "$url" && -n "$out" ]] || die "browser-shot <url> <out.png>"
+		pick_box
 		# --virtual-time-budget lets a page that loads for a while get there before the frame.
 		remote_locked bash -c "rm -rf /tmp/gpu-chrome && timeout 180 google-chrome $CHROME_COMMON $CHROME_GPU_FLAGS \
 			--user-data-dir=/tmp/gpu-chrome --virtual-time-budget=${GPU_PAGE_MS:-30000} \
 			--screenshot=/tmp/gpu-browser-shot.png $(printf '%q' "$url") >/dev/null 2>&1; ls /tmp/gpu-browser-shot.png"
 		mkdir -p "$(dirname "$out")"
-		scp -q -i "$KEY" "$HOST:/tmp/gpu-browser-shot.png" "$out"
+		timeout -k 5 "${GPU_SCP_TIMEOUT:-120}" scp -q -i "$KEY" -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 "$HOST:/tmp/gpu-browser-shot.png" "$out"
 		echo "$out"
 		;;
 	cdp)
@@ -1026,11 +1106,56 @@ case "${1:-}" in
 		# The trap kills both halves of the pipeline: killing this script alone left
 		# tail and ssh running, so the tunnel (and the lock) outlived it.
 		trap 'pkill -P $$ 2>/dev/null' EXIT INT TERM
-		tail -f /dev/null | ssh -i "$KEY" -o BatchMode=yes -o ExitOnForwardFailure=yes -L "$port:127.0.0.1:$port" ${GPU_CDP_SERVE:+-R "$GPU_CDP_SERVE:127.0.0.1:$GPU_CDP_SERVE"} "$HOST" \
+		tail -f /dev/null | ssh "${SSH_OPTS[@]}" -o ExitOnForwardFailure=yes -L "$port:127.0.0.1:$port" ${GPU_CDP_SERVE:+-R "$GPU_CDP_SERVE:127.0.0.1:$GPU_CDP_SERVE"} "$HOST" \
 			"flock -n -o ~/gpu/.gate flock -n -o ~/gpu/.lock bash -c 'rm -rf /tmp/gpu-chrome-cdp; google-chrome $CHROME_COMMON $CHROME_GPU_FLAGS \
 			--user-data-dir=/tmp/gpu-chrome-cdp --remote-debugging-address=127.0.0.1 --remote-debugging-port=$port about:blank \
 			>/dev/null 2>&1 & c=\$!; cat >/dev/null; kill \$c; wait \$c' || echo 'gpu.sh: $BOX_DESC is busy (lock held); ./gpu.sh status' >&2" &
 		wait
+		;;
+	cdp-run)
+		# Runs a web-client check (Playwright or any script) against the real GPU's Chrome: finds an idle
+		# box, opens the cdp tunnel, runs the command with GPU_CDP_URL=http://127.0.0.1:<port> in its
+		# environment (the check does chromium.connectOverCDP(process.env.GPU_CDP_URL) instead of
+		# chromium.launch, which falls back to SwiftShader), then closes the tunnel. --serve PORT also
+		# tunnels this machine's PORT to the box, so a page served here loads in that Chrome.
+		# The cdp lock is exclusive and refuses at once, so only a box with no suite or shot running
+		# can take it; this waits GPU_CDP_WAIT seconds (default 300) for one, and exits 75 if none frees.
+		shift
+		cport=9222 cserve=
+		while [[ $# -gt 0 ]]; do
+			case $1 in
+				--port) cport=${2:?--port needs a number}; shift 2 ;;
+				--serve) cserve=${2:?--serve needs a port}; shift 2 ;;
+				--) shift; break ;;
+				*) break ;;
+			esac
+		done
+		[[ $# -gt 0 ]] || die "cdp-run [--port N] [--serve PORT] -- <command...>"
+		cdl=$(( $(date +%s) + ${GPU_CDP_WAIT:-300} )) cbox=
+		while :; do
+			for b in ${GPU_BOX:-${GPU_EXCL_BOXES:-staging02 staging}}; do
+				set_box "$b"
+				read -r score _ < <(box_excl_score) || true
+				if [[ ${score:-x} == 0 ]]; then cbox=$b; break; fi
+				score=
+			done
+			[[ -z $cbox ]] || break
+			[[ $(date +%s) -lt $cdl ]] || { echo "gpu.sh cdp-run: no box is idle (suites or a GPU job are running); not run" >&2; exit 75; }
+			sleep 10
+		done
+		GPU_BOX=$cbox GPU_CDP_SERVE=$cserve "${BASH_SOURCE[0]}" cdp "$cport" >&2 &
+		cpid=$!
+		trap 'kill "$cpid" 2>/dev/null || true; wait "$cpid" 2>/dev/null || true' EXIT INT TERM
+		up=0
+		for _ in $(seq 1 60); do
+			kill -0 "$cpid" 2>/dev/null || break
+			if curl -fs -m 2 "http://127.0.0.1:$cport/json/version" >/dev/null 2>&1; then up=1; break; fi
+			sleep 1
+		done
+		[[ $up == 1 ]] || { echo "gpu.sh cdp-run: Chrome on $cbox did not come up (lock taken meanwhile?)" >&2; exit 75; }
+		echo "gpu.sh cdp-run: Chrome on $BOX_DESC, GPU_CDP_URL=http://127.0.0.1:$cport" >&2
+		rc=0; GPU_CDP_URL="http://127.0.0.1:$cport" "$@" || rc=$?
+		exit "$rc"
 		;;
 	offer)
 		# Called by heavy while a build-lane job waits. 75 (EX_TEMPFAIL) is "not taken":
@@ -1057,7 +1182,7 @@ case "${1:-}" in
 		exit 75
 		;;
 	*)
-		sed -n "3,44p" "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+		sed -n '3,/^# Examples:/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
 		exit 2
 		;;
 esac
