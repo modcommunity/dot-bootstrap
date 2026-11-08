@@ -28,6 +28,18 @@ $bases = @($bases | ForEach-Object { $_.TrimEnd('/') })
 
 function Get-Sha([string]$p) { (Get-FileHash -Algorithm SHA256 -LiteralPath $p).Hash.ToLower() }
 
+function Test-Gzip([string]$p) {
+    $fs = [IO.File]::OpenRead($p)
+    try { $h = New-Object byte[] 2; ($fs.Read($h, 0, 2) -eq 2) -and $h[0] -eq 0x1f -and $h[1] -eq 0x8b } finally { $fs.Dispose() }
+}
+function Expand-Gzip([string]$p) {
+    $tmp = "$p.gunzip"
+    $in = [IO.File]::OpenRead($p); $out = [IO.File]::Create($tmp)
+    try { $gz = New-Object IO.Compression.GZipStream($in, [IO.Compression.CompressionMode]::Decompress); $gz.CopyTo($out); $gz.Dispose() }
+    finally { $out.Dispose(); $in.Dispose() }
+    Move-Item -Force $tmp $p
+}
+
 function Fetch([string]$rel, [string]$dest, [string]$sha) {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
     $part = "$dest.part"
@@ -36,6 +48,8 @@ function Fetch([string]$rel, [string]$dest, [string]$sha) {
         try {
             if ($b -match '^[a-z]+://') { Invoke-WebRequest -Uri "$b/$rel" -OutFile $part -UseBasicParsing }
             else { Copy-Item -LiteralPath (Join-Path $b $rel) $part -Force }
+            # The site stores some objects gzip-encoded and a CDN may send them as-is; the sha256 names the decoded bytes.
+            if ((Get-Sha $part) -ne $sha -and (Test-Gzip $part)) { Expand-Gzip $part }
             if ((Get-Sha $part) -eq $sha) { Move-Item -Force $part $dest; return }
             Remove-Item -Force $part
             throw "hash mismatch for $b/$rel"
