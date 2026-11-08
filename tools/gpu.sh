@@ -10,6 +10,9 @@
 # real-GPU screenshots and frame timings run.
 #
 #   ./gpu.sh status                          GPU, load and who holds the lock, on each box
+#   ./gpu.sh clean [--apply]                 list (or with --apply remove) the old ~/gpu/suite/<project>/ directories on each suite
+#                                            box: suites now run in ~/gpu/ws/<project>, so those are dead copies; never touches
+#                                            the <project>.lock/.ls-files/.import.log files or a project that is running
 #   ./gpu.sh sync <project>                  copy godot/<project> to the laptop
 #   ./gpu.sh run  <project> [godot args...]  sync, then run Godot there on the 1660 Ti. run, exec and browser-shot take the
 #                                            lock exclusively, so they wait out every suite and shot on the box: they go to the
@@ -1017,6 +1020,24 @@ case "${1:-}" in
 			for w in ~/gpu/suite.*.who; do [ -e "$w" ] || continue; flock -n "${w%.who}.lock" true 2>/dev/null ||
 				echo "$(basename "${w%.who}"): $(cat "$w")"; done;
 			vulkaninfo --summary 2>/dev/null | grep -E "^GPU[0-9]|deviceName" | paste - - | sed "s/ \+/ /g"' || echo "(unreachable)"
+		done
+		;;
+	clean)
+		# Old layout: ~/gpu/suite/<project>/ was the project copy. Now it is ~/gpu/ws/<project>, and
+		# suite/ holds only <project>.lock, .ls-files, .import.log and .shim, so any directory there
+		# (but .shim) is dead weight. A directory whose project lock is held is skipped.
+		shift
+		apply=0
+		[[ ${1:-} == --apply ]] && apply=1
+		for b in ${GPU_SUITE_BOXES:-ph staging02 staging}; do
+			set_box "$b"
+			echo "== $BOX"
+			"${SSHQ[@]}" "apply=$apply"'; cd ~/gpu/suite 2>/dev/null || { echo "  no suite dir"; exit 0; }
+				for d in */; do d=${d%/}; [ -d "$d" ] || continue; [ "$d" = .shim ] && continue
+					if [ -e "$d.lock" ] && ! flock -n "$d.lock" true 2>/dev/null; then echo "  skip $d (running)"; continue; fi
+					sz=$(du -sh "$d" 2>/dev/null | cut -f1)
+					if [ "$apply" = 1 ]; then rm -rf "$d" && echo "  removed $d ($sz)"; else echo "  would remove $d ($sz)"; fi
+				done' || echo "  (unreachable)"
 		done
 		;;
 	capacity)
