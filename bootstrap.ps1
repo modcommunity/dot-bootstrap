@@ -753,7 +753,8 @@ function Link-Addons ($proj) {
         # default.
         if ($useCopy) {
             if (Copy-Tree $target $link $proj) {
-                if (Test-Path (Join-Path $link 'plugin.cfg')) { $made++ } else { Err $proj "copy failed: $addon" }
+                # Not plugin.cfg: not every addon has one (library addons ship only .gd/.gdextension).
+                if ((Test-Path $link -PathType Container) -and (Get-ChildItem -Path $link -Recurse -File -Force -ErrorAction SilentlyContinue | Select-Object -First 1)) { $made++ } else { Err $proj "copy failed: $addon" }
             }
             continue
         }
