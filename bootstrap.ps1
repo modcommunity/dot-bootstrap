@@ -16,6 +16,7 @@
         .\bootstrap.ps1 -Only arena,wipeout     only these, plus the addon and map repos they need
         .\bootstrap.ps1 -Only 'mg-*' -NoDeps    only these, and nothing they need
         .\bootstrap.ps1 -NoStores              do not fetch the raw art stores (about 1.6 GB, once, kept); maps draw low-detail art. Or $env:DOT_STORES_FROM = 'none'
+        $env:DOT_NATIVES = 'none'               skip the native libraries a game pins (# bootstrap-natives: in its .gitignore); GDScript runs
         .\bootstrap.ps1 -Jobs N                repositories synced and games imported at most N at once (default: the CPU count; 1 = one at a time)
         .\bootstrap.ps1 -Import                 import every game headless (the editor can crash on a first import); -Only narrows it
         .\bootstrap.ps1 -GetGodot               download the latest stable Godot into .godot-bin beside this script, then carry on (sync, and -Import if given); every mode that runs Godot looks there
@@ -788,6 +789,72 @@ function Link-Addons ($proj) {
     Say $proj "$verb $made addon(s)" 'DarkGray'
 }
 
+# A native library an addon can load ("# bootstrap-natives: dot-sim v0.1.0" above
+# /addons/dot_sim in the game's .gitignore). bootstrap.sh's fetch_natives has the
+# reasoning: the release's zip for this machine, checksum checked, unpacked at the addon
+# repository's root before the links (so a copy carries it), a stamp to skip it next
+# time, a local build kept, and a warning (GDScript runs) when there is none.
+# $env:DOT_NATIVES = 'none' skips it; $env:DOT_NATIVES_BASE replaces the GitHub base.
+function Get-NativesFor ($proj) {
+    $gi = Get-GitignorePath $proj
+    if (-not (Test-Path $gi)) { return }
+    $pin = $null
+    foreach ($line in Get-Content $gi) {
+        if ($line -match '^# bootstrap-natives:\s+(\S+)\s+(\S+)') { $pin = @($Matches[1], $Matches[2]); continue }
+        if ($pin -and $line -match '^# bootstrap-') { continue }
+        if ($pin -and $line -match '^/addons/([a-z0-9_]+)/?\s*$') { [pscustomobject]@{ Repo = $pin[0]; Tag = $pin[1]; Addon = $Matches[1] } }
+        $pin = $null
+    }
+}
+
+function Get-NativePlatform {
+    $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x86_64' }
+    if ($null -eq $IsWindows -or $IsWindows) { return "windows-$arch" }
+    $m = (uname -m); $arch = if ($m -match 'arm64|aarch64') { 'arm64' } else { 'x86_64' }
+    if ($IsMacOS) { return "macos-$arch" }
+    return "linux-$arch"
+}
+
+function Fetch-Natives ($proj) {
+    if ($env:DOT_NATIVES -eq 'none') { return }
+    $plat = Get-NativePlatform
+    $root = if ($env:DOT_NATIVES_BASE) { $env:DOT_NATIVES_BASE } else { 'https://github.com/modcommunity' }
+    foreach ($n in @(Get-NativesFor $proj)) {
+        $dir = Join-Path $projectsDir $n.Repo
+        $addonDir = Join-Path $dir "addons\$($n.Addon)"
+        if (-not (Test-Path $addonDir)) { Warn $proj "natives: $($n.Repo)/addons/$($n.Addon) is not cloned"; continue }
+        $stamp = Join-Path $addonDir 'bin\.natives'
+        $want = "$($n.Tag) $plat"
+        if ((Test-Path $stamp) -and ((Get-Content $stamp -Raw).Trim() -eq $want)) { continue }
+        $platDir = Join-Path $addonDir "bin\$plat"
+        if (-not (Test-Path $stamp) -and (Test-Path $platDir) -and (Get-ChildItem $platDir -ErrorAction SilentlyContinue)) {
+            Say $proj "natives: keeps the $($n.Addon) library built here ($plat)" 'DarkGray'; continue
+        }
+        $base = "$root/$($n.Repo)/releases/download/$($n.Tag)"
+        try { $sums = (Invoke-WebRequest -UseBasicParsing -Uri "$base/SHA256SUMS.natives").Content }
+        catch { Warn $proj "natives: no $($n.Repo) $($n.Tag) release to fetch (GDScript runs, slower)"; continue }
+        if ($sums -is [byte[]]) { $sums = [System.Text.Encoding]::UTF8.GetString($sums) }
+        $hit = $null
+        foreach ($l in ($sums -split "`n")) {
+            $f = $l.Trim() -split '\s+'
+            if ($f.Count -ge 2 -and $f[1].EndsWith("-$plat.zip")) { $hit = $f; break }
+        }
+        if (-not $hit) { Warn $proj "natives: $($n.Repo) $($n.Tag) has no $plat library (GDScript runs, slower)"; continue }
+        $zip = Join-Path ([System.IO.Path]::GetTempPath()) $hit[1]
+        try { Invoke-WebRequest -UseBasicParsing -Uri "$base/$($hit[1])" -OutFile $zip }
+        catch { Warn $proj "natives: could not download $($hit[1]) (GDScript runs, slower)"; continue }
+        if ((Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower() -ne $hit[0].ToLower()) {
+            Remove-Item -Force $zip; Err $proj "natives: $($hit[1]) checksum mismatch, not installed"; continue
+        }
+        if (Test-Path $platDir) { Remove-Item -Recurse -Force $platDir }
+        try { Expand-Archive -Force -Path $zip -DestinationPath $dir }
+        catch { Remove-Item -Force $zip; Err $proj "natives: could not unpack $($hit[1])"; continue }
+        Remove-Item -Force $zip
+        Set-Content -Path $stamp -Value $want -NoNewline
+        Ok $proj "natives: $($n.Repo) $($n.Tag) ($plat) installed into $($n.Repo)/addons/$($n.Addon)"
+    }
+}
+
 # A CONTENT directory from another repository, declared in the project's .gitignore as a
 # comment line directly above the ignored path ("# bootstrap-link: g2gfast-maps/maps" over
 # "/maps/imported"). bootstrap.sh's link_content has the reasoning. Copied by default and
@@ -1294,7 +1361,9 @@ elseif ($Status)  {
     foreach ($p in Get-Selected) { Status-Repo $p }
 }
 elseif ($Links)   {
-    Link-Many @(Get-LinkTargets)
+    $targets = @(Get-LinkTargets)
+    foreach ($p in $targets) { Fetch-Natives $p }
+    Link-Many $targets
 }
 elseif ($Import -and -not ($GetGodot -or $DiscardGenerated)) { Invoke-Import }
 elseif ($Tools) {
@@ -1315,7 +1384,9 @@ else {
     }
     Get-Selected -Sync | Out-Null
     Write-Host ''
-    Link-Many @(Get-LinkTargets)
+    $targets = @(Get-LinkTargets)
+    foreach ($p in $targets) { Fetch-Natives $p }
+    Link-Many $targets
     if ($Import) { Invoke-Import }
 }
 

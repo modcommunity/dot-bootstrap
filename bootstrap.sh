@@ -12,6 +12,7 @@
 #   ./bootstrap.sh --list          what can be played
 #   ./bootstrap.sh --play arena    play one, offline, no server needed
 #   ./bootstrap.sh --links --copy  copy the addons instead of linking them
+#   DOT_NATIVES=none ./bootstrap.sh skip the native libraries a game pins (# bootstrap-natives:); GDScript runs
 #   ./bootstrap.sh --ssh           clone over SSH (to push from this machine); HTTPS is the default
 #   ./bootstrap.sh --only arena,wipeout   only these, plus the addon and map repos they need
 #   ./bootstrap.sh --no-stores              skip the raw art stores (about 1.6 GB, fetched once and kept); maps draw low-detail art
@@ -608,6 +609,82 @@ link_addons() {
     say "$proj" "${DIM}$([ "$COPY_ADDONS" = "1" ] && echo copied || echo linked) $made addon(s)${OFF}"
 }
 
+# A native library an addon can load (a GDExtension; dot-sim's Rust motor, snapshot
+# codec and bot sight scan). It is built, never committed, so a clone has only the
+# GDScript twins -- correct, and slower. The game pins the release whose library it
+# wants, in its .gitignore, as a comment line above the addon (above any
+# bootstrap-optional line):
+#
+#     # bootstrap-natives: dot-sim v0.1.0
+#     /addons/dot_sim
+#
+# and this fetches that release's zip for this machine (SHA256SUMS.natives, checked)
+# and unpacks it at the addon repository's root, which is where ci/install.sh puts a
+# local build: addons/<addon>/bin/<platform>/ and the .gdextension. It runs before the
+# links, so --copy carries the library too. A stamp (bin/.natives) skips the download
+# next time; a library built locally (bin without a stamp) is kept. No release for
+# this platform, or offline: a warning, and the GDScript twins run. DOT_NATIVES=none
+# skips the lot; DOT_NATIVES_BASE replaces https://github.com/modcommunity.
+natives_for() {
+    local gi; gi="$(gi_path "$1")"
+    [ -f "$gi" ] || return 0
+    awk '/^# bootstrap-natives: /{r=$3; t=$4; next}
+         r!="" && /^# bootstrap-/{next}
+         r!="" && /^\/addons\//{a=$0; sub("^/addons/","",a); sub("/$","",a); print r "\t" t "\t" a}
+         {r=""}' "$gi"
+}
+
+native_platform() {
+    local os arch
+    case "$(uname -s)" in
+        Linux) os=linux ;; Darwin) os=macos ;; MINGW*|MSYS*|CYGWIN*) os=windows ;; *) return 1 ;;
+    esac
+    case "$(uname -m)" in
+        x86_64|amd64) arch=x86_64 ;; aarch64|arm64) arch=arm64 ;; *) return 1 ;;
+    esac
+    echo "$os-$arch"
+}
+
+fetch_natives() {
+    local proj="$1" repo tag addon plat dir stamp base tmp sums file want got
+    [ "${DOT_NATIVES:-}" = none ] && return 0
+    plat="$(native_platform)" || return 0
+    while IFS=$'\t' read -r repo tag addon; do
+        [ -n "$repo" ] && [ -n "$tag" ] || continue
+        dir="$PROJECTS_DIR/$repo"
+        [ -d "$dir/addons/$addon" ] || { warn "$proj" "natives: $repo/addons/$addon is not cloned"; continue; }
+        stamp="$dir/addons/$addon/bin/.natives"
+        [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$tag $plat" ] && continue
+        if [ ! -f "$stamp" ] && [ -n "$(ls -A "$dir/addons/$addon/bin/$plat" 2>/dev/null)" ]; then
+            say "$proj" "${DIM}natives: keeps the $addon library built here ($plat)${OFF}"; continue
+        fi
+        base="${DOT_NATIVES_BASE:-https://github.com/modcommunity}/$repo/releases/download/$tag"
+        tmp="$(mktemp -d)"
+        if ! sums="$(curl -fsSL "$base/SHA256SUMS.natives" 2>/dev/null)"; then
+            warn "$proj" "natives: no $repo $tag release to fetch (GDScript runs, slower)"; rm -rf "$tmp"; continue
+        fi
+        read -r want file <<< "$(awk -v p="-$plat.zip" 'substr($2, length($2)-length(p)+1)==p {print $1, $2; exit}' <<< "$sums")"
+        if [ -z "$file" ]; then
+            warn "$proj" "natives: $repo $tag has no $plat library (GDScript runs, slower)"; rm -rf "$tmp"; continue
+        fi
+        if ! curl -fsSL -o "$tmp/$file" "$base/$file"; then
+            warn "$proj" "natives: could not download $file (GDScript runs, slower)"; rm -rf "$tmp"; continue
+        fi
+        got="$( (sha256sum "$tmp/$file" 2>/dev/null || shasum -a 256 "$tmp/$file") | cut -d' ' -f1)"
+        if [ "$got" != "$want" ]; then
+            err "$proj" "natives: $file checksum mismatch, not installed"; rm -rf "$tmp"; continue
+        fi
+        rm -rf "$dir/addons/$addon/bin/$plat"
+        if command -v unzip >/dev/null 2>&1; then unzip -qo "$tmp/$file" -d "$dir"
+        else python3 -m zipfile -e "$tmp/$file" "$dir"; fi \
+            || { err "$proj" "natives: could not unpack $file"; rm -rf "$tmp"; continue; }
+        chmod +x "$dir/addons/$addon/bin/$plat/"* 2>/dev/null
+        echo "$tag $plat" > "$stamp"
+        rm -rf "$tmp"
+        ok "$proj" "natives: $repo $tag ($plat) installed into $repo/addons/$addon"
+    done <<< "$(natives_for "$proj")"
+}
+
 # A project may also need a CONTENT directory from another repository: game-g2gfast's
 # maps/imported is g2gfast-maps/maps. Same rule as the addons, so bootstrap still holds
 # no list: the project's .gitignore says it, as a comment line directly above the
@@ -1075,7 +1152,9 @@ case "$mode" in
         check_list
         ;;
     --links)
-        while read -r p; do [ -n "$p" ] && { link_addons "$p"; link_content "$p"; }; done <<< "$(link_targets)"
+        targets="$(link_targets)"
+        while read -r p; do [ -n "$p" ] && fetch_natives "$p"; done <<< "$targets"
+        while read -r p; do [ -n "$p" ] && { link_addons "$p"; link_content "$p"; }; done <<< "$targets"
         ;;
     --tools)
         install_tools || fail=1
@@ -1104,11 +1183,13 @@ case "$mode" in
         [ ${#ONLY[@]} -gt 0 ] && echo "only:     ${ONLY[*]}$([ "$NO_DEPS" = "1" ] && echo " (no deps)")" && echo
         sync_selected
         echo
-        while read -r p; do [ -n "$p" ] && { link_addons "$p"; link_content "$p"; }; done <<< "$(link_targets)"
+        targets="$(link_targets)"
+        while read -r p; do [ -n "$p" ] && fetch_natives "$p"; done <<< "$targets"
+        while read -r p; do [ -n "$p" ] && { link_addons "$p"; link_content "$p"; }; done <<< "$targets"
         [ "$DO_IMPORT" = "1" ] && run_import
         ;;
     -h|--help)
-        sed -n '3,45p' "$REAL_SELF" | sed 's/^# \{0,1\}//'; exit 0
+        sed -n '3,46p' "$REAL_SELF" | sed 's/^# \{0,1\}//'; exit 0
         ;;
     *)
         echo "usage: $0 [names...|zees-games] [--games a,b] [--addons x,y] [--min|--zees-games-min] [--plan] [--links|--status|--check|--list|--play <game>]" >&2; exit 2
