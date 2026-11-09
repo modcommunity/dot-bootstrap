@@ -423,7 +423,10 @@ needed_siblings() {
 linked_siblings() {
 	local l t n rel
 	while IFS= read -r l; do
-		t=$(readlink "$l") && [[ $t == ../* ]] || continue
+		t=$(readlink "$l") || continue
+		# A worktree's links are absolute ($ROOT/<sibling>/...): the box sees the same sibling beside the copy, so ../ form.
+		[[ $t == "$ROOT"/* ]] && t="../${t#"$ROOT"/}"
+		[[ $t == ../* ]] || continue
 		n=${t#../}; rel=${n#*/}; n=${n%%/*}
 		[[ $n =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ && -e $ROOT/$n/.git && $rel != "${t#../}" ]] || continue
 		printf '%s\t%s\t%s\n' "$n" "$(basename "$l")" "$t"
