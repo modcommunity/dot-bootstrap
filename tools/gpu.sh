@@ -421,14 +421,17 @@ needed_siblings() {
 # which a world's licence names as ../../model-library) must be put beside the copied link.
 # Prints "<sibling>\t<link name>\t<target's parent inside the sibling, '.' for its root>".
 linked_siblings() {
-	local l t n rel
+	local l t n rel own
+	# The project's own repo is no sibling: a worktree's .stores links to the main checkout's own (often empty) .stores
+	# dir, which --copy-links copies as it is; relinking it to ../<itself>/.stores left it dangling on the box ("Content not linked: .stores").
+	own=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && own=$(basename "$(dirname "$own")") || own=$(basename "$(readlink -f "$1")")
 	while IFS= read -r l; do
 		t=$(readlink "$l") || continue
 		# A worktree's links are absolute ($ROOT/<sibling>/...): the box sees the same sibling beside the copy, so ../ form.
 		[[ $t == "$ROOT"/* ]] && t="../${t#"$ROOT"/}"
 		[[ $t == ../* ]] || continue
 		n=${t#../}; rel=${n#*/}; n=${n%%/*}
-		[[ $n =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ && -e $ROOT/$n/.git && $rel != "${t#../}" ]] || continue
+		[[ $n =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ && $n != "$own" && -e $ROOT/$n/.git && $rel != "${t#../}" ]] || continue
 		printf '%s\t%s\t%s\n' "$n" "$(basename "$l")" "$t"
 	done < <(find "$1" -maxdepth 1 -type l)
 }
