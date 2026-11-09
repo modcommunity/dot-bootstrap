@@ -652,6 +652,14 @@ rm -rf "$tmp"
 exit 0
 EOF
 
+# Failed copies of a worktree to a box (2026-11-08): after GPU_COPY_FAIL_MAX (5) failed rsyncs of THIS job
+# (worktree + command) to a box, that box is not offered the job again. State is a file per box and job in
+# $HEAVY_DIR, because heavy runs a fresh `offer` every 15 s. A successful copy resets the count.
+copyfail_file() { local b=$1; shift; printf '%s/gpu-copyfail.%s.%s' "${HEAVY_DIR:-/var/tmp/heavy}" "$b" "$(printf '%s\n' "${PROJ_DIR:-$PWD}|$*" | md5sum | cut -c1-16)"; }
+copyfail_count() { local f; f=$(copyfail_file "$@"); if [[ -s $f ]]; then cat "$f" 2>/dev/null || echo 0; else echo 0; fi; }
+copyfail_bump() { local f n; f=$(copyfail_file "$@"); n=$(copyfail_count "$@"); mkdir -p "$(dirname "$f")"; echo $((n + 1)) >"$f"; }
+copyfail_reset() { rm -f "$(copyfail_file "$@")"; }
+
 # One offer to the current box (set_box); runs in a subshell, so `exit` ends just this try.
 offer_on() {
 	local down=$1; shift
@@ -697,7 +705,11 @@ offer_on() {
 	while IFS=$'\t' read -r _ lk lt; do ex+=(--exclude "/$lk"); done < <(linked_siblings "$PROJ_DIR")
 	rsync -az --delete --copy-links --exclude '.godot/' --exclude '.git/' --exclude 'screenshots/' "${ex[@]}" \
 		-e "$RSH" \
-		"$PROJ_DIR/" "$HOST:gpu/ws/$wsid/$project/" || back_to_queue "copying $project to $BOX failed"
+		"$PROJ_DIR/" "$HOST:gpu/ws/$wsid/$project/" || {
+			copyfail_bump "$BOX" "$@"
+			back_to_queue "copying $project to $BOX failed ($(copyfail_count "$BOX" "$@")/${GPU_COPY_FAIL_MAX:-5})"
+		}
+	copyfail_reset "$BOX" "$@"
 
 	while IFS=$'\t' read -r _ lk lt; do
 		"${SSHQ[@]}" "cd ~/gpu/ws/$wsid/$project && rm -rf ./$lk && ln -s $lt ./$lk" </dev/null ||
@@ -1394,6 +1406,20 @@ case "${1:-}" in
 			[[ -e $down && $(( $(date +%s) - $(stat -c %Y "$down") )) -lt 300 ]] && continue
 			echo "$b"
 		done)
+		# A box whose copies of this job failed GPU_COPY_FAIL_MAX times is no longer offered it.
+		blocked=0
+		order=$(for b in $order; do
+			if (( $(copyfail_count "$b" "$@") >= ${GPU_COPY_FAIL_MAX:-5} )); then echo "$b" >&3; continue; fi
+			echo "$b"
+		done 3>"${TMPDIR:-/tmp}/gpu-blocked.$$")
+		[[ -s ${TMPDIR:-/tmp}/gpu-blocked.$$ ]] && blocked=1
+		rm -f "${TMPDIR:-/tmp}/gpu-blocked.$$"
+		# A sharded suite (hv shard sets HV_SHARD=1) must never fall back to importing on dev02: once copies
+		# to every usable box have failed, fail it (69) instead of 75, which leaves it to the local queue.
+		if [[ -z $order && $blocked == 1 && ${HV_SHARD:-0} == 1 ]]; then
+			echo "gpu.sh: copies of this sharded suite failed ${GPU_COPY_FAIL_MAX:-5}x on every box left; not falling back to dev02" >&2
+			exit 69
+		fi
 		for b in $order; do
 			# A box that did not answer is skipped for 5 minutes: heavy offers every 15 s,
 			# and a 10 s connect timeout each time would be most of the wait.
