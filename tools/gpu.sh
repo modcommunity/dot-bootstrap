@@ -145,9 +145,12 @@ die() { echo "gpu.sh: $*" >&2; exit 2; }
 # MemoryMax is re-set at every start to what they use now + available - reserve, so together they cannot eat
 # into the reserve (the laptop owner keeps >= 4 GB). SUITE_VARIANTS: how many copies of one worktree a box may
 # run at once (ws/<project>, ws/<project>~2, ...), so `hv shard` can spread one worktree's suites over its slots.
-# Measured 2026-11-08 under a sharded run (cgroup memory.peak/cpu.stat per suite, ~/gpu/suite/stats.tsv):
-# a game-arena suite peaks at 0.5-1.6 GB and uses ~1 core, so the slot counts below are bound by threads
-# (staging02, the laptop) or by what the python jobs leave (ph), not by the old 3 GB-per-suite guess.
+# Measured 2026-11-08 under a sharded 13-suite game-arena run (cgroup memory.peak/cpu.stat per suite, ~/gpu/suite/stats.tsv):
+# every suite peaked at 1.05-1.1 GB (game.sh's own import is the peak; the suites themselves are below it) and used
+# 0.3-1.1 cores (headless_bots 499 CPU s in 840 s, bottricks 216 in 218); a whole-repo `game.sh test` reaches ~3.8 GB
+# RSS. So slots are bound by threads (staging02 12, the laptop 16 shared with its owner) and, on the laptop, by
+# memory: with ~6-7 GB available the reserve (4) + SUITE_MIN_GB (2) lets 1-2 suites in at a time and the owner
+# kept >= 4 GB (lowest sample 4 GB, 6 GB during the run). ph's 20 x ~1.1 GB is far inside its ~60 GB free.
 set_box() {
 	BOX=$1
 	case $BOX in
@@ -268,7 +271,7 @@ pick_box() {
 }
 
 # The free memory a suite needs to start, on top of the box's reserve (slots, ceiling and reserve are per
-# box, in set_box). Measured peaks are 0.5-1.6 GB per suite (2026-11-08); heavy's 3.5 GB worst case on
+# box, in set_box). Measured peaks are ~1.1 GB per suite (2026-11-08); heavy's 3.5 GB worst case on
 # dev02 is what SUITE_MAX_GB still allows one suite to reach.
 SUITE_MIN_GB="${GPU_SUITE_MIN_GB:-2}"
 
