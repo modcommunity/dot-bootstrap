@@ -13,6 +13,9 @@
 #   download lists drop too: a `remove:` entry in cfg/content/{addons,games}.yml (or cfg/server/content/), a
 #   cfg/content/<item>/disabled file, and, when a games.yml/addons.yml without `merge: true` names `pack:` entries, every
 #   kind "pack" it does not name. Names a lock does not pin are not fetched here (./server install-games does those).
+# PER-ENVIRONMENT HASHES: each site signs manifests with its own key, so one pack version has one manifest hash per site (prod, dev).
+#   manifest_sha256 is the lock origin's (prod by default and never changed for dev); an entry may add
+#   "manifest_sha256_by_origin": {"https://dev.dotgames.org/content": "<sha>"}, used when that base serves the manifest.
 # A token file path in $DOT_PACKS_TOKEN_FILE (never the token itself) is sent as a bearer.
 set -euo pipefail
 LOCK="${1:?usage: fetch_lock.sh <content.lock.json> [--root DIR] [--from BASE|--cdn URL] [--cfg DIR] [--skip IDs] [--only IDs] [--packs DIR] [--list]}"; shift
@@ -138,6 +141,7 @@ def fetch(rel, dest, sha, retries=4):
         try:
             have = os.path.getsize(part) if os.path.exists(part) else 0
             url = bases[attempt % len(bases)] + "/" + rel
+            want = sha(bases[attempt % len(bases)]) if callable(sha) else sha
             r = get(url, have)
             # The site stores some objects gzip-encoded and the CDN sends them so whatever was asked;
             # the sha256 names the decoded bytes, and a range of a gzip stream cannot be resumed.
@@ -154,7 +158,7 @@ def fetch(rel, dest, sha, retries=4):
             h = hashlib.sha256()
             with open(part, "rb") as f:
                 for b in iter(lambda: f.read(1 << 20), b""): h.update(b)
-            if h.hexdigest() == sha:
+            if h.hexdigest() == want:
                 os.replace(part, dest); return
             os.remove(part)
             raise IOError("hash mismatch for " + url)
@@ -162,14 +166,21 @@ def fetch(rel, dest, sha, retries=4):
             if attempt == retries - 1: raise
             time.sleep(2 ** attempt)
 
+def pinned(p):
+    # The manifest hash to expect from a base: the entry's manifest_sha256_by_origin[base] when it has one (each site signs with
+    # its own key, so one version has one hash per environment), else manifest_sha256 (the origin's). Prod pins stay the default.
+    by = {k.rstrip("/"): v for k, v in (p.get("manifest_sha256_by_origin") or {}).items()}
+    return lambda b: by.get(b, p["manifest_sha256"])
+
 bad = 0
 for p in doc["packs"]:
-    pid, ver, mh, into, kind = p["id"], p["version"], p["manifest_sha256"], p.get("into", ""), p.get("kind", "pack")
+    pid, ver, into, kind = p["id"], p["version"], p.get("into", ""), p.get("kind", "pack")
+    mh = pinned(p); stamp_sha = mh(bases[0])
     if kind == "pack" and packs:
         # Mirror the origin's layout (manifest.json + objects/) so a server serves it as published.
         w = wanted(p)
         if w: print("skip", pid, "(%s)" % w); continue
-        out = os.path.join(packs, pid, ver); stamp = os.path.join(out, ".dot-pack"); want = "%s %s %s" % (pid, ver, mh)
+        out = os.path.join(packs, pid, ver); stamp = os.path.join(out, ".dot-pack"); want = "%s %s %s" % (pid, ver, stamp_sha)
         if os.path.exists(stamp) and open(stamp).read().strip() == want: print("have", pid, ver); continue
         try:
             fetch("%s/%s/manifest.json" % (pid, ver), os.path.join(out, "manifest.json"), mh)
@@ -185,7 +196,7 @@ for p in doc["packs"]:
     w = wanted(p)
     if w: print("skip", pid, "(%s)" % w); continue
     out = os.path.join(root, into); stamp = os.path.join(out, ".dot-pack")
-    want = "%s %s %s" % (pid, ver, mh)
+    want = "%s %s %s" % (pid, ver, stamp_sha)
     if os.path.exists(stamp) and open(stamp).read().strip() == want:
         print("have", pid, ver); continue
     try:

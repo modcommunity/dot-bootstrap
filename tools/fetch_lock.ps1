@@ -40,11 +40,18 @@ function Expand-Gzip([string]$p) {
     Move-Item -Force $tmp $p
 }
 
-function Fetch([string]$rel, [string]$dest, [string]$sha) {
+# The manifest hash expected from base $b: the entry's manifest_sha256_by_origin[$b] when present, else manifest_sha256 (as fetch_lock.sh).
+function Pin($p, [string]$b) {
+    if ($p.manifest_sha256_by_origin) { foreach ($o in $p.manifest_sha256_by_origin.PSObject.Properties) { if ($o.Name.TrimEnd('/') -eq $b) { return $o.Value } } }
+    $p.manifest_sha256
+}
+
+function Fetch([string]$rel, [string]$dest, [string]$sha, $entry = $null) {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
     $part = "$dest.part"
     for ($i = 0; $i -lt 4; $i++) {
         $b = $bases[$i % $bases.Count]
+        $sha = if ($entry) { Pin $entry $b } else { $sha }
         try {
             if ($b -match '^[a-z]+://') { Invoke-WebRequest -Uri "$b/$rel" -OutFile $part -UseBasicParsing }
             else { Copy-Item -LiteralPath (Join-Path $b $rel) $part -Force }
@@ -105,13 +112,13 @@ foreach ($p in $doc.packs) {
     if ($kind -eq 'pack' -and -not $Packs) { continue }
     if ($kind -ne 'store' -and $kind -ne 'pack') { continue }
     if ($why) { Write-Host "skip $($p.id) ($why)"; continue }
-    $pre = "$($p.id)/$($p.version)"; $want = "$($p.id) $($p.version) $($p.manifest_sha256)"
+    $pre = "$($p.id)/$($p.version)"; $want = "$($p.id) $($p.version) $(Pin $p $bases[0])"
     $out = if ($kind -eq 'pack') { Join-Path $Packs $pre } else { Join-Path $Root $p.into }
     $stamp = Join-Path $out '.dot-pack'
     if ((Test-Path $stamp) -and ((Get-Content -Raw $stamp).Trim() -eq $want)) { Write-Host "have $($p.id) $($p.version)"; continue }
     try {
         $man = if ($kind -eq 'pack') { Join-Path $out 'manifest.json' } else { Join-Path $out '.manifest.json' }
-        Fetch "$pre/manifest.json" $man $p.manifest_sha256
+        Fetch "$pre/manifest.json" $man '' $p
         $pad = (Get-Content -Raw $man | ConvertFrom-Json).payload.Replace('-', '+').Replace('_', '/')
         $pad += '=' * ((4 - $pad.Length % 4) % 4)
         $files = ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($pad)) | ConvertFrom-Json).files
