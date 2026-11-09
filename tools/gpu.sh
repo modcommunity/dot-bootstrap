@@ -142,7 +142,7 @@ set_box() {
 	BOX=$1
 	case $BOX in
 		staging)   HOST=gamedev@staging.deacon.internal;   BOX_DESC="the laptop (staging)"
-		           SUITE_SLOTS=${GPU_SUITE_SLOTS:-3} SUITE_MAX_GB=${GPU_SUITE_MAX_GB:-6} DESKTOP_GUARD=0 ;;
+		           SUITE_SLOTS=${GPU_SUITE_SLOTS:-7} SUITE_MAX_GB=${GPU_SUITE_MAX_GB:-6} DESKTOP_GUARD=0 ;;
 		staging02) HOST=gamedev@staging02.deacon.internal; BOX_DESC="the desktop (staging02)"
 		           SUITE_SLOTS=${GPU_SUITE_SLOTS:-5} SUITE_MAX_GB=${GPU_SUITE_MAX_GB:-7} DESKTOP_GUARD=1 ;;
 		# ph-tmc-dev (2026-11-07): a build/test VM, no GPU, 40 vCPUs, 112 GB, 320 GB disk. Suites and python jobs only (it is in
