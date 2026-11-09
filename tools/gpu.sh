@@ -163,7 +163,7 @@ set_box() {
 		# ph-tmc-dev (2026-11-07): a build/test VM, no GPU, 40 vCPUs, 112 GB, 320 GB disk. Suites and python jobs only (it is in
 		# no shot or exclusive list); ~/gpu/janitor.sh keeps the disk under budget. Nobody sits at it, so no desktop guard.
 		ph)        HOST=gamedev@ph-tmc-dev.deacon.internal; BOX_DESC="the build VM (ph)"
-		           SUITE_SLOTS=${GPU_SUITE_SLOTS:-20} SUITE_MAX_GB=${GPU_SUITE_MAX_GB:-6} DESKTOP_GUARD=0
+		           SUITE_SLOTS=${GPU_SUITE_SLOTS:-30} SUITE_MAX_GB=${GPU_SUITE_MAX_GB:-6} DESKTOP_GUARD=0
 		           SUITE_RESERVE_GB=${GPU_SUITE_RESERVE_GB:-8} SUITE_VARIANTS=${GPU_SUITE_VARIANTS:-8} ;;
 		*) die "unknown GPU_BOX '$BOX' (staging, staging02 or ph)" ;;
 	esac
@@ -180,6 +180,26 @@ set_box() {
 PROBE_T="${GPU_PROBE_TIMEOUT:-25}"
 SSH_OPTS=(-i "$KEY" -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
 RSH="ssh -i $KEY -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3"
+
+# Upload cap (owner 2026-11-09, uplink ~600 Mbit/s): at most GPU_RSYNC_SLOTS rsyncs at once across ALL jobs
+# on this host (flock slots), each limited to GPU_RSYNC_BWLIMIT KiB/s. Defaults 2 x 18000 KiB/s = ~290 Mbit/s
+# total, so about half the link stays free. Tune with env vars; GPU_RSYNC_SLOTS=0 disables the slot queue.
+rsync() {
+	local slots=${GPU_RSYNC_SLOTS:-2} bw=${GPU_RSYNC_BWLIMIT:-18000} i fd rc
+	if (( slots <= 0 )); then command rsync --bwlimit="$bw" "$@"; return; fi
+	while :; do
+		for ((i = 1; i <= slots; i++)); do
+			exec {fd}>"/tmp/gpu-rsync-slot.$i" 2>/dev/null || continue
+			if flock -n "$fd"; then
+				command rsync --bwlimit="$bw" "$@"; rc=$?
+				exec {fd}>&-
+				return $rc
+			fi
+			exec {fd}>&-
+		done
+		sleep 0.5
+	done
+}
 set_box "${GPU_BOX:-staging}"
 
 project_dir() {
