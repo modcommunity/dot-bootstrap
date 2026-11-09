@@ -182,10 +182,36 @@ sync_project() {
 
 # Runs a command on the laptop under the one-job lock. printf %q keeps arguments
 # with spaces or quotes intact across the ssh hop.
+#
+# GATE_WAIT (seconds, set by excl): while it is >0, give up waiting for the running suites
+# after that long and exit 197, which drops ~/gpu/.gate again so the box takes suites
+# instead of idling every slot behind one exclusive job (the staging02 "gate" state).
 remote_locked() {
-	local cmd
+	local cmd w=
 	cmd=$(printf '%q ' "$@")
-	"${SSH[@]}" "flock -o ~/gpu/.gate flock -o ~/gpu/.lock bash -lc $(printf '%q' "$cmd")"
+	(( ${GATE_WAIT:-0} > 0 )) && w="-E 197 -w $GATE_WAIT "
+	"${SSH[@]}" "flock -o ~/gpu/.gate flock $w-o ~/gpu/.lock bash -lc $(printf '%q' "$cmd")"
+}
+
+# excl <function> [args]: pick_box, then run the function (which uses remote_locked). When
+# the box did not free up within GPU_GATE_WAIT (default 300 s), the gate is released, and
+# after GPU_GATE_BACKOFF (60 s) the box is picked again, since another may be free by then;
+# GPU_GATE_YIELDS times (default 3), then it waits as long as it takes, as before. Only with
+# a choice of boxes: with GPU_BOX set or one box in GPU_EXCL_BOXES it waits at once.
+excl() {
+	local tries=${GPU_GATE_YIELDS:-3} rc boxes
+	read -ra boxes <<< "${GPU_EXCL_BOXES:-staging staging02}"
+	[[ -z ${GPU_BOX:-} && ${#boxes[@]} -gt 1 ]] || tries=0
+	while :; do
+		pick_box
+		if (( tries > 0 )); then GATE_WAIT=${GPU_GATE_WAIT:-300}; else GATE_WAIT=0; fi
+		rc=0; "$@" || rc=$?
+		GATE_WAIT=0
+		(( rc == 197 && tries > 0 )) || return "$rc"
+		tries=$((tries - 1))
+		echo "gpu.sh: $BOX_DESC stayed busy for ${GPU_GATE_WAIT:-300} s; letting its suites in and trying again in ${GPU_GATE_BACKOFF:-60} s" >&2
+		sleep "${GPU_GATE_BACKOFF:-60}"
+	done
 }
 
 # How long an exclusive job (a bake, a frame timing, exec) would queue on the current box
@@ -528,6 +554,47 @@ exec 9>>.lock; flock -n -s 9 || state=gpu
 echo "$free $slots $avail $state"') _ $SUITE_SLOTS $DESKTOP_GUARD" 2>/dev/null || echo "0 0 0 down"
 }
 
+# Makes ws/<project>/<project> on a box before the first copy, and for a worktree whose
+# workspace has no .godot yet, seeds it with a copy of the repository's .godot (the main
+# checkout's workspace, else the newest workspace of another worktree of the same repo):
+# a cold import of game-arena is ~3 min and ~600 MB per new worktree, the copy makes it
+# incremental. A copy, not hardlinks: Godot rewrites its cache files in place. The source is
+# skipped while a suite holds its lock, and the class/uid caches are dropped so the import
+# that REMOTE_SUITE runs first rebuilds them for this tree. Never fails the offer.
+read -r -d '' SEED_WS <<'EOF' || true
+set -u
+project=$1 repo=$2
+cd ~/gpu 2>/dev/null || exit 1
+dst=ws/$project/$project
+mkdir -p "$dst" suite || exit 1
+[ -n "$repo" ] || exit 0
+printf '%s\n' "$repo" > "ws/$project/.repo"
+[ "$repo" != "$project" ] || exit 0
+[ -e "$dst/.godot" ] && exit 0
+src=
+if [ -f "ws/$repo/$repo/.godot/global_script_class_cache.cfg" ]; then src=$repo
+else
+	for m in $(ls -td ws/*/.repo 2>/dev/null); do
+		p=${m#ws/}; p=${p%/.repo}
+		[ "$p" != "$project" ] || continue
+		[ "$(cat "$m" 2>/dev/null)" = "$repo" ] || continue
+		[ -f "ws/$p/$p/.godot/global_script_class_cache.cfg" ] || continue
+		src=$p; break
+	done
+fi
+[ -n "$src" ] || exit 0
+exec 6>>"suite/$src.lock"
+flock -n 6 || exit 0
+tmp=ws/$project/.godot-seed.$$
+rm -rf "$tmp"
+if cp -a --reflink=auto "ws/$src/$src/.godot" "$tmp" 2>/dev/null; then
+	rm -rf "$tmp/test-logs" "$tmp/global_script_class_cache.cfg" "$tmp/uid_cache.bin"
+	mv -T "$tmp" "$dst/.godot" 2>/dev/null && echo "gpu.sh: seeded $project's .godot on this box from $src" >&2
+fi
+rm -rf "$tmp"
+exit 0
+EOF
+
 # One offer to the current box (set_box); runs in a subshell, so `exit` ends just this try.
 offer_on() {
 	local down=$1; shift
@@ -559,7 +626,12 @@ offer_on() {
 		kv=$(stage_sibling "$n") || back_to_queue "staging $n on $BOX failed"
 		sibs+=("$kv")
 	done
-	"${SSHQ[@]}" "mkdir -p ~/gpu/ws/$project/$project" || back_to_queue "cannot make the workspace on $BOX"
+	# The repository a worktree belongs to (~/wt/game-arena-x -> game-arena), for seeding its .godot.
+	local repo=
+	repo=$(git -C "$PROJ_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && repo=$(basename "$(dirname "$repo")") || repo=
+	[[ $repo =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] || repo=
+	timeout -k 5 300 "${SSH[@]}" "bash -c $(printf '%q' "$SEED_WS") _ $(printf '%q ' "$project" "$repo")" </dev/null ||
+		back_to_queue "cannot make the workspace on $BOX"
 	local ex=() lk lt
 	while IFS=$'\t' read -r _ lk lt; do ex+=(--exclude "/$lk"); done < <(linked_siblings "$PROJ_DIR")
 	rsync -az --delete --copy-links --exclude '.godot/' --exclude '.git/' --exclude 'screenshots/' "${ex[@]}" \
@@ -825,9 +897,14 @@ shot_cmd() {
 route_cmd() {
 	[[ "${GPU_OFFLOAD:-1}" != 0 ]] || exit 75
 	project="${PWD#"$ROOT"/}"
-	[[ "$PWD" == "$ROOT/$project" && "$project" != */* && -f "$PWD/project.godot" ]] || exit 75
+	local in_wt=0
+	# A builder worktree (~/wt/<name>) goes straight to the offer-first rule below, as offer_eligible
+	# already accepts it; before 2026-11-08 this check sent every worktree suite to dev02's own slot
+	# first, so prefer-offload never applied to builders (PH sat 11/12 idle while dev02 swapped).
+	if [[ "$PWD" == "$WT_ROOT"/* && "${PWD#"$WT_ROOT"/}" != */* && -f "$PWD/project.godot" ]]; then in_wt=1
+	else [[ "$PWD" == "$ROOT/$project" && "$project" != */* && -f "$PWD/project.godot" ]] || exit 75; fi
 	unwrap "$@"
-	case "${UW_REST[0]:-}" in
+	[[ $in_wt == 1 ]] || case "${UW_REST[0]:-}" in
 		tools/publish*.sh|./tools/publish*.sh)
 			# On by default (a dev publish ran end to end from the box); GPU_PUBLISH=0, in the env or the command's, keeps it here.
 			local kv want=${GPU_PUBLISH:-1}
@@ -1095,27 +1172,30 @@ case "${1:-}" in
 	run)
 		project="${2:-}"
 		project_dir "$project"
-		pick_box
-		# `pull` reads this to look on the box that ran it.
-		mkdir -p "$HOME/.cache" && echo "$BOX" > "$HOME/.cache/gpu-last-box.$project"
-		sync_project "$project"
 		shift 2
+		# A function so excl can pick the box again when this one stays busy; set -e is off
+		# inside it (excl calls it in a || list), hence the explicit returns.
+		run_on_box() {
+		# `pull` reads this to look on the box that ran it.
+		mkdir -p "$HOME/.cache" && echo "$BOX" > "$HOME/.cache/gpu-last-box.$project" || return
+		sync_project "$project" || return
 		# A project directory the box has not seen has no .godot (sync leaves it out), and a
 		# non-editor run of that never finishes: it spun for 24 minutes holding the lock. Import
 		# first, headless, whenever the class cache is missing or a source is newer than it (new glbs left
 		# "Cannot open file .godot/imported/...scn" on a box that had imported before).
-		remote_locked bash -c "cd $(printf '%q' "$REMOTE_HOME/$REMOTE_ROOT/$project") && { [ -f .godot/global_script_class_cache.cfg ] && [ -z \"\$(find . -path ./.godot -prune -o \\( -name \"*.import\" -o -name \"*.glb\" -o -name \"*.gd\" \\) -newer .godot/global_script_class_cache.cfg -print -quit)\" ] || timeout 900 $REMOTE_HOME/gpu/bin/godot --headless --path . --import >/dev/null 2>&1 </dev/null; }; true"
+		remote_locked bash -c "cd $(printf '%q' "$REMOTE_HOME/$REMOTE_ROOT/$project") && { [ -f .godot/global_script_class_cache.cfg ] && [ -z \"\$(find . -path ./.godot -prune -o \\( -name \"*.import\" -o -name \"*.glb\" -o -name \"*.gd\" \\) -newer .godot/global_script_class_cache.cfg -print -quit)\" ] || timeout 900 $REMOTE_HOME/gpu/bin/godot --headless --path . --import >/dev/null 2>&1 </dev/null; }; true" || return
 		idx=$GPU_INDEX
 		[[ -n $idx ]] || idx=$("${SSHQ[@]}" "vulkaninfo --summary 2>/dev/null | awk '/^GPU[0-9]+:/ {g=substr(\$1,4)+0} /deviceName.*NVIDIA/ {print g; exit}'" 2>/dev/null) || true
 		remote_locked timeout -k 15 "${GPU_TIMEOUT:-1800}" xvfb-run -a -s "-screen 0 1920x1080x24" \
 			"$REMOTE_HOME/gpu/bin/godot" --path "$REMOTE_HOME/$REMOTE_ROOT/$project" \
 			--rendering-driver vulkan --gpu-index "${idx:-0}" "$@"
+		}
+		excl run_on_box "$@"
 		;;
 	exec)
 		shift
 		[[ $# -gt 0 ]] || die "exec what?"
-		pick_box
-		remote_locked "$@"
+		excl remote_locked "$@"
 		;;
 	pull)
 		project_dir "${2:-}"
@@ -1129,9 +1209,8 @@ case "${1:-}" in
 	browser-shot)
 		url="${2:-}"; out="${3:-}"
 		[[ -n "$url" && -n "$out" ]] || die "browser-shot <url> <out.png>"
-		pick_box
 		# --virtual-time-budget lets a page that loads for a while get there before the frame.
-		remote_locked bash -c "rm -rf /tmp/gpu-chrome && timeout 180 google-chrome $CHROME_COMMON $CHROME_GPU_FLAGS \
+		excl remote_locked bash -c "rm -rf /tmp/gpu-chrome && timeout 180 google-chrome $CHROME_COMMON $CHROME_GPU_FLAGS \
 			--user-data-dir=/tmp/gpu-chrome --virtual-time-budget=${GPU_PAGE_MS:-30000} \
 			--screenshot=/tmp/gpu-browser-shot.png $(printf '%q' "$url") >/dev/null 2>&1; ls /tmp/gpu-browser-shot.png"
 		mkdir -p "$(dirname "$out")"
