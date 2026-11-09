@@ -417,6 +417,42 @@ offer_eligible() {
 	UW_KIND=game
 }
 
+# Real-time suites: THE one list. These measure the netcode against wall time (ENet and the relay keep wall
+# time while the game ticks), so a box that cannot hold the tick rate on one thread gives a false failure, not a
+# result. ph runs one thread about 4x slower than dev02 (2026-11-09: game-arena headless_lossy paced 43-88% of real
+# time there and prints NOT A MEASUREMENT), so these are never offered to ph: only to GPU_REALTIME_BOXES (default
+# staging02), and when that is busy or down they wait for a dev02 slot (exit 75, as for any job no box took).
+# Shell patterns matched against each suite name (`game.sh test <suite>`) or scene base name (godot res://x/<suite>.tscn).
+# A job that names one such suite is real-time as a whole. `game.sh test` with no names is NOT caught here (it runs
+# every suite in one slot): shard it (`hv <wt> shard`), which makes one job per suite. GPU_REALTIME_SUITES replaces the list.
+REALTIME_SUITES=${GPU_REALTIME_SUITES:-headless_lossy headless_lossy_*}
+# After offer_eligible (UW_KIND, UW_REST): exit 0 when the job runs a real-time suite.
+realtime_job() {
+	local names=() a s p seen=0
+	if [[ ${UW_KIND:-} == game ]]; then
+		for a in "${UW_REST[@]:1}"; do
+			[[ $a == -- ]] && break
+			if [[ $seen == 1 ]]; then names+=("${a%.tscn}"); elif [[ $a == test ]]; then seen=1; fi
+		done
+	else
+		for a in "${UW_REST[@]:1}"; do
+			[[ $a == -- ]] && break
+			[[ $a == res://*.tscn ]] && { s=${a##*/}; names+=("${s%.tscn}"); }
+		done
+	fi
+	for s in "${names[@]}"; do
+		for p in $REALTIME_SUITES; do
+			# shellcheck disable=SC2053
+			[[ $s == $p ]] && return 0
+		done
+	done
+	return 1
+}
+# The boxes a suite job is offered to, in order (after offer_eligible).
+suite_boxes() {
+	if realtime_job; then echo "${GPU_REALTIME_BOXES:-staging02}"; else echo "${GPU_SUITE_BOXES:-ph staging02 staging}"; fi
+}
+
 # The sibling repositories a project reads by a path outside itself (res://../dot-server-deploy/...,
 # $ROOT/../dot-ci): its addons/ links resolve inside the copy (--copy-links), but a path that
 # climbs out of the project needs the sibling next to it. Found by grepping the project's own
@@ -1427,7 +1463,8 @@ case "${1:-}" in
 		shift
 		offer_eligible "$@" || { [[ ${GPU_OFFER_VERBOSE:-0} == 1 ]] && echo "gpu.sh: not a suite these boxes can run" >&2; exit 75; }
 		# The build VM (ph, 12 slots) first, then the desktop (staging02), then the laptop, dev02 last.
-		order=$(for b in ${GPU_SUITE_BOXES:-ph staging02 staging}; do
+		# A real-time suite (REALTIME_SUITES above) skips ph and the laptop: staging02, then dev02.
+		order=$(for b in $(suite_boxes); do
 			down="${HEAVY_DIR:-/var/tmp/heavy}/gpu-down.$b"
 			[[ -e $down && $(( $(date +%s) - $(stat -c %Y "$down") )) -lt 300 ]] && continue
 			echo "$b"

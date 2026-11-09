@@ -205,6 +205,19 @@ It needs `godot` on `PATH` (or `GODOT=` set) and defaults to scanning the direct
 
 `tools/gpu.sh` (`~/godot/gpu.sh` is a wrapper that execs it, so every game's `tools/*.sh` keeps calling `../gpu.sh`) runs bakes, screenshots, frame timings and whole `game.sh` suites on the always-on GPU boxes (`staging` laptop, `staging02` desktop) over SSH, because dev02 has no GPU. Each box has a `~/gpu/.gate` (one job admitted at a time) and `~/gpu/.lock` (the GPU itself, shared `-s` by read-only users), always taken with `flock -o` so a child that outlives the job cannot inherit and hold them; a busy or unreachable box answers 75/76 and the caller falls back to the next box or to dev02. Shot runs use a shim `xvfb-run` that starts its own Xvfb and stops exactly that pid on exit. A leaked Xvfb that still holds a lock is cleared by the admin on the box (find the holder in `/proc/<pid>/fd`, confirm it is an Xvfb with no job above it, `kill` it): the user runs that kill, never an agent, and the script never kills a process it did not start.
 
+#### Real-time suites never go to ph
+
+Some suites measure the netcode against wall time (ENet and the relay keep wall time while the game ticks), so they only mean something on a box that holds the tick rate. The build VM `ph` runs one thread about 4 times slower than dev02 (game-arena `headless_lossy` paced 43 to 88% of real time there and stops with `NOT A MEASUREMENT`), so `gpu.sh offer` never hands these to `ph`: they go to `staging02`, and when that is busy or down they wait for a dev02 slot.
+
+The list is one line in `tools/gpu.sh`, `REALTIME_SUITES` (shell patterns on the suite or scene name):
+
+| pattern | suites |
+|---|---|
+| `headless_lossy` | game-arena `headless_lossy` |
+| `headless_lossy_*` | game-arena `headless_lossy_22`, `_33`, `_66` |
+
+Add a suite there (and a row here) when it fails its pace check on `ph`. `GPU_REALTIME_SUITES` replaces the list and `GPU_REALTIME_BOXES` (default `staging02`) the boxes, for one run. A job that names one real-time suite is real-time as a whole. A bare `game.sh test` (no suite names) is not caught, because it is one job for every suite: use `hv <worktree> shard`, which makes one job per suite. `tests/test_gpu_realtime.sh` checks the table.
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
