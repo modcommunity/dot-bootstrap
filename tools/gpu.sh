@@ -46,6 +46,8 @@
 #                                            and needs no edit: the box's godot shim sets the renderer (a pinned gl_compatibility
 #                                            stays Mesa's software GL there, as before), and tools/visual_check.sh stays local
 #                                            because its goldens were rendered on llvmpipe.
+#   ./gpu.sh both [--boxes "a b"] <command...>  the same GPU job (a perf run, a bench scene, a shot tool) on both
+#                                            GPU boxes at once, each pinned to its box; {box} in an argument is the box name
 #   ./gpu.sh blender [--stage DIR] [--pull DIR] -- <blender args>   Blender 4.3 on staging02's RTX 2070 (shared lock)
 #   ./gpu.sh py [--stage DIR]... [--pull DIR]... -- python3 <script> [args]
 #                                            a memory-hungry Python job (the BSP converters, route planners, nav
@@ -138,17 +140,28 @@ die() { echo "gpu.sh: $*" >&2; exit 2; }
 #              spikes. Somebody uses it at weekends, so it may be off, or have a person at
 #              it (a local, active login), and then it takes no suites (DESKTOP_GUARD).
 # Suite slots: the free memory and threads each can spare beside its own desktop.
+# SUITE_RESERVE_GB (2026-11-08): memory a box always keeps for itself and its owner. A suite starts only with
+# reserve + SUITE_MIN_GB available, and all suites on a box run in one user slice (gpu-suites.slice) whose
+# MemoryMax is re-set at every start to what they use now + available - reserve, so together they cannot eat
+# into the reserve (the laptop owner keeps >= 4 GB). SUITE_VARIANTS: how many copies of one worktree a box may
+# run at once (ws/<project>, ws/<project>~2, ...), so `hv shard` can spread one worktree's suites over its slots.
+# Measured 2026-11-08 under a sharded run (cgroup memory.peak/cpu.stat per suite, ~/gpu/suite/stats.tsv):
+# a game-arena suite peaks at 0.5-1.6 GB and uses ~1 core, so the slot counts below are bound by threads
+# (staging02, the laptop) or by what the python jobs leave (ph), not by the old 3 GB-per-suite guess.
 set_box() {
 	BOX=$1
 	case $BOX in
 		staging)   HOST=gamedev@staging.deacon.internal;   BOX_DESC="the laptop (staging)"
-		           SUITE_SLOTS=${GPU_SUITE_SLOTS:-7} SUITE_MAX_GB=${GPU_SUITE_MAX_GB:-6} DESKTOP_GUARD=0 ;;
+		           SUITE_SLOTS=${GPU_SUITE_SLOTS:-7} SUITE_MAX_GB=${GPU_SUITE_MAX_GB:-6} DESKTOP_GUARD=0
+		           SUITE_RESERVE_GB=${GPU_SUITE_RESERVE_GB:-4} SUITE_VARIANTS=${GPU_SUITE_VARIANTS:-2} ;;
 		staging02) HOST=gamedev@staging02.deacon.internal; BOX_DESC="the desktop (staging02)"
-		           SUITE_SLOTS=${GPU_SUITE_SLOTS:-5} SUITE_MAX_GB=${GPU_SUITE_MAX_GB:-7} DESKTOP_GUARD=1 ;;
+		           SUITE_SLOTS=${GPU_SUITE_SLOTS:-8} SUITE_MAX_GB=${GPU_SUITE_MAX_GB:-6} DESKTOP_GUARD=1
+		           SUITE_RESERVE_GB=${GPU_SUITE_RESERVE_GB:-3} SUITE_VARIANTS=${GPU_SUITE_VARIANTS:-4} ;;
 		# ph-tmc-dev (2026-11-07): a build/test VM, no GPU, 40 vCPUs, 112 GB, 320 GB disk. Suites and python jobs only (it is in
 		# no shot or exclusive list); ~/gpu/janitor.sh keeps the disk under budget. Nobody sits at it, so no desktop guard.
 		ph)        HOST=gamedev@ph-tmc-dev.deacon.internal; BOX_DESC="the build VM (ph)"
-		           SUITE_SLOTS=${GPU_SUITE_SLOTS:-12} SUITE_MAX_GB=${GPU_SUITE_MAX_GB:-7} DESKTOP_GUARD=0 ;;
+		           SUITE_SLOTS=${GPU_SUITE_SLOTS:-20} SUITE_MAX_GB=${GPU_SUITE_MAX_GB:-6} DESKTOP_GUARD=0
+		           SUITE_RESERVE_GB=${GPU_SUITE_RESERVE_GB:-8} SUITE_VARIANTS=${GPU_SUITE_VARIANTS:-8} ;;
 		*) die "unknown GPU_BOX '$BOX' (staging, staging02 or ph)" ;;
 	esac
 	HOST=${GPU_HOST:-$HOST}
@@ -226,7 +239,7 @@ busy=0; sc=0
 for n in $(seq 1 "$1"); do exec {f}>>"suite.$n.lock"; flock -n "$f" || busy=$((busy+1)); exec {f}>&-; done
 exec 9>>.lock; flock -n -s 9 || sc=$((sc+1000))
 flock -n .gate true || sc=$((sc+100))
-echo "$((sc+busy)) $busy"') _ ${GPU_SUITE_SLOTS:-5}" 2>/dev/null
+echo "$((sc+busy)) $busy"') _ $SUITE_SLOTS" 2>/dev/null
 }
 
 # Picks the box an exclusive job (run, exec, browser-shot) queues on: GPU_BOX if set, else the
@@ -254,9 +267,10 @@ pick_box() {
 	if [[ $best != "$first" ]]; then echo "gpu.sh: using $BOX_DESC ($first is busier)" >&2; fi
 }
 
-# The free memory a suite needs to start (slots and ceiling are per box, in set_box).
-# Suites peak at 3.5 GB worst case on dev02 (heavy's numbers).
-SUITE_MIN_GB="${GPU_SUITE_MIN_GB:-3}"
+# The free memory a suite needs to start, on top of the box's reserve (slots, ceiling and reserve are per
+# box, in set_box). Measured peaks are 0.5-1.6 GB per suite (2026-11-08); heavy's 3.5 GB worst case on
+# dev02 is what SUITE_MAX_GB still allows one suite to reach.
+SUITE_MIN_GB="${GPU_SUITE_MIN_GB:-2}"
 
 # A person at the machine: a local, active login that owns a seat (a graphical or console
 # session). Our own ssh logins are Remote=yes, and the systemd "manager" session an ssh
@@ -451,13 +465,14 @@ stage_sibling() {
 }
 
 # Runs on the laptop, as one ssh session that holds every lock for the whole job: it
-# answers OK or BUSY, waits for "go" (sent once the copy is there), runs the suite and
-# ends with its exit code. If dev02's side dies first, the read gets EOF and the locks
+# answers "OK <wsid>" or BUSY, waits for "go" (sent once the copy is there), runs the suite and
+# ends with its exit code. <wsid> is the workspace it took: ws/<project>, or ws/<project>~N when that
+# one is busy (up to SUITE_VARIANTS copies of one worktree per box, so a sharded run uses many slots). If dev02's side dies first, the read gets EOF and the locks
 # go with the shell. The lock fds are closed for the suite itself, so a Godot left
 # running cannot hold a slot.
 read -r -d '' REMOTE_SUITE <<'EOF' || true
 set -u
-project=$1 slots=$2 min_gb=$3 max_gb=$4 who=$5 guard=$6 limit=$7 kind=$8; shift 8
+project=$1 slots=$2 min_gb=$3 max_gb=$4 who=$5 guard=$6 limit=$7 kind=$8 reserve=$9 variants=${10}; shift 10
 cd ~/gpu || exit 3
 # A person at the machine gets it to themselves (person_here, from GUARD_FN).
 [ "$guard" = 1 ] && person_here && exit 0
@@ -472,10 +487,16 @@ for n in $(seq 1 "$slots"); do
 	exec {f}>&-
 done
 [ -n "$slot" ] || { echo "BUSY all $slots suite slots"; exit 0; }
-exec 7>>"suite/$project.lock"
-flock -n 7 || { echo "BUSY $project is already running here"; exit 0; }
+wsid=
+for v in $(seq 1 "$variants"); do
+	w=$project; [ "$v" -gt 1 ] && w="$project~$v"
+	exec 7>>"suite/$w.lock"
+	if flock -n 7; then wsid=$w; break; fi
+	exec 7>&-
+done
+[ -n "$wsid" ] || { echo "BUSY $variants copies of $project are already running here"; exit 0; }
 avail=$(awk '/MemAvailable/ {print int($2/1048576)}' /proc/meminfo)
-[ "$avail" -ge "$min_gb" ] || { echo "BUSY only $avail GB free"; exit 0; }
+[ "$avail" -ge $((reserve + min_gb)) ] || { echo "BUSY only $avail GB free (keeps $reserve GB)"; exit 0; }
 printf '%s\n' "$who" > "suite.$slot.who"
 trap ': > ~/gpu/suite.'"$slot"'.who' EXIT
 # game.sh's parse pass lists scripts with `git ls-files`, which leaves out untracked
@@ -487,15 +508,15 @@ if [ "$#" -eq 2 ] && [ "$1" = ls-files ] && [ "$2" = '*.gd' ] && [ -f "${GPU_LS_
 exec /usr/bin/git "$@"
 SHIM
 chmod +x suite/.shim/git
-echo OK
+echo "OK $wsid"
 read -r go mode sibs || exit 0
 [ "$go" = go ] || exit 0
-list="$HOME/gpu/suite/$project.ls-files"
+list="$HOME/gpu/suite/$wsid.ls-files"
 rm -f "$list"
 if [ "$mode" = git ]; then cat > "$list"; else cat >/dev/null; fi
 # The project lives at ws/<project>/<project> with its sibling repositories beside it
 # (symlinks into the content-addressed store), so res://../<sibling> resolves as on dev02.
-ws=$HOME/gpu/ws/$project
+ws=$HOME/gpu/ws/$wsid
 find "$ws" -maxdepth 1 -type l -delete 2>/dev/null
 for kv in ${sibs//,/ }; do
 	[[ $kv == *=* ]] || continue
@@ -509,16 +530,27 @@ for d in "$HOME"/gpu/sib/*/; do
 		while read -r old; do [ -n "$(find "$old/.complete" -mtime -1 2>/dev/null)" ] || rm -rf "$old"; done
 done
 cd "$ws/$project" || exit 3
+# Logs of an earlier run in this workspace would be copied back as if they were this run's.
+rm -rf .godot/test-logs
 export XDG_RUNTIME_DIR=/run/user/$(id -u) GODOT=$HOME/gpu/bin/godot GPU_LS_FILES=$list
 export PATH=$HOME/gpu/suite/.shim:$PATH
+# All suites on a box share gpu-suites.slice; its MemoryMax is what they use now plus what the box has
+# free beyond its reserve, so together they leave the reserve alone (the laptop owner's 4 GB).
+scg=$(systemctl --user show gpu-suites.slice -p ControlGroup --value 2>/dev/null)
+cur=$(cat "/sys/fs/cgroup$scg/memory.current" 2>/dev/null || echo 0)
+cap=$(( ${cur:-0} / 1048576 + $(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo) - reserve * 1024 ))
+[ "$cap" -ge 1024 ] || cap=1024
+systemctl --user set-property --runtime gpu-suites.slice MemoryMax="${cap}M" 2>/dev/null
+# in_slice <command...>: runs it in its own scope in that slice, capped at max_gb, without swap.
+in_slice() { systemd-run --user --scope --quiet --collect --slice=gpu-suites.slice -p MemoryMax="${max_gb}G" -p MemorySwapMax=0 -- "$@"; }
 # The class cache stays here between runs; a stale one reads as "Identifier not declared".
-ilog=$HOME/gpu/suite/$project.import.log
-nice -n 5 timeout 1800 "$GODOT" --headless --path . --import >"$ilog" 2>&1 </dev/null 7>&- 9>&- {f}>&-
+ilog=$HOME/gpu/suite/$wsid.import.log
+in_slice nice -n 5 timeout 1800 "$GODOT" --headless --path . --import >"$ilog" 2>&1 </dev/null 7>&- 9>&- {f}>&-
 # A stale class cache (a script gained a class_name or a member since the last run here) reads as
 # "Could not resolve external class member"; one import over a cleared cache fixes it, so retry once.
 if grep -qE 'SCRIPT ERROR|Parse error|Could not resolve' "$ilog"; then
 	rm -f .godot/global_script_class_cache.cfg .godot/uid_cache.bin
-	nice -n 5 timeout 1800 "$GODOT" --headless --path . --import >"$ilog" 2>&1 </dev/null 7>&- 9>&- {f}>&-
+	in_slice nice -n 5 timeout 1800 "$GODOT" --headless --path . --import >"$ilog" 2>&1 </dev/null 7>&- 9>&- {f}>&-
 fi
 # A parse error only shows as a suite hung until its timeout; stop here and say it.
 if grep -qE 'SCRIPT ERROR|Parse error|Could not resolve' "$ilog"; then
@@ -528,9 +560,26 @@ if grep -qE 'SCRIPT ERROR|Parse error|Could not resolve' "$ilog"; then
 fi
 while [[ ${1:-} =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; do export "$1"; shift; done
 if [ "$kind" = godot ]; then set -- "$GODOT" "$@"; else set -- ./game.sh "$@"; fi
-nice -n 5 timeout "$limit" systemd-run --user --scope --quiet --collect -p MemoryMax="${max_gb}G" -p MemorySwapMax=0 -- \
-	"$@" </dev/null 7>&- 9>&- {f}>&-
-rc=$?
+# The job runs under a small bash in the same scope that reports the scope's peak memory and CPU time
+# when it ends (the numbers SUITE_SLOTS/SUITE_MAX_GB are tuned from): a "__GPU_STATS" line for dev02 and
+# a row in ~/gpu/suite/stats.tsv here. timeout's TERM is passed on to the job.
+t0=$(date +%s)
+in_slice nice -n 5 timeout "$limit" bash -c '
+	cg=/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)
+	trap "kill -TERM \$c 2>/dev/null" TERM INT HUP
+	"$@" & c=$!
+	wait $c; rc=$?
+	while kill -0 $c 2>/dev/null; do wait $c; rc=$?; done
+	pk=$(cat "$cg/memory.peak" 2>/dev/null || echo 0); us=$(awk "/^usage_usec/ {print \$2}" "$cg/cpu.stat" 2>/dev/null)
+	echo "__GPU_STATS peak_mb=$((pk / 1048576)) cpu_s=$(( ${us:-0} / 1000000 ))"
+	exit $rc' _ "$@" </dev/null 7>&- 9>&- {f}>&- 2>&1 | while IFS= read -r line; do
+		if [[ $line == __GPU_STATS* ]]; then
+			line="$line wall_s=$(( $(date +%s) - t0 ))"
+			printf '%s\t%s\t%s\t%s\n' "$(date +%FT%T)" "$wsid" "${line#__GPU_STATS }" "$*" >> "$HOME/gpu/suite/stats.tsv"
+		fi
+		printf '%s\n' "$line"
+	done
+rc=${PIPESTATUS[0]}
 # A hung or failed suite often has only the engine's real message in its log.
 if [ "$rc" -ne 0 ]; then
 	grep -hE -A2 'SCRIPT ERROR|Parse error|Could not resolve class' .godot/test-logs/*.log 2>/dev/null | head -15
@@ -539,19 +588,22 @@ echo "__GPU_SUITE_RC=$rc"
 EOF
 
 # What the current box (set_box) can take right now, as one line: "<free> <total> <free GB> <state>".
-# state is ok, gpu (an exclusive GPU job holds it), gate (one is waiting), person (the desktop
+# state is ok, mem (free slots but not the memory beyond the reserve), gpu (an exclusive GPU job holds it), gate (one is waiting), person (the desktop
 # guard), or full. Used to send a job to the box with the most room, and by `capacity`/`status`.
 box_capacity() {
 	"${SSHQ[@]}" "bash -c $(printf '%q' "$GUARD_FN"$'\n''cd ~/gpu 2>/dev/null || { echo "0 0 0 nodir"; exit 0; }
-slots=$1 guard=$2; free=0; state=ok
+slots=$1 guard=$2 reserve=$3 need=$4; free=0; state=ok
 for n in $(seq 1 "$slots"); do exec {f}>>"suite.$n.lock"; flock -n "$f" && free=$((free+1)); exec {f}>&-; done
 avail=$(awk '"'"'/MemAvailable/ {print int($2/1048576)}'"'"' /proc/meminfo)
+# Free slots the memory beyond the reserve can also feed (a suite needs ~need GB to start).
+room=$(( (avail - reserve) / need )); [ "$room" -ge 0 ] || room=0
+[ "$free" -le "$room" ] || { free=$room; [ "$free" = 0 ] && state=mem; }
 exec 9>>.lock; flock -n -s 9 || state=gpu
 [ $state = ok ] && ! flock -n .gate true && state=gate
 [ $state = ok ] && [ "$guard" = 1 ] && person_here && state=person
 [ $state = ok ] && [ "$free" = 0 ] && state=full
 [ $state = ok ] || free=0
-echo "$free $slots $avail $state"') _ $SUITE_SLOTS $DESKTOP_GUARD" 2>/dev/null || echo "0 0 0 down"
+echo "$free $slots $avail $state"') _ $SUITE_SLOTS $DESKTOP_GUARD $SUITE_RESERVE_GB $SUITE_MIN_GB" 2>/dev/null || echo "0 0 0 down"
 }
 
 # Makes ws/<project>/<project> on a box before the first copy, and for a worktree whose
@@ -563,33 +615,35 @@ echo "$free $slots $avail $state"') _ $SUITE_SLOTS $DESKTOP_GUARD" 2>/dev/null |
 # that REMOTE_SUITE runs first rebuilds them for this tree. Never fails the offer.
 read -r -d '' SEED_WS <<'EOF' || true
 set -u
-project=$1 repo=$2
+project=$1 repo=$2 wsid=${3:-$1}
 cd ~/gpu 2>/dev/null || exit 1
-dst=ws/$project/$project
+dst=ws/$wsid/$project
 mkdir -p "$dst" suite || exit 1
-[ -n "$repo" ] || exit 0
-printf '%s\n' "$repo" > "ws/$project/.repo"
-[ "$repo" != "$project" ] || exit 0
+[ -n "$repo" ] && printf '%s\n' "$repo" > "ws/$wsid/.repo"
 [ -e "$dst/.godot" ] && exit 0
-src=
-if [ -f "ws/$repo/$repo/.godot/global_script_class_cache.cfg" ]; then src=$repo
-else
-	for m in $(ls -td ws/*/.repo 2>/dev/null); do
-		p=${m#ws/}; p=${p%/.repo}
-		[ "$p" != "$project" ] || continue
-		[ "$(cat "$m" 2>/dev/null)" = "$repo" ] || continue
-		[ -f "ws/$p/$p/.godot/global_script_class_cache.cfg" ] || continue
-		src=$p; break
-	done
+# Sources, best first: this worktree's own first workspace (a second copy, ~N, of the same tree imports
+# almost nothing), the repository's main checkout, the newest workspace of the same repository. A
+# workspace's inner directory is its name without the ~N. Each is skipped while a suite holds its lock.
+cands=
+[ "$wsid" != "$project" ] && cands=$project
+if [ -n "$repo" ]; then
+	cands="$cands $repo $(ls -td ws/*/.repo 2>/dev/null | while read -r m; do
+		p=${m#ws/}; p=${p%/.repo}; [ "$(cat "$m" 2>/dev/null)" = "$repo" ] && echo "$p"; done)"
 fi
+src=
+for p in $cands; do
+	[ "$p" != "$wsid" ] || continue
+	[ -f "ws/$p/${p%%~*}/.godot/global_script_class_cache.cfg" ] || continue
+	exec 6>>"suite/$p.lock"
+	if flock -n 6; then src=$p; break; fi
+	exec 6>&-
+done
 [ -n "$src" ] || exit 0
-exec 6>>"suite/$src.lock"
-flock -n 6 || exit 0
-tmp=ws/$project/.godot-seed.$$
+tmp=ws/$wsid/.godot-seed.$$
 rm -rf "$tmp"
-if cp -a --reflink=auto "ws/$src/$src/.godot" "$tmp" 2>/dev/null; then
+if cp -a --reflink=auto "ws/$src/${src%%~*}/.godot" "$tmp" 2>/dev/null; then
 	rm -rf "$tmp/test-logs" "$tmp/global_script_class_cache.cfg" "$tmp/uid_cache.bin"
-	mv -T "$tmp" "$dst/.godot" 2>/dev/null && echo "gpu.sh: seeded $project's .godot on this box from $src" >&2
+	mv -T "$tmp" "$dst/.godot" 2>/dev/null && echo "gpu.sh: seeded $wsid's .godot on this box from $src" >&2
 fi
 rm -rf "$tmp"
 exit 0
@@ -601,7 +655,8 @@ offer_on() {
 	who="$(whoami)@$(hostname -s) since $(date +%H:%M:%S): $project: $*"
 	trap '' PIPE  # a box that vanishes mid-handshake is a 75, not a SIGPIPE death
 	coproc LANE { exec "${SSH[@]}" "bash -c $(printf '%q' "$GUARD_FN"$'\n'"$REMOTE_SUITE") _ $(printf '%q ' \
-		"$project" "$SUITE_SLOTS" "$SUITE_MIN_GB" "$SUITE_MAX_GB" "$who" "$DESKTOP_GUARD" "${UW_LIMIT:-5400}" "${UW_KIND:-game}" "${@:2}")"; }
+		"$project" "$SUITE_SLOTS" "$SUITE_MIN_GB" "$SUITE_MAX_GB" "$who" "$DESKTOP_GUARD" "${UW_LIMIT:-5400}" "${UW_KIND:-game}" \
+		"$SUITE_RESERVE_GB" "$SUITE_VARIANTS" "${@:2}")"; }
 	lane_out=${LANE[0]} lane_in=${LANE[1]} lane_pid=$LANE_PID
 	# bash closes the coproc fds when it reaps the ssh; a dup survives that, so the last read cannot hit EBADF.
 	exec {lane_out}<&"${LANE[0]}"
@@ -619,8 +674,11 @@ offer_on() {
 		echo "gpu.sh: WARN $BOX did not answer in time; treating it as unavailable (running locally)" >&2
 	else rm -f "$down"; fi
 	# GPU_OFFER_VERBOSE=1 says why a box said no (heavy offers every 15 s, so it is quiet by default).
-	[[ $reply == OK ]] || back_to_queue "$([[ ${GPU_OFFER_VERBOSE:-0} == 1 ]] && echo "$BOX: ${reply:-no answer}")"
-	echo "heavy: $BOX_DESC took this suite: $project: $*" >&2
+	[[ $reply == OK* ]] || back_to_queue "$([[ ${GPU_OFFER_VERBOSE:-0} == 1 ]] && echo "$BOX: ${reply:-no answer}")"
+	# The workspace the box picked: <project>, or <project>~N when another copy of this tree runs there.
+	local wsid=${reply#OK}; wsid=${wsid# }; : "${wsid:=$project}"
+	[[ $wsid == "$project" || $wsid =~ ^"$project"~[0-9]+$ ]] || back_to_queue "$BOX answered '$reply'"
+	echo "heavy: $BOX_DESC took this suite: $project${wsid#"$project"}: $*" >&2
 	local sibs=() n kv
 	for n in $(needed_siblings "$project"); do
 		kv=$(stage_sibling "$n") || back_to_queue "staging $n on $BOX failed"
@@ -630,16 +688,16 @@ offer_on() {
 	local repo=
 	repo=$(git -C "$PROJ_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && repo=$(basename "$(dirname "$repo")") || repo=
 	[[ $repo =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] || repo=
-	timeout -k 5 300 "${SSH[@]}" "bash -c $(printf '%q' "$SEED_WS") _ $(printf '%q ' "$project" "$repo")" </dev/null ||
+	timeout -k 5 300 "${SSH[@]}" "bash -c $(printf '%q' "$SEED_WS") _ $(printf '%q ' "$project" "$repo" "$wsid")" </dev/null ||
 		back_to_queue "cannot make the workspace on $BOX"
 	local ex=() lk lt
 	while IFS=$'\t' read -r _ lk lt; do ex+=(--exclude "/$lk"); done < <(linked_siblings "$PROJ_DIR")
 	rsync -az --delete --copy-links --exclude '.godot/' --exclude '.git/' --exclude 'screenshots/' "${ex[@]}" \
 		-e "$RSH" \
-		"$PROJ_DIR/" "$HOST:gpu/ws/$project/$project/" || back_to_queue "copying $project to $BOX failed"
+		"$PROJ_DIR/" "$HOST:gpu/ws/$wsid/$project/" || back_to_queue "copying $project to $BOX failed"
 
 	while IFS=$'\t' read -r _ lk lt; do
-		"${SSHQ[@]}" "cd ~/gpu/ws/$project/$project && rm -rf ./$lk && ln -s $lt ./$lk" </dev/null ||
+		"${SSHQ[@]}" "cd ~/gpu/ws/$wsid/$project && rm -rf ./$lk && ln -s $lt ./$lk" </dev/null ||
 			back_to_queue "linking $lk into the workspace on $BOX failed"
 	done < <(linked_siblings "$PROJ_DIR")
 	local sibarg; sibarg=$(IFS=,; echo "${sibs[*]}"); : "${sibarg:=-}"
@@ -652,7 +710,13 @@ offer_on() {
 	exec {lane_in}>&-
 	rc=
 	while IFS= read -r line <&"$lane_out"; do
-		if [[ $line == __GPU_SUITE_RC=* ]]; then rc=${line#*=}; else printf '%s\n' "$line"; fi
+		if [[ $line == __GPU_SUITE_RC=* ]]; then rc=${line#*=}
+		elif [[ $line == __GPU_STATS* ]]; then
+			# Per-job peak memory / CPU / wall time, for tuning the slots (hv shard reads it too).
+			mkdir -p "$HOME/.fleet" 2>/dev/null
+			printf '%s\t%s\t%s\t%s\t%s\n' "$(date +%FT%T)" "$BOX" "$wsid" "${line#__GPU_STATS }" "$*" >> "$HOME/.fleet/gpu-stats.tsv" 2>/dev/null
+			echo "gpu.sh: $BOX ${line#__GPU_STATS }" >&2
+		else printf '%s\n' "$line"; fi
 	done
 	wait "$lane_pid" 2>/dev/null || true
 	# No exit code means the connection went mid-run: run it again here rather than
@@ -660,9 +724,9 @@ offer_on() {
 	[[ -n $rc ]] || { lane_pid=; back_to_queue "lost $BOX mid-run"; }
 	if [[ ${UW_KIND:-game} == game ]]; then
 		mkdir -p "$PROJ_DIR/.godot/test-logs"
-		if "${SSHQ[@]}" "[ -d gpu/ws/$project/$project/.godot/test-logs ]"; then
+		if "${SSHQ[@]}" "[ -d gpu/ws/$wsid/$project/.godot/test-logs ]"; then
 			rsync -az -e "$RSH" \
-				"$HOST:gpu/ws/$project/$project/.godot/test-logs/" "$PROJ_DIR/.godot/test-logs/" ||
+				"$HOST:gpu/ws/$wsid/$project/.godot/test-logs/" "$PROJ_DIR/.godot/test-logs/" ||
 				echo "gpu.sh: could not copy the suite logs back from $BOX" >&2
 		else
 			echo "gpu.sh: no suite logs on $BOX: the run stopped before any suite started (see the output above, e.g. missing addons/.stores links: run hv, which links them first)" >&2
@@ -794,7 +858,7 @@ shot_on() {
 	local rs=(-e "$RSH")
 	"${SSHQ[@]}" "mkdir -p ~/gpu/shot/$project" && \
 	rsync -az --delete --copy-links --exclude '.godot/' --exclude '.git/' --exclude 'screenshots/' \
-		"${rs[@]}" "$ROOT/$project/" "$HOST:gpu/shot/$project/" || { echo "gpu.sh: copying $project to $BOX failed" >&2; exit 75; }
+		"${rs[@]}" "$SHOT_DIR/" "$HOST:gpu/shot/$project/" || { echo "gpu.sh: copying $project to $BOX failed" >&2; exit 75; }
 	for d in "${SHOT_STAGE[@]}"; do
 		"${SSHQ[@]}" "mkdir -p $(printf '%q' "$d")" && rsync -az "${rs[@]}" "$d/" "$HOST:$d/" || exit 75
 	done
@@ -806,7 +870,7 @@ shot_on() {
 	# No exit code: the box refused after the probe (a lock was taken meanwhile) or the link
 	# went. Run it somewhere else rather than report a result nobody saw.
 	[[ -n $rc ]] || { echo "gpu.sh: $BOX gave no result" >&2; exit 75; }
-	rsync -az "${rs[@]}" --files-from=":gpu/shot/$project.files" "$HOST:gpu/shot/$project/" "$ROOT/$project/" ||
+	rsync -az "${rs[@]}" --files-from=":gpu/shot/$project.files" "$HOST:gpu/shot/$project/" "$SHOT_DIR/" ||
 		echo "gpu.sh: could not copy the frames back from $BOX" >&2
 	for d in "${SHOT_PULL[@]}"; do
 		mkdir -p "$d"; rsync -az "${rs[@]}" "$HOST:$d/" "$d/" || echo "gpu.sh: could not copy $d back from $BOX" >&2
@@ -815,12 +879,12 @@ shot_on() {
 	local f bad=0
 	while IFS= read -r f; do
 		[[ -n $f ]] || continue
-		check_frame "$ROOT/$project/$f" || bad=1
+		check_frame "$SHOT_DIR/$f" || bad=1
 	done < <("${SSHQ[@]}" "cat ~/gpu/shot/$project.files" 2>/dev/null)
 	# 77 = blank: shot_cmd stops offloading and renders here, with a visible message.
 	if [[ $bad == 1 && $rc == 0 ]]; then
 		echo "gpu.sh: WARN $BOX returned a blank frame (see above); discarding it" >&2
-		while IFS= read -r f; do [[ -n $f ]] && rm -f "$ROOT/$project/$f"; done < <("${SSHQ[@]}" "cat ~/gpu/shot/$project.files" 2>/dev/null)
+		while IFS= read -r f; do [[ -n $f ]] && rm -f "$SHOT_DIR/$f"; done < <("${SSHQ[@]}" "cat ~/gpu/shot/$project.files" 2>/dev/null)
 		exit 77
 	fi
 	exit "$rc"
@@ -845,7 +909,10 @@ shot_cmd() {
 		esac
 	done
 	project=${1:-}; shift || true
-	project_dir "$project"
+	# SHOT_DIR: the checkout the frames come from and go back to; a builder worktree (~/wt/<name>, set by
+	# route_cmd) or ~/godot/<project>. The box keeps one shot copy per name, so worktrees do not collide.
+	if [[ -n ${SHOT_DIR:-} ]]; then [[ -f $SHOT_DIR/project.godot && $project == "$(basename "$SHOT_DIR")" ]] || die "SHOT_DIR $SHOT_DIR is not the project $project"
+	else project_dir "$project"; SHOT_DIR=$ROOT/$project; fi
 	[[ $# -gt 0 ]] || die "shot $project: which command?"
 	unwrap "$@"
 	case ${UW_REST[0]} in tools/*.sh|./tools/*.sh|xvfb-run|godot) ;;
@@ -858,34 +925,39 @@ shot_cmd() {
 	[[ ${#envs[@]} == 0 ]] || set -- env "${envs[@]}" "$@"
 	if [[ "${GPU_OFFLOAD:-1}" != 0 ]]; then
 		mkdir -p "${HEAVY_DIR:-/var/tmp/heavy}"
-		exec {lf}>>"${HEAVY_DIR:-/var/tmp/heavy}/gpu-shot.$project.lock"
-		flock "$lf"   # two shots of one project would rsync over each other's copy
 		deadline=$(( $(date +%s) + ${GPU_SHOT_WAIT:-90} ))
 		while :; do
-			local answered=0
+			local answered=0 mine=0
 			for b in ${GPU_SHOT_BOXES:-staging staging02}; do
 				down="${HEAVY_DIR:-/var/tmp/heavy}/gpu-down.$b"
 				[[ -e $down && $(( $(date +%s) - $(stat -c %Y "$down") )) -lt 300 ]] && continue
+				# Two shots of one project on one box would rsync over each other's copy, so dev02 holds one lock
+				# per project and box (2026-11-08; it was one per project, which kept the second GPU idle while
+				# a project's shots queued): a second shot of the project takes the other GPU at the same time.
+				exec {lf}>>"${HEAVY_DIR:-/var/tmp/heavy}/gpu-shot.$project.$b.lock"
+				if ! flock -n "$lf"; then exec {lf}>&-; mine=1; continue; fi
 				set +e
 				( set -e; set_box "$b"; shot_on "$down" "$limit" "$@" )
 				rc=$?
 				set -e
+				exec {lf}>&-
 				[[ $rc != 76 ]] && answered=1
 				if [[ $rc == 77 ]]; then warn="$b returned a blank frame"; answered=0; break 2; fi
 				[[ $rc == 75 || $rc == 76 ]] || exit "$rc"
 			done
-			[[ $answered == 1 && $(date +%s) -lt $deadline ]] || break
-			sleep 10
+			# Waiting behind this project's own shots does not count against GPU_SHOT_WAIT (it used to block on the lock).
+			(( mine == 0 )) || deadline=$(( $(date +%s) + ${GPU_SHOT_WAIT:-90} ))
+			[[ ( $answered == 1 || $mine == 1 ) && $(date +%s) -lt $deadline ]] || break
+			sleep $(( mine == 1 ? 5 : 10 ))
 		done
 		warn=${warn:-no GPU box took the frame (down, busy or in use)}
-		exec {lf}>&-
 	fi
 	if [[ $route == 1 ]]; then
 		[[ -z $warn ]] || echo "gpu.sh: WARN $warn; rendering on dev02's CPU (llvmpipe), not a real GPU" >&2
 		exit 75
 	fi
 	echo "gpu.sh: WARN ${warn:-GPU_OFFLOAD=0}; rendering here on the CPU (llvmpipe), not a real GPU" >&2
-	cd "$ROOT/$project"
+	cd "$SHOT_DIR"
 	if [[ -z ${HEAVY_HELD:-} ]] && command -v heavy >/dev/null; then exec heavy --lane check -- "$@"; fi
 	exec "$@"
 }
@@ -904,8 +976,11 @@ route_cmd() {
 	if [[ "$PWD" == "$WT_ROOT"/* && "${PWD#"$WT_ROOT"/}" != */* && -f "$PWD/project.godot" ]]; then in_wt=1
 	else [[ "$PWD" == "$ROOT/$project" && "$project" != */* && -f "$PWD/project.godot" ]] || exit 75; fi
 	unwrap "$@"
-	[[ $in_wt == 1 ]] || case "${UW_REST[0]:-}" in
+	# A worktree's screenshot tools go to a GPU box too (SHOT_DIR, 2026-11-08); a publish only runs from ~/godot.
+	if [[ $in_wt == 1 ]]; then project=${PWD#"$WT_ROOT"/}; export SHOT_DIR=$PWD; fi
+	case "${UW_REST[0]:-}" in
 		tools/publish*.sh|./tools/publish*.sh)
+			[[ $in_wt == 0 ]] || exit 75
 			# On by default (a dev publish ran end to end from the box); GPU_PUBLISH=0, in the env or the command's, keeps it here.
 			local kv want=${GPU_PUBLISH:-1}
 			for kv in "${UW_ENV[@]}"; do [[ $kv == GPU_PUBLISH=* ]] && want=${kv#GPU_PUBLISH=}; done
@@ -1278,6 +1353,31 @@ case "${1:-}" in
 		[[ $up == 1 ]] || { echo "gpu.sh cdp-run: Chrome on $cbox did not come up (lock taken meanwhile?)" >&2; exit 75; }
 		echo "gpu.sh cdp-run: Chrome on $BOX_DESC, GPU_CDP_URL=http://127.0.0.1:$cport" >&2
 		rc=0; GPU_CDP_URL="http://127.0.0.1:$cport" "$@" || rc=$?
+		exit "$rc"
+		;;
+	both)
+		# gpu.sh both [--boxes "staging staging02"] <command...>: the same GPU job on both GPU boxes at once,
+		# each pinned to its box (GPU_BOX, GPU_EXCL_BOXES and GPU_SHOT_BOXES set to it, SHOT_BOX too for a
+		# screenshot tool that names its files), output lines prefixed [box]; "{box}" in an argument becomes
+		# the box name. For a windowed benchmark or a shot set that should be measured on both cards, e.g.
+		#   tools/gpu.sh both ./game.sh perf --out .godot/perf/{box}.json      (each box against its own GPU's baseline)
+		#   tools/gpu.sh both tools/gpu.sh run game-arena --quit-after 600 res://tools/client_bench.tscn
+		# Exit: the highest of the per-box exit codes.
+		shift
+		boxes=${GPU_BOTH_BOXES:-staging staging02}
+		[[ ${1:-} == --boxes ]] && { boxes=${2:?--boxes needs a list}; shift 2; }
+		[[ $# -gt 0 ]] || die "both: which command?"
+		pids=() n=0
+		for b in $boxes; do
+			args=("${@//\{box\}/$b}")
+			# Tools that name their work directory by the second (perf_budget.sh) must not start in the same one.
+			(( n++ == 0 )) || sleep 2
+			( export GPU_BOX=$b GPU_EXCL_BOXES=$b GPU_SHOT_BOXES=$b SHOT_BOX=$b
+			  "${args[@]}" 2>&1 | sed -u "s/^/[$b] /"; exit "${PIPESTATUS[0]}" ) &
+			pids+=($!)
+		done
+		rc=0
+		for pid in "${pids[@]}"; do r=0; wait "$pid" || r=$?; (( r > rc )) && rc=$r; done
 		exit "$rc"
 		;;
 	offer)
