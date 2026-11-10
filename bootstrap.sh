@@ -11,6 +11,8 @@
 #   ./bootstrap.sh --check         verify the list against the disk, change nothing
 #   ./bootstrap.sh --list          what can be played
 #   ./bootstrap.sh --play arena    play one, offline, no server needed
+#   ./bootstrap.sh --export arena  build a RELEASE executable of a game into <game>/build/linux (downloads the matching export template once, checksum-verified)
+#   ./bootstrap.sh --play-export arena [args]  start that build (exporting first when there is none): offline, 8 players, profiler overlay, `profiler_record` in the console records 60 s (F10: 10 s); args after the name go to the game and win (+bot_quota 16 --map dm_atrium)
 #   ./bootstrap.sh --links --copy  copy the addons instead of linking them
 #   DOT_NATIVES=none ./bootstrap.sh skip the native libraries a game pins (# bootstrap-natives:); GDScript runs
 #   ./bootstrap.sh --ssh           clone over SSH (to push from this machine); HTTPS is the default
@@ -922,6 +924,181 @@ play_game() {
     exec "$bin" --path "$PROJECTS_DIR/$proj" -- --offline "${@:2}"
 }
 
+# --- Release export ---------------------------------------------------------
+
+# --export <game> builds a RELEASE executable of a game (no editor, no debugger) and
+# --play-export <game> starts it: what a player's machine runs, for measuring. The game
+# carries the presets (export_presets.example.cfg, copied to export_presets.cfg when
+# there is none); this script supplies the export template, which the editor download
+# does not include. Only this platform's release template is kept (about 70 MB of the
+# 1.2 GB archive), in .godot-bin/<version>/templates, and the preset is pointed at it
+# (custom_template/release), so nothing is installed outside this folder.
+EXPORT_PRESET="Linux x86_64"
+# What --play-export starts a game with: offline, a match's worth of bots, the profiler's
+# overlay up and a minute per `profiler_record` (F10 stays profiler_capture_seconds). `+name value` is a console line the game
+# runs once it knows the name; whatever follows the game's name on the command line comes
+# after these, and a name given twice keeps its last value.
+EXPORT_PLAY_ARGS=(--offline +bot_quota 8 +profiler_overlay 1 +profiler_record_seconds 60)
+
+# game-<x> or mg-<x> for a name or its short form; nothing when there is no such game.
+resolve_game() {
+    local c
+    for c in "$1" "game-$1" "mg-$1"; do
+        games | grep -qx "$c" && { echo "$c"; return 0; }
+    done
+    return 1
+}
+
+# The release tag a Godot executable was built from (4.7.2-stable): the templates must
+# be the same version or the exported game refuses its own pck.
+godot_tag() {
+    local name v
+    name="$(basename "$1")"
+    v="$(printf '%s' "$name" | sed -n 's/^Godot_v\([0-9][0-9.]*-[A-Za-z0-9]*\)_.*/\1/p')"
+    [ -n "$v" ] && { echo "$v"; return 0; }
+    v="$("$1" --version 2>/dev/null | head -n1 | sed -n 's/^\([0-9][0-9.]*[0-9]\)\.\([a-z][a-z]*[0-9]*\)\..*/\1-\2/p')"
+    [ -n "$v" ] && { echo "$v"; return 0; }
+    return 1
+}
+
+# The official export templates for <tag>, checked against the release's SHA512-SUMS.txt
+# like the editor download. Prints the path of this platform's release template.
+get_export_templates() {
+    local tag="$1" dest main asset base tpz unpack want got
+    case "$(uname -s)-$(uname -m)" in
+        Linux-x86_64|Linux-amd64) main=linux_release.x86_64 ;;
+        *) echo "${RED}--export builds on Linux x86_64 here; on Windows use bootstrap.ps1 -Export${OFF}" >&2; return 1 ;;
+    esac
+    dest="$SELF_DIR/.godot-bin/$tag/templates"
+    if [ -s "$dest/$main" ]; then echo "templates $tag already in $dest" >&2; echo "$dest/$main"; return 0; fi
+    asset="Godot_v${tag}_export_templates.tpz"
+    base="${DOT_GODOT_BASE:-https://github.com/godotengine/godot-builds/releases/download}/$tag"
+    mkdir -p "$dest" || return 1
+    # Beside the destination, not in /tmp: the archive is 1.2 GB and /tmp is often memory.
+    tpz="$dest/$asset.part"; unpack="$dest/unpack.part"
+    echo "downloading $asset (about 1.2 GB, once)..." >&2
+    curl -fSL -o "$tpz" "$base/$asset" || { rm -f "${tpz:?}"; echo "${RED}could not download $base/$asset${OFF}" >&2; return 1; }
+    want="$(curl -fsSL "$base/SHA512-SUMS.txt" | awk -v a="$asset" '$2==a {print $1}')"
+    [ -n "$want" ] || { rm -f "${tpz:?}"; echo "${RED}no checksum listed for $asset; nothing installed${OFF}" >&2; return 1; }
+    got="$( (sha512sum "$tpz" 2>/dev/null || shasum -a 512 "$tpz") | cut -d' ' -f1)"
+    [ "$got" = "$want" ] || { rm -f "${tpz:?}"; echo "${RED}checksum mismatch (got $got); nothing installed${OFF}" >&2; return 1; }
+    # Under another name first: the template's presence is what says the install is complete.
+    mkdir -p "$unpack" && unzip -q -o -j "$tpz" "templates/$main" -d "$unpack" 2>/dev/null
+    rm -f "${tpz:?}"
+    if [ ! -s "$unpack/$main" ]; then
+        rm -f "${unpack:?}/${main:?}"; rmdir "$unpack" 2>/dev/null
+        echo "${RED}$asset has no templates/$main; nothing installed${OFF}" >&2; return 1
+    fi
+    chmod +x "$unpack/$main" && mv -f "$unpack/$main" "$dest/$main" && rmdir "$unpack"
+    echo "templates $tag installed in $dest" >&2
+    echo "$dest/$main"
+}
+
+# export_presets.cfg for <dir> with preset <name> using <template> as its release
+# template. The file is the game's export_presets.example.cfg when there is none yet
+# (the editor rewrites export_presets.cfg, so games track only the example).
+set_export_preset() {
+    local dir="$1" preset="$2" template="$3" cfg src idx tmp
+    cfg="$dir/export_presets.cfg"; src="$cfg"
+    [ -f "$src" ] || src="$dir/export_presets.example.cfg"
+    [ -f "$src" ] || { echo "${RED}no export_presets.cfg and no export_presets.example.cfg in $dir${OFF}" >&2; return 1; }
+    idx="$(awk -v want="name=\"$preset\"" '
+        /^\[.+\][[:space:]]*$/ { sec=$0; sub(/^\[/,"",sec); sub(/\][[:space:]]*$/,"",sec); next }
+        $0==want && sec ~ /^preset\.[0-9]+$/ { sub(/^preset\./,"",sec); print sec; exit }' "$src")"
+    [ -n "$idx" ] || { echo "${RED}$src has no preset named \"$preset\"${OFF}" >&2; return 1; }
+    tmp="$cfg.tmp.$$"
+    awk -v opts="preset.$idx.options" -v line="custom_template/release=\"$template\"" '
+        /^\[.+\][[:space:]]*$/ {
+            # Left the options section without finding the key: it goes at the end of it.
+            if (sec==opts && !done) { print line; print ""; done=1 }
+            sec=$0; sub(/^\[/,"",sec); sub(/\][[:space:]]*$/,"",sec)
+        }
+        sec==opts && index($0,"custom_template/release=")==1 { print line; done=1; next }
+        { print }
+        END { if (!done) { if (sec!=opts) { print ""; print "[" opts "]"; print "" } print line } }' "$src" > "$tmp" \
+        && mv -f "$tmp" "$cfg"
+}
+
+export_path() { echo "$PROJECTS_DIR/$1/build/linux/$1.x86_64"; }
+
+# The file name of the library each .gdextension of <dir> loads on <os> x86_64 in a
+# release build, one per line as "<extension>\t<library>"; the library is empty when
+# the extension lists none for this platform.
+export_natives() {
+    local dir="$1" os="$2" ext
+    [ -d "$dir/addons" ] || return 0
+    while read -r ext; do
+        [ -n "$ext" ] || continue
+        awk -F= -v os="$os" -v ext="$(basename "$ext")" '
+            /^[[:space:]]*[#;]/ { next }
+            { k=$1; gsub(/[[:space:]]/,"",k) }
+            (k==os ".release.x86_64" || k==os ".x86_64" || k==os ".release" || k==os) && !lib {
+                lib=$0; sub(/^[^"]*"/,"",lib); sub(/".*$/,"",lib); sub(/^.*\//,"",lib) }
+            END { print ext "\t" lib }' "$ext"
+    done <<< "$(find -L "$dir/addons" -maxdepth 3 -name '*.gdextension' 2>/dev/null | sort)"
+}
+
+# Export one game as a release build into <game>/build/linux.
+export_game() {
+    local want="$1" proj dir bin tag template exe out log ext lib f missing=0 cap=()
+    proj="$(resolve_game "$want")" || { echo "${RED}no such game: $want${OFF}" >&2; list_games >&2; return 2; }
+    dir="$PROJECTS_DIR/$proj"
+    [ -d "$dir" ] || { echo "${RED}$proj is not cloned yet. Run ./bootstrap.sh first.${OFF}" >&2; return 2; }
+    bin="$(find_godot)" || { echo "${RED}Godot not found. Run ./bootstrap.sh --get-godot, or set GODOT=/path/to/godot.${OFF}" >&2; return 3; }
+    tag="$(godot_tag "$bin")" || { echo "${RED}could not read the version of $bin, so no matching export templates${OFF}" >&2; return 1; }
+    template="$(get_export_templates "$tag")" || return 1
+    set_export_preset "$dir" "$EXPORT_PRESET" "$template" || return 1
+
+    # A native library is exported only when it is in the project; without it the game
+    # runs its GDScript twins, which is a different thing to measure.
+    while IFS=$'\t' read -r ext lib; do
+        [ -n "$ext" ] || continue
+        [ -n "$lib" ] || { echo "${RED}$ext lists no Linux x86_64 library, so the build would run without it. Run ./bootstrap.sh $proj to fetch it (DOT_NATIVES=none exports without).${OFF}" >&2; missing=1; }
+    done <<< "$(export_natives "$dir" linux)"
+    [ "$missing" = 0 ] || [ "${DOT_NATIVES:-}" = none ] || return 1
+
+    exe="$(export_path "$proj")"; out="$(dirname "$exe")"; log="$out/export.log"
+    mkdir -p "$out" || return 1
+    command -v timeout >/dev/null && cap=(timeout 3600)
+    echo "${CYN}importing $proj${OFF}"
+    ${cap[@]+"${cap[@]}"} "$bin" --headless --path "$dir" --import >/dev/null 2>&1 \
+        || echo "${YLW}the import pass failed; exporting anyway${OFF}" >&2
+    # The last build's files go first: a stale library beside a new executable would pass the check below.
+    rm -f -- "${exe:?}" "${out:?}/${proj:?}.pck" "${out:?}"/*.so
+    echo "${CYN}exporting $proj ($EXPORT_PRESET, release) to $out; a first export takes several minutes${OFF}"
+    ${cap[@]+"${cap[@]}"} "$bin" --headless --path "$dir" --export-release "$EXPORT_PRESET" "$exe" > "$log" 2>&1 || true
+    # The file is the evidence: an export can print an error and still exit 0.
+    if [ ! -s "$exe" ]; then
+        echo "${RED}no $exe was written; the end of $log follows${OFF}" >&2
+        tail -n 15 "$log" | sed 's/^/    /' >&2
+        return 1
+    fi
+    chmod +x "$exe"
+    # Godot puts each extension's library beside the executable; one that is not there
+    # was not exported, and the game would start without it and say nothing.
+    missing=0
+    while IFS=$'\t' read -r ext lib; do
+        [ -n "$lib" ] || continue
+        if [ -s "$out/$lib" ]; then ok "native" "$lib bundled"
+        else echo "${RED}$lib ($ext) is not beside the executable; see $log${OFF}" >&2; missing=1; fi
+    done <<< "$(export_natives "$dir" linux)"
+    [ "$missing" = 0 ] || return 1
+    ok "export" "$exe ($(du -sm "$out" | cut -f1) MB in $out, log in export.log)"
+}
+
+# Start the exported build, exporting it first when there is none. The profiler is in
+# release builds too: F10 records, and the files land in the game's user folder.
+play_export() {
+    local want="$1" proj exe
+    proj="$(resolve_game "$want")" || { echo "${RED}no such game: $want${OFF}" >&2; list_games >&2; exit 2; }
+    exe="$(export_path "$proj")"
+    if [ ! -x "$exe" ]; then export_game "$want" || exit 1
+    else echo "${DIM}using the build of $(date -r "$exe" '+%Y-%m-%d %H:%M'); ./bootstrap.sh --export $want rebuilds it${OFF}"; fi
+    echo "${CYN}$exe -- ${EXPORT_PLAY_ARGS[*]} ${*:2}${OFF}"
+    echo "${DIM}F10 records 10 s, profiler_record in the console 60 s; reports: ${XDG_DATA_HOME:-$HOME/.local/share}/godot/app_userdata/$proj/profiles${OFF}"
+    exec "$exe" -- "${EXPORT_PLAY_ARGS[@]}" "${@:2}"
+}
+
 # --- Modes -----------------------------------------------------------------
 
 # --copy, --ssh, --https, --only and --no-deps may accompany any mode; strip them before
@@ -958,6 +1135,7 @@ while [ $# -gt 0 ]; do
         --games=*)  games_raw="$games_raw,${1#--games=}" ;;
         --addons=*) addons_raw="$addons_raw,${1#--addons=}" ;;
         --play)    ARGS+=("$@"); break ;;   # its argument is a game, not a selection
+        --export|--play-export) ARGS+=("$@"); break ;;   # a game, then (for --play-export) the game's own arguments
         -*)        ARGS+=("$1") ;;
         sync)      ARGS+=("$1") ;;
         *)         positional="$positional,$1" ;;   # a bare name selects, like --only
@@ -1129,7 +1307,7 @@ plan() {
 [ "$PLAN" = "1" ] && { plan; exit 0; }
 
 case "$mode" in
-    --list|--play|--check|--status|--tools|--import|--get-godot) : ;;   # must not create anything
+    --list|--play|--export|--play-export|--check|--status|--tools|--import|--get-godot) : ;;   # must not create anything
     *) mkdir -p "$PROJECTS_DIR" ;;
 esac
 
@@ -1175,6 +1353,15 @@ case "$mode" in
         [ $# -ge 2 ] || { list_games; exit 2; }
         play_game "${@:2}"
         ;;
+    --export)
+        [ $# -ge 2 ] || { list_games; exit 2; }
+        export_game "$2" || exit $?
+        exit 0
+        ;;
+    --play-export)
+        [ $# -ge 2 ] || { list_games; exit 2; }
+        play_export "${@:2}"
+        ;;
     sync|"")
         echo "projects: $PROJECTS_DIR"
         echo "base:     $GIT_BASE"; echo
@@ -1189,10 +1376,10 @@ case "$mode" in
         [ "$DO_IMPORT" = "1" ] && run_import
         ;;
     -h|--help)
-        sed -n '3,46p' "$REAL_SELF" | sed 's/^# \{0,1\}//'; exit 0
+        sed -n '3,48p' "$REAL_SELF" | sed 's/^# \{0,1\}//'; exit 0
         ;;
     *)
-        echo "usage: $0 [names...|zees-games] [--games a,b] [--addons x,y] [--min|--zees-games-min] [--plan] [--links|--status|--check|--list|--play <game>]" >&2; exit 2
+        echo "usage: $0 [names...|zees-games] [--games a,b] [--addons x,y] [--min|--zees-games-min] [--plan] [--links|--status|--check|--list|--play <game>|--export <game>|--play-export <game> [args]]" >&2; exit 2
         ;;
 esac
 

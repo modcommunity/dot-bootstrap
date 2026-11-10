@@ -11,6 +11,8 @@
         .\bootstrap.ps1 -Check          verify the list against the disk
         .\bootstrap.ps1 -List           what can be played
         .\bootstrap.ps1 -Play arena     play one, offline, no server needed
+        .\bootstrap.ps1 -Export arena   build a RELEASE executable into <game>\build\windows (downloads the matching export template into .godot-bin, checksum-verified)
+        .\bootstrap.ps1 -PlayExport arena [-PlayArgs '+bot_quota 16 --map dm_atrium']   start that build (exporting first when there is none): offline, 8 players, profiler overlay, `profiler_record` in the console records 60 s (F10: 10 s); -PlayArgs go to the game and win; -Export with it rebuilds first
         .\bootstrap.ps1 -Links -Copy    copy the addons instead of linking them
         .\bootstrap.ps1 -Ssh            clone over SSH (to push from this machine); HTTPS is the default
         .\bootstrap.ps1 -Only arena,wipeout     only these, plus the addon and map repos they need
@@ -112,6 +114,9 @@ param(
     [string[]]$Games = @(),
     [string[]]$Addons = @(),
     [string]$Play,
+    [string]$Export,
+    [string]$PlayExport,
+    [string]$PlayArgs = '',
     [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
     [string[]]$Names = @()
 )
@@ -1182,6 +1187,217 @@ function Play-Game ($want) {
     & $bin --path $dir -- --offline
 }
 
+# --- Release export ---------------------------------------------------------
+
+# -Export <game> builds a RELEASE executable of a game (no editor, no debugger) and
+# -PlayExport <game> starts it: what a player's machine runs, for measuring. The game
+# carries the presets (export_presets.example.cfg, copied to export_presets.cfg when
+# there is none); this script supplies the export template, which the editor download
+# does not include. Only the Windows release template is kept (about 100 MB of the
+# 1.2 GB archive), in .godot-bin\<version>\templates, and the preset is pointed at it
+# (custom_template/release), so nothing is installed outside this folder.
+$script:exportPreset = 'Windows x86_64'
+
+function Resolve-Game ($want) {
+    foreach ($c in @($want, "game-$want", "mg-$want")) {
+        if (Get-Games | Where-Object { $_.Name -eq $c }) { return $c }
+    }
+    return $null
+}
+
+# The release tag a Godot executable was built from (4.7.2-stable): the templates must
+# be the same version or the exported game refuses its own pck.
+function Get-GodotTag ($bin) {
+    $name = ($bin -split '[\\/]')[-1]
+    if ($name -match '^Godot_v(\d+(?:\.\d+)+-[A-Za-z0-9]+)_') { return $Matches[1] }
+    $v = ''
+    try { $v = (& $bin --version 2>$null | Out-String).Trim() } catch { }
+    if ($v -match '^(\d+(?:\.\d+)+)\.([a-z]+\d*)\.') { return "$($Matches[1])-$($Matches[2])" }
+    return $null
+}
+
+# The official export templates for $tag, checked against the release's SHA512-SUMS.txt
+# like the editor download. Returns the path of the Windows release template, or $null.
+function Get-ExportTemplates ($tag) {
+    $dest = Join-Path (Join-Path (Join-Path $repoDir '.godot-bin') $tag) 'templates'
+    $main = 'windows_release_x86_64.exe'
+    $mainPath = Join-Path $dest $main
+    if (Test-Path $mainPath) { Ok 'templates' "$tag already in $dest"; return $mainPath }
+    $asset = "Godot_v$tag`_export_templates.tpz"
+    $root = if ($env:DOT_GODOT_BASE) { $env:DOT_GODOT_BASE } else { 'https://github.com/godotengine/godot-builds/releases/download' }
+    $base = "$root/$tag"
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+    # Beside the destination, not in %TEMP%: the archive is 1.2 GB and %TEMP% is often the small drive.
+    $tpz = Join-Path $dest "$asset.part"
+    $zip = $null
+    $oldProgress = $ProgressPreference
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        # The progress bar makes a download this size several times slower on PowerShell 5.1.
+        $ProgressPreference = 'SilentlyContinue'
+        Write-Host "downloading $asset (about 1.2 GB, once)..."
+        Invoke-WebRequest -UseBasicParsing -Uri "$base/$asset" -OutFile $tpz
+        $sums = (Invoke-WebRequest -UseBasicParsing -Uri "$base/SHA512-SUMS.txt").Content
+        if ($sums -is [byte[]]) { $sums = [Text.Encoding]::UTF8.GetString($sums) }
+        $want = ($sums -split "`n" | Where-Object { $_ -match [regex]::Escape($asset) + '\s*$' } | Select-Object -First 1) -split '\s+' | Select-Object -First 1
+        if (-not $want) { Err 'templates' "no checksum listed for $asset; nothing installed"; return $null }
+        $got = (Get-FileHash -Algorithm SHA512 $tpz).Hash.ToLower()
+        if ($got -ne $want.ToLower()) { Err 'templates' "checksum mismatch (got $got); nothing installed"; return $null }
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zip = [IO.Compression.ZipFile]::OpenRead($tpz)
+        # The release template last: its presence is what says the install is complete.
+        foreach ($n in @('windows_release_x86_64_console.exe', $main)) {
+            $entry = $zip.Entries | Where-Object { $_.FullName -eq "templates/$n" } | Select-Object -First 1
+            if ($entry) { [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $dest $n), $true) }
+            elseif ($n -eq $main) { Err 'templates' "$asset has no templates/$n; nothing installed"; return $null }
+        }
+        Ok 'templates' "$tag installed in $dest"
+        return $mainPath
+    } catch { Err 'templates' $_.Exception.Message; return $null }
+    finally {
+        $ProgressPreference = $oldProgress
+        if ($zip) { $zip.Dispose() }
+        Remove-Item -Force $tpz -ErrorAction SilentlyContinue
+    }
+}
+
+# export_presets.cfg for $dir with preset $preset using $template as its release
+# template. The file is the game's export_presets.example.cfg when there is none yet
+# (the editor rewrites export_presets.cfg, so games track only the example).
+function Set-ExportPreset ($dir, $preset, $template) {
+    $cfg = Join-Path $dir 'export_presets.cfg'
+    $src = $cfg
+    if (-not (Test-Path $src)) { $src = Join-Path $dir 'export_presets.example.cfg' }
+    if (-not (Test-Path $src)) { Err 'export' "no export_presets.cfg and no export_presets.example.cfg in $dir"; return $false }
+    $lines = @(Get-Content -LiteralPath $src)
+    $idx = $null; $sec = ''
+    foreach ($l in $lines) {
+        if ($l -match '^\[(.+)\]\s*$') { $sec = $Matches[1] }
+        elseif ($l -eq "name=`"$preset`"" -and $sec -match '^preset\.(\d+)$') { $idx = $Matches[1] }
+    }
+    if ($null -eq $idx) { Err 'export' "$src has no preset named `"$preset`""; return $false }
+    # Godot reads forward slashes on every platform; a backslash would need escaping.
+    $line = 'custom_template/release="' + ($template -replace '\\', '/') + '"'
+    $out = New-Object System.Collections.Generic.List[string]
+    $sec = ''; $done = $false
+    foreach ($l in $lines) {
+        if ($l -match '^\[(.+)\]\s*$') {
+            # Left the options section without finding the key: it goes at the end of it.
+            if ($sec -eq "preset.$idx.options" -and -not $done) { $out.Add($line); $out.Add(''); $done = $true }
+            $sec = $Matches[1]
+        }
+        if ($sec -eq "preset.$idx.options" -and $l -like 'custom_template/release=*') { $out.Add($line); $done = $true }
+        else { $out.Add($l) }
+    }
+    if (-not $done) {
+        if ($sec -ne "preset.$idx.options") { $out.Add(''); $out.Add("[preset.$idx.options]"); $out.Add('') }
+        $out.Add($line)
+    }
+    # Without a byte-order mark: Set-Content -Encoding UTF8 writes one on PowerShell 5.1.
+    [IO.File]::WriteAllLines($cfg, [string[]]$out, (New-Object Text.UTF8Encoding $false))
+    return $true
+}
+
+function Get-ExportPath ($proj) { Join-Path (Join-Path (Join-Path $projectsDir $proj) 'build\windows') "$proj.exe" }
+
+# The file name of the library each .gdextension of <dir> loads on <os> x86_64 in a
+# release build, as objects with Ext and Lib; Lib is empty when the extension lists
+# none for this platform.
+function Get-ExportNatives ($dir, $os) {
+    $keys = @("$os.release.x86_64", "$os.x86_64", "$os.release", "$os")
+    foreach ($ext in @(Get-ChildItem (Join-Path $dir 'addons') -Filter '*.gdextension' -Recurse -Depth 2 -ErrorAction SilentlyContinue | Sort-Object FullName)) {
+        $lib = ''
+        foreach ($line in Get-Content $ext.FullName) {
+            if ($lib -or $line -match '^\s*[#;]') { continue }
+            $i = $line.IndexOf('=')
+            if ($i -lt 1) { continue }
+            if ($keys -contains $line.Substring(0, $i).Trim()) {
+                if ($line.Substring($i + 1) -match '"([^"]*)"') { $lib = ($Matches[1] -split '[\\/]')[-1] }
+            }
+        }
+        [pscustomobject]@{ Ext = $ext.Name; Lib = $lib }
+    }
+}
+
+# What -PlayExport starts a game with: offline, a match's worth of bots, the profiler's
+# overlay up and a minute per `profiler_record` (F10 stays profiler_capture_seconds). `+name value` is a console line the game
+# runs once it knows the name; -PlayArgs comes after these, and a name given twice keeps
+# its last value.
+function Get-ExportPlayArgs ($extra) {
+    @('--', '--offline', '+bot_quota', '8', '+profiler_overlay', '1', '+profiler_record_seconds', '60') + @("$extra" -split '\s+' | Where-Object { $_ })
+}
+
+# Export one game as a release build into <game>\build\windows. Returns $true or $false.
+function Export-Game ($want) {
+    $proj = Resolve-Game $want
+    if (-not $proj) { Write-Host "no such game: $want" -ForegroundColor Red; List-Games; return $false }
+    $dir = Join-Path $projectsDir $proj
+    if (-not (Test-Path $dir)) { Write-Host "$proj is not cloned yet. Run .\bootstrap.ps1 first." -ForegroundColor Red; return $false }
+    $bin = Find-Godot
+    if (-not $bin) { Write-Host 'Godot was not found. Run .\bootstrap.ps1 -GetGodot, or set $env:GODOT to the executable.' -ForegroundColor Red; return $false }
+    $tag = Get-GodotTag $bin
+    if (-not $tag) { Err 'export' "could not read the version of $bin, so no matching export templates"; return $false }
+    $template = Get-ExportTemplates $tag
+    if (-not $template) { return $false }
+    if (-not (Set-ExportPreset $dir $script:exportPreset $template)) { return $false }
+
+    # A native library is exported only when it is in the project; without it the game
+    # runs its GDScript twins, which is a different thing to measure.
+    $natives = @(Get-ExportNatives $dir 'windows')
+    $bare = @($natives | Where-Object { -not $_.Lib })
+    foreach ($n in $bare) {
+        Err 'export' "$($n.Ext) lists no Windows x86_64 library, so the build would run without it. Run .\bootstrap.ps1 $proj to fetch it (`$env:DOT_NATIVES = 'none' exports without)."
+    }
+    if ($bare.Count -gt 0 -and $env:DOT_NATIVES -ne 'none') { return $false }
+
+    $exe = Get-ExportPath $proj
+    $outDir = Split-Path $exe -Parent
+    New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+    $log = Join-Path $outDir 'export.log'
+    Write-Host "importing $proj" -ForegroundColor Cyan
+    & $bin --headless --path $dir --import 2>&1 | Out-Null
+    # The last build's files go first: a stale library beside a new executable would pass the check below.
+    Remove-Item -Force $exe, ([IO.Path]::ChangeExtension($exe, '.pck')) -ErrorAction SilentlyContinue
+    Get-ChildItem $outDir -File -Filter '*.dll' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    Write-Host "exporting $proj ($script:exportPreset, release) to $outDir; a first export takes several minutes" -ForegroundColor Cyan
+    & $bin --headless --path $dir --export-release $script:exportPreset $exe 2>&1 | Out-File -FilePath $log -Encoding utf8
+    # The file is the evidence: an export can print an error and still exit 0.
+    if (-not (Test-Path $exe) -or (Get-Item $exe).Length -eq 0) {
+        Err 'export' "no $exe was written; the end of $log follows"
+        Get-Content $log -Tail 15 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "    $_" }
+        return $false
+    }
+    # Godot puts each extension's library beside the executable; one that is not there
+    # was not exported, and the game would start without it and say nothing.
+    $lost = $false
+    foreach ($n in @($natives | Where-Object { $_.Lib })) {
+        $f = Join-Path $outDir $n.Lib
+        if ((Test-Path $f) -and (Get-Item $f).Length -gt 0) { Ok 'native' "$($n.Lib) bundled" }
+        else { Err 'export' "$($n.Lib) ($($n.Ext)) is not beside the executable; see $log"; $lost = $true }
+    }
+    if ($lost) { return $false }
+    $mb = [math]::Round(((Get-ChildItem $outDir -File | Measure-Object Length -Sum).Sum) / 1MB)
+    Ok 'export' "$exe ($mb MB in $outDir, log in export.log)"
+    return $true
+}
+
+# Start the exported build, exporting it first when there is none. The profiler is in
+# release builds too: F10 records, and the files land in the game's user folder.
+function Play-Export ($want) {
+    $proj = Resolve-Game $want
+    if (-not $proj) { Write-Host "no such game: $want" -ForegroundColor Red; List-Games; exit 2 }
+    $exe = Get-ExportPath $proj
+    if (-not (Test-Path $exe)) {
+        if (-not (Export-Game $want)) { exit 1 }
+    } else {
+        Write-Host "using the build of $((Get-Item $exe).LastWriteTime.ToString('yyyy-MM-dd HH:mm')); .\bootstrap.ps1 -Export $want rebuilds it" -ForegroundColor DarkGray
+    }
+    $a = @(Get-ExportPlayArgs $PlayArgs)
+    Write-Host "$exe $($a -join ' ')" -ForegroundColor Cyan
+    Write-Host "F10 records 10 s, profiler_record in the console 60 s; reports: $env:APPDATA\Godot\app_userdata\$proj\profiles" -ForegroundColor DarkGray
+    & $exe @a
+}
+
 # --- Content keys ----------------------------------------------------------
 
 # A CONTENT SIGNING KEYPAIR, for a developer who wants to PUBLISH packs locally.
@@ -1354,6 +1570,8 @@ if ($Plan)        { Show-Plan; exit 0 }
 # Runs first so the rest of this run, including -Import, finds it.
 if ($GetGodot)    { if (-not (Get-GodotLatest)) { $script:failed = $true } }
 if ($Play)        { Play-Game $Play; exit 0 }
+if ($Export)      { if (-not (Export-Game $Export)) { exit 1 }; if (-not $PlayExport) { exit 0 } }
+if ($PlayExport)  { Play-Export $PlayExport; exit 0 }
 elseif ($List)    { List-Games; exit 0 }
 elseif ($Check)   { Check-List }
 elseif ($Status)  {
