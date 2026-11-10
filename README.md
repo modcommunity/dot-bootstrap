@@ -197,6 +197,10 @@ So this asks the engine, resolves every `extends` chain down to the native class
 
 It needs `godot` on `PATH` (or `GODOT=` set) and defaults to scanning the directory the projects are cloned into.
 
+### tools/check_pushed_floors.sh: what a fresh clone will find
+
+A game pushed while an addon it needs is only merged locally parses on every machine here (the links see the local addon) and on no fresh clone: the editor reports the last script of an `extends` chain, not the missing class. This compares what is published: each game's `origin/main` `requires.floor.json` against each addon's `origin/main` `<addon>_api.gd` `LEVEL` (exit 1 when a floor is above it), and lists every project whose `main` is ahead of `origin/main`. `--fetch` refreshes the refs first. Run it after pushing a game; `tests/test_pushed_floors.sh` covers it.
+
 ### dot-workbench comes with every game
 
 `dot-workbench` is in `projects.tsv`, and every game and `dot-game-template` lists `/addons/dot_workbench` in its `.gitignore`, so a normal bootstrap clones it once and links (Windows: copies) it into each game, with no extra step. `tools/check_workbench_link.sh` proves it: every game carries the line, `--plan` clones and links it, and a real offline `bootstrap.sh --only workbench` run in a scratch directory links dot-workbench with its dot-core, dot-ui, dot-menu and dot-settings.
