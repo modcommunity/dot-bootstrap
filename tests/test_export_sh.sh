@@ -12,7 +12,7 @@ ok() { :; }
 block="$(sed -n '/^# --- Release export /,/^# --- Modes /p' "$H/bootstrap.sh")"
 check 'the export block is found' '[ -n "$block" ]'
 eval "$block"
-for f in resolve_game godot_tag get_export_templates set_export_preset export_natives export_game play_export; do
+for f in resolve_game godot_tag get_export_templates set_export_preset export_natives export_runtime_natives bundle_runtime_natives export_game play_export; do
     check "function $f exists" "declare -F $f >/dev/null"
 done
 for flag in '--export|--play-export) ARGS' '--list|--play|--export|--play-export|' '    --export)' '    --play-export)'; do
@@ -76,6 +76,24 @@ check 'natives: a plain platform key is read, a commented one is not' '[ "$(prin
 check 'natives: the release key is read, the debug one is not' '[ "$(printf "%s\n" "$out" | sed -n 2p)" = "b.gdextension	libb_release.so" ]'
 check 'natives: no library for this platform is empty' '[ "$(printf "%s\n" "$out" | sed -n 3p)" = "c.gdextension	" ]'
 check 'natives: no addons folder is nothing' '[ -z "$(export_natives "$T/empty" linux)" ]'
+
+# A library an addon loads itself from a .cfg (dot-net's) is copied beside the export by hand.
+r="$T/shr"; mkdir -p "$r/addons/dot_net/native/bin" "$r/addons/other/native" "$r/addons/plain/native"
+printf '[configuration]\nentry_symbol = "x_init"\n[libraries]\nlinux.debug.x86_64 = "bin/libn.linux.template_debug.x86_64.so"\nlinux.release.x86_64 = "bin/libn.linux.template_release.x86_64.so"\n' > "$r/addons/dot_net/native/dot_net_native.cfg"
+echo rel > "$r/addons/dot_net/native/bin/libn.linux.template_release.x86_64.so"
+printf '[configuration]\nentry_symbol = "o_init"\n[libraries]\nwindows.release.x86_64 = "bin/o.dll"\n' > "$r/addons/other/native/o.cfg"
+printf '[plugin]\nname="plain"\n' > "$r/addons/plain/native/plugin.cfg"
+out="$(export_runtime_natives "$r" linux)"
+check 'runtime natives: only cfgs with an entry_symbol' '[ "$(printf "%s\n" "$out" | wc -l)" = 2 ]'
+check 'runtime natives: the release library, path kept' '[ "$(printf "%s\n" "$out" | sed -n 1p)" = "$r/addons/dot_net/native/dot_net_native.cfg	bin/libn.linux.template_release.x86_64.so" ]'
+check 'runtime natives: none for this platform is empty' '[ "$(printf "%s\n" "$out" | sed -n 2p)" = "$r/addons/other/native/o.cfg	" ]'
+bo="$T/bout"; mkdir -p "$bo/o"; echo stale > "$bo/o/o.cfg"
+bundle_runtime_natives "$r" linux "$bo" 2>"$T/err"
+check 'runtime natives: the cfg goes into <out>/<cfg name>/' '[ -f "$bo/dot_net_native/dot_net_native.cfg" ]'
+check 'runtime natives: the library beside it at the cfg path' '[ "$(cat "$bo/dot_net_native/bin/libn.linux.template_release.x86_64.so" 2>/dev/null)" = rel ]'
+check 'runtime natives: the debug library is not copied' '[ ! -e "$bo/dot_net_native/bin/libn.linux.template_debug.x86_64.so" ]'
+check 'runtime natives: a missing one warns and leaves nothing stale' '[ ! -e "$bo/o" ] && grep -q "o: no linux x86_64 library" "$T/err"'
+check 'runtime natives: the export bundles them' 'grep -q "bundle_runtime_natives \"\$dir\" linux \"\$out\"" "$H/bootstrap.sh"'
 
 # play_export: the build is started with the profiling arguments, the caller's last.
 mkdir -p "$PROJECTS_DIR/game-arena/build/linux"

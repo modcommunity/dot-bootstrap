@@ -800,16 +800,33 @@ function Link-Addons ($proj) {
 # repository's root before the links (so a copy carries it), a stamp to skip it next
 # time, a local build kept, and a warning (GDScript runs) when there is none.
 # $env:DOT_NATIVES = 'none' skips it; $env:DOT_NATIVES_BASE replaces the GitHub base.
+# An optional third field is the library directory inside the addon (default bin):
+# "# bootstrap-natives: dot-net v0.1.29 native/bin" for dot-net's runtime-loaded core.
 function Get-NativesFor ($proj) {
     $gi = Get-GitignorePath $proj
     if (-not (Test-Path $gi)) { return }
     $pin = $null
     foreach ($line in Get-Content $gi) {
-        if ($line -match '^# bootstrap-natives:\s+(\S+)\s+(\S+)') { $pin = @($Matches[1], $Matches[2]); continue }
+        if ($line -match '^# bootstrap-natives:\s+(\S+)\s+(\S+)(?:\s+(\S+))?') {
+            $libDir = if ($Matches[3]) { $Matches[3].TrimEnd('/') } else { 'bin' }
+            $pin = @($Matches[1], $Matches[2], $libDir); continue
+        }
         if ($pin -and $line -match '^# bootstrap-') { continue }
-        if ($pin -and $line -match '^/addons/([a-z0-9_]+)/?\s*$') { [pscustomobject]@{ Repo = $pin[0]; Tag = $pin[1]; Addon = $Matches[1] } }
+        if ($pin -and $line -match '^/addons/([a-z0-9_]+)/?\s*$') { [pscustomobject]@{ Repo = $pin[0]; Tag = $pin[1]; Addon = $Matches[1]; LibDir = $pin[2] } }
         $pin = $null
     }
+}
+
+# True when $libDir already holds a library for $plat: a non-empty $plat folder (dot-sim)
+# or a Godot-named file such as libx.windows.template_release.x86_64.dll (dot-net).
+function Test-NativeBuiltHere ($libDir, $plat) {
+    $platDir = Join-Path $libDir $plat
+    if ((Test-Path $platDir) -and (Get-ChildItem $platDir -ErrorAction SilentlyContinue)) { return $true }
+    $os, $arch = $plat -split '-', 2
+    foreach ($f in @(Get-ChildItem $libDir -File -Filter "*.$os.*" -ErrorAction SilentlyContinue)) {
+        if ($f.Name -like "*.$arch.*" -or $f.Name -like '*.universal.*') { return $true }
+    }
+    return $false
 }
 
 function Get-NativePlatform {
@@ -828,11 +845,12 @@ function Fetch-Natives ($proj) {
         $dir = Join-Path $projectsDir $n.Repo
         $addonDir = Join-Path $dir "addons\$($n.Addon)"
         if (-not (Test-Path $addonDir)) { Warn $proj "natives: $($n.Repo)/addons/$($n.Addon) is not cloned"; continue }
-        $stamp = Join-Path $addonDir 'bin\.natives'
+        $libDir = Join-Path $addonDir $n.LibDir
+        $stamp = Join-Path $libDir '.natives'
         $want = "$($n.Tag) $plat"
         if ((Test-Path $stamp) -and ((Get-Content $stamp -Raw).Trim() -eq $want)) { continue }
-        $platDir = Join-Path $addonDir "bin\$plat"
-        if (-not (Test-Path $stamp) -and (Test-Path $platDir) -and (Get-ChildItem $platDir -ErrorAction SilentlyContinue)) {
+        $platDir = Join-Path $libDir $plat
+        if (-not (Test-Path $stamp) -and (Test-NativeBuiltHere $libDir $plat)) {
             Say $proj "natives: keeps the $($n.Addon) library built here ($plat)" 'DarkGray'; continue
         }
         $base = "$root/$($n.Repo)/releases/download/$($n.Tag)"
@@ -855,6 +873,7 @@ function Fetch-Natives ($proj) {
         try { Expand-Archive -Force -Path $zip -DestinationPath $dir }
         catch { Remove-Item -Force $zip; Err $proj "natives: could not unpack $($hit[1])"; continue }
         Remove-Item -Force $zip
+        New-Item -ItemType Directory -Force -Path $libDir | Out-Null
         Set-Content -Path $stamp -Value $want -NoNewline
         Ok $proj "natives: $($n.Repo) $($n.Tag) ($plat) installed into $($n.Repo)/addons/$($n.Addon)"
     }
@@ -1319,6 +1338,55 @@ function Get-ExportNatives ($dir, $os) {
     }
 }
 
+# A library an addon loads itself at run time from a .cfg (dot-net's snapshot core,
+# addons\dot_net\native\dot_net_native.cfg). The export never carries it, so Export-Game
+# copies the .cfg and its release library into <out>\<cfg name>\, where DotNetNative
+# looks beside the executable. One object per addons\*\native\*.cfg holding an
+# entry_symbol, with Cfg (full path) and Lib (relative to the cfg; empty when it names
+# none for $os x86_64). Each addon folder is listed by path, so a linked addon counts.
+function Get-RuntimeNatives ($dir, $os) {
+    $keys = @("$os.release.x86_64", "$os.x86_64", "$os.release", "$os")
+    foreach ($addon in @(Get-ChildItem (Join-Path $dir 'addons') -Directory -ErrorAction SilentlyContinue | Sort-Object Name)) {
+        foreach ($cfg in @(Get-ChildItem (Join-Path $addon.FullName 'native') -File -Filter '*.cfg' -ErrorAction SilentlyContinue | Sort-Object Name)) {
+            $text = @(Get-Content $cfg.FullName)
+            if (-not ($text -match '^\s*entry_symbol')) { continue }
+            $lib = ''
+            foreach ($line in $text) {
+                if ($lib -or $line -match '^\s*[#;]') { continue }
+                $i = $line.IndexOf('=')
+                if ($i -lt 1) { continue }
+                if ($keys -contains $line.Substring(0, $i).Trim() -and $line.Substring($i + 1) -match '"([^"]*)"') { $lib = $Matches[1] }
+            }
+            [pscustomobject]@{ Cfg = $cfg.FullName; Lib = $lib }
+        }
+    }
+}
+
+# Copies each runtime-loaded library of $dir for $os into $outDir. Optional by design
+# (the addon falls back to GDScript), so a missing one is a warning. $false on a failed copy.
+function Copy-RuntimeNatives ($dir, $os, $outDir) {
+    foreach ($n in @(Get-RuntimeNatives $dir $os)) {
+        $name = [IO.Path]::GetFileNameWithoutExtension($n.Cfg)
+        $dest = Join-Path $outDir $name
+        if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+        $src = if ($n.Lib) { Join-Path (Split-Path $n.Cfg -Parent) $n.Lib } else { '' }
+        if (-not $src -or -not (Test-Path $src) -or (Get-Item $src).Length -eq 0) {
+            $what = if ($n.Lib) { "$os x86_64 library ($($n.Lib))" } else { "$os x86_64 library" }
+            Warn $name "no $what in the project, so the build runs its GDScript fallback. Run .\bootstrap.ps1 to fetch it."
+            continue
+        }
+        $to = Join-Path $dest $n.Lib
+        try {
+            New-Item -ItemType Directory -Force -Path (Split-Path $to -Parent) | Out-Null
+            Copy-Item -Force $n.Cfg $dest
+            Copy-Item -Force $src $to
+        } catch { Err 'export' "could not copy $name into $outDir"; return $false }
+        if ((Test-Path $to) -and (Get-Item $to).Length -gt 0) { Ok 'native' "$name\$($n.Lib) bundled" }
+        else { Err 'export' "$name\$($n.Lib) was not copied into $outDir"; return $false }
+    }
+    return $true
+}
+
 # What -PlayExport starts a game with: offline, a match's worth of bots, the profiler's
 # overlay up and a minute per `profiler_record` (F10 stays profiler_capture_seconds). `+name value` is a console line the game
 # runs once it knows the name; -PlayArgs comes after these, and a name given twice keeps
@@ -1376,6 +1444,7 @@ function Export-Game ($want) {
         else { Err 'export' "$($n.Lib) ($($n.Ext)) is not beside the executable; see $log"; $lost = $true }
     }
     if ($lost) { return $false }
+    if (-not (Copy-RuntimeNatives $dir 'windows' $outDir)) { return $false }
     $mb = [math]::Round(((Get-ChildItem $outDir -File | Measure-Object Length -Sum).Sum) / 1MB)
     Ok 'export' "$exe ($mb MB in $outDir, log in export.log)"
     return $true

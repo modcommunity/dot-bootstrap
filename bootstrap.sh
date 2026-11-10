@@ -627,13 +627,32 @@ link_addons() {
 # next time; a library built locally (bin without a stamp) is kept. No release for
 # this platform, or offline: a warning, and the GDScript twins run. DOT_NATIVES=none
 # skips the lot; DOT_NATIVES_BASE replaces https://github.com/modcommunity.
+#
+# An optional third field names the library directory inside the addon when it is not
+# bin/ -- dot-net's runtime-loaded snapshot core keeps its flat, Godot-named files in
+# native/bin/ ("# bootstrap-natives: dot-net v0.1.29 native/bin"). The stamp goes there,
+# and a library for this platform already in it (committed, or built here) is kept.
+# Prints "<repo>\t<tag>\t<addon>\t<libdir>" per pin.
 natives_for() {
     local gi; gi="$(gi_path "$1")"
     [ -f "$gi" ] || return 0
-    awk '/^# bootstrap-natives: /{r=$3; t=$4; next}
+    awk '/^# bootstrap-natives: /{r=$3; t=$4; l=($5=="" ? "bin" : $5); sub("/$","",l); next}
          r!="" && /^# bootstrap-/{next}
-         r!="" && /^\/addons\//{a=$0; sub("^/addons/","",a); sub("/$","",a); print r "\t" t "\t" a}
+         r!="" && /^\/addons\//{a=$0; sub("^/addons/","",a); sub("/$","",a); print r "\t" t "\t" a "\t" l}
          {r=""}' "$gi"
+}
+
+# True when <libdir> already holds a library for <platform>: a non-empty <platform>/
+# directory (dot-sim's layout) or a Godot-named file such as
+# libx.linux.template_release.x86_64.so or libx.macos.template_debug.universal.dylib.
+native_built_here() {
+    local lib="$1" plat="$2" os="${2%-*}" arch="${2#*-}" f
+    [ -n "$(ls -A "$lib/$plat" 2>/dev/null)" ] && return 0
+    for f in "$lib"/*."$os".*; do
+        [ -f "$f" ] || continue
+        case "$(basename "$f")" in *."$arch".*|*.universal.*) return 0 ;; esac
+    done
+    return 1
 }
 
 native_platform() {
@@ -648,16 +667,17 @@ native_platform() {
 }
 
 fetch_natives() {
-    local proj="$1" repo tag addon plat dir stamp base tmp sums file want got
+    local proj="$1" repo tag addon libdir lib plat dir stamp base tmp sums file want got
     [ "${DOT_NATIVES:-}" = none ] && return 0
     plat="$(native_platform)" || return 0
-    while IFS=$'\t' read -r repo tag addon; do
+    while IFS=$'\t' read -r repo tag addon libdir; do
         [ -n "$repo" ] && [ -n "$tag" ] || continue
         dir="$PROJECTS_DIR/$repo"
         [ -d "$dir/addons/$addon" ] || { warn "$proj" "natives: $repo/addons/$addon is not cloned"; continue; }
-        stamp="$dir/addons/$addon/bin/.natives"
+        lib="$dir/addons/$addon/${libdir:-bin}"
+        stamp="$lib/.natives"
         [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$tag $plat" ] && continue
-        if [ ! -f "$stamp" ] && [ -n "$(ls -A "$dir/addons/$addon/bin/$plat" 2>/dev/null)" ]; then
+        if [ ! -f "$stamp" ] && native_built_here "$lib" "$plat"; then
             say "$proj" "${DIM}natives: keeps the $addon library built here ($plat)${OFF}"; continue
         fi
         base="${DOT_NATIVES_BASE:-https://github.com/modcommunity}/$repo/releases/download/$tag"
@@ -676,12 +696,12 @@ fetch_natives() {
         if [ "$got" != "$want" ]; then
             err "$proj" "natives: $file checksum mismatch, not installed"; rm -rf "$tmp"; continue
         fi
-        rm -rf "$dir/addons/$addon/bin/$plat"
+        rm -rf "${lib:?}/$plat"
         if command -v unzip >/dev/null 2>&1; then unzip -qo "$tmp/$file" -d "$dir"
         else python3 -m zipfile -e "$tmp/$file" "$dir"; fi \
             || { err "$proj" "natives: could not unpack $file"; rm -rf "$tmp"; continue; }
-        chmod +x "$dir/addons/$addon/bin/$plat/"* 2>/dev/null
-        echo "$tag $plat" > "$stamp"
+        chmod +x "$lib/$plat/"* 2>/dev/null
+        mkdir -p "$lib" && echo "$tag $plat" > "$stamp"
         rm -rf "$tmp"
         ok "$proj" "natives: $repo $tag ($plat) installed into $repo/addons/$addon"
     done <<< "$(natives_for "$proj")"
@@ -1038,6 +1058,42 @@ export_natives() {
     done <<< "$(find -L "$dir/addons" -maxdepth 3 -name '*.gdextension' 2>/dev/null | sort)"
 }
 
+# A library an addon loads itself at run time from a .cfg (dot-net's snapshot core:
+# addons/dot_net/native/dot_net_native.cfg, see its docs/native.md). The export never
+# carries it, so export_game copies the .cfg and its release library into
+# <out>/<cfg name>/, the place DotNetNative looks beside the executable. One line per
+# addons/*/native/*.cfg holding an entry_symbol: "<cfg>\t<library path relative to the
+# cfg>"; the path is empty when it names none for <os> x86_64. Optional by design (the
+# addon falls back to GDScript), so a missing one is a warning, not a failed export.
+export_runtime_natives() {
+    local dir="$1" os="$2" cfg
+    for cfg in "$dir"/addons/*/native/*.cfg; do
+        [ -f "$cfg" ] && grep -q '^[[:space:]]*entry_symbol' "$cfg" || continue
+        awk -F= -v os="$os" -v cfg="$cfg" '
+            /^[[:space:]]*[#;]/ { next }
+            { k=$1; gsub(/[[:space:]]/,"",k) }
+            (k==os ".release.x86_64" || k==os ".x86_64" || k==os ".release" || k==os) && !lib {
+                lib=$0; sub(/^[^"]*"/,"",lib); sub(/".*$/,"",lib) }
+            END { print cfg "\t" lib }' "$cfg"
+    done
+}
+
+# Copies each runtime-loaded library of <dir> for <os> into <out>; prints what it bundled.
+bundle_runtime_natives() {
+    local dir="$1" os="$2" out="$3" cfg lib name dest
+    while IFS=$'\t' read -r cfg lib; do
+        [ -n "$cfg" ] || continue
+        name="$(basename "$cfg" .cfg)"; dest="$out/$name"
+        rm -rf "${dest:?}"
+        if [ -z "$lib" ] || [ ! -s "$(dirname "$cfg")/$lib" ]; then
+            echo "${YLW}$name: no ${os} x86_64 library${lib:+ ($lib)} in the project, so the build runs its GDScript fallback. Run ./bootstrap.sh to fetch it.${OFF}" >&2
+            continue
+        fi
+        mkdir -p "$dest/$(dirname "$lib")" && cp "$cfg" "$dest/" && cp "$(dirname "$cfg")/$lib" "$dest/$lib" || return 1
+        [ -s "$dest/$lib" ] && ok "native" "$name/$lib bundled"
+    done <<< "$(export_runtime_natives "$dir" "$os")"
+}
+
 # Export one game as a release build into <game>/build/linux.
 export_game() {
     local want="$1" proj dir bin tag template exe out log ext lib f missing=0 cap=()
@@ -1083,6 +1139,7 @@ export_game() {
         else echo "${RED}$lib ($ext) is not beside the executable; see $log${OFF}" >&2; missing=1; fi
     done <<< "$(export_natives "$dir" linux)"
     [ "$missing" = 0 ] || return 1
+    bundle_runtime_natives "$dir" linux "$out" || { echo "${RED}could not copy the runtime-loaded native libraries into $out${OFF}" >&2; return 1; }
     ok "export" "$exe ($(du -sm "$out" | cut -f1) MB in $out, log in export.log)"
 }
 
