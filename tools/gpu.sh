@@ -13,6 +13,8 @@
 #   ./gpu.sh clean [--apply]                 list (or with --apply remove) the old ~/gpu/suite/<project>/ directories on each suite
 #                                            box: suites now run in ~/gpu/ws/<project>, so those are dead copies; never touches
 #                                            the <project>.lock/.ls-files/.import.log files or a project that is running
+#                                            also lists/removes ws/<id> and shot/<project> copies unused for GPU_CLEAN_DAYS (default 2) days, skipping
+#                                            any whose lock is held; a stage also prunes ws/shot copies unused for 2 days
 #   ./gpu.sh sync <project>                  copy godot/<project> to the laptop
 #   ./gpu.sh run  <project> [godot args...]  sync, then run Godot there on the 1660 Ti. run, exec and browser-shot take the
 #                                            lock exclusively, so they wait out every suite and shot on the box: they go to the
@@ -316,6 +318,31 @@ person_here() {
 	done
 	return 1
 }
+# prune_stale DAYS APPLY: run in ~/gpu. Removes (APPLY=1) or lists (APPLY=0) the per-worktree
+# copies ws/<id> and shot/<project> whose last use (the directory's own mtime, which a stage
+# touches; rsync -a never moves it) is older than DAYS days. A copy whose lock is held (a
+# running suite or shot) is skipped, and the lock is held during the removal so a job cannot
+# start in a directory being deleted. Never touches sib/, suite/ or the lock files.
+prune_stale() {
+	local days=$1 apply=$2 kind d id lk sz
+	[[ $days =~ ^[0-9]+$ ]] || return 0
+	for kind in ws shot; do
+		for d in "$HOME"/gpu/$kind/*/; do
+			d=${d%/}; [ -d "$d" ] && [ ! -L "$d" ] || continue
+			id=${d##*/}
+			[ -n "$(find "$d" -maxdepth 0 -mtime "-$days" 2>/dev/null)" ] && continue
+			if [ $kind = ws ]; then lk=$HOME/gpu/suite/$id.lock; else lk=$HOME/gpu/shot/$id.lock; fi
+			if [ -e "$lk" ]; then
+				exec 5>>"$lk"
+				flock -n 5 || { exec 5>&-; echo "  skip $kind/$id (running)"; continue; }
+			fi
+			sz=$(du -sh "$d" 2>/dev/null | cut -f1)
+			if [ "$apply" = 1 ]; then rm -rf "$d" && echo "  removed $kind/$id ($sz)"; else echo "  would remove $kind/$id ($sz)"; fi
+			exec 5>&-
+		done
+	done
+	return 0
+}
 EOF
 
 # Peels `timeout [opts] DUR` and `env K=V...` off the front of a command, the way callers
@@ -582,6 +609,10 @@ if [ "$mode" = git ]; then cat > "$list"; else cat >/dev/null; fi
 # The project lives at ws/<project>/<project> with its sibling repositories beside it
 # (symlinks into the content-addressed store), so res://../<sibling> resolves as on dev02.
 ws=$HOME/gpu/ws/$wsid
+# Stamp the use (the stale-copy prune goes by this mtime) and drop copies nobody used for 2 days, in the
+# background so the suite does not wait for a big rm; their locks are tested, ours is held.
+mkdir -p "$ws"; touch "$ws"
+( prune_stale 2 1 ) </dev/null >/dev/null 2>&1 7>&- 9>&- {f}>&- &
 find "$ws" -maxdepth 1 -type l -delete 2>/dev/null
 for kv in ${sibs//,/ }; do
 	[[ $kv == *=* ]] || continue
@@ -1267,6 +1298,8 @@ case "${1:-}" in
 					sz=$(du -sh "$d" 2>/dev/null | cut -f1)
 					if [ "$apply" = 1 ]; then rm -rf "$d" && echo "  removed $d ($sz)"; else echo "  would remove $d ($sz)"; fi
 				done' || echo "  (unreachable)"
+			# Per-worktree copies nobody used for GPU_CLEAN_DAYS (default 2) days: ws/<id>, shot/<project>.
+			"${SSHQ[@]}" "bash -c $(printf '%q' "$GUARD_FN"$'\n'"prune_stale ${GPU_CLEAN_DAYS:-2} $apply")" || echo "  (unreachable)"
 		done
 		;;
 	capacity)
