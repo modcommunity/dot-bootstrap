@@ -189,19 +189,47 @@ RSH="ssh -i $KEY -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 
 # Upload cap (owner 2026-11-09, uplink ~600 Mbit/s): at most GPU_RSYNC_SLOTS rsyncs at once across ALL jobs
 # on this host (flock slots), each limited to GPU_RSYNC_BWLIMIT KiB/s. Defaults 2 x 18000 KiB/s = ~290 Mbit/s
 # total, so about half the link stays free. Tune with env vars; GPU_RSYNC_SLOTS=0 disables the slot queue.
+# Fair queue (2026-11-11): every caller drops a ticket file (name = EPOCHREALTIME in microseconds, content = pid)
+# in GPU_RSYNC_DIR and may only take a slot once fewer than `slots` live tickets are ahead of it (FIFO), so ~40
+# polling jobs no longer race and a loser waits for tens of minutes. Tickets of dead pids are pruned by whoever
+# polls next. The wait is visible: a line on stderr when it starts and every GPU_RSYNC_NOTE_S (60) seconds,
+# plus `ls $GPU_RSYNC_DIR` (the tickets still queued) for `gpu.sh status`.
 rsync() {
-	local slots=${GPU_RSYNC_SLOTS:-2} bw=${GPU_RSYNC_BWLIMIT:-18000} i fd rc
+	local slots=${GPU_RSYNC_SLOTS:-2} bw=${GPU_RSYNC_BWLIMIT:-18000} dir=${GPU_RSYNC_DIR:-/tmp/gpu-rsync-q}
+	local i fd rc t me f pos p noted=0 note=${GPU_RSYNC_NOTE_S:-60} t0=$SECONDS LC_COLLATE=C
 	if (( slots <= 0 )); then command rsync --bwlimit="$bw" "$@"; return; fi
+	local nextnote=$(( note < 5 ? note : 5 ))
+	mkdir -p "$dir" 2>/dev/null && chmod 1777 "$dir" 2>/dev/null
+	t=${EPOCHREALTIME/./}; me="$dir/$t.$BASHPID"
+	printf '%s\n' "$BASHPID" > "$me" 2>/dev/null || me=
 	while :; do
-		for ((i = 1; i <= slots; i++)); do
-			{ exec {fd}>"/tmp/gpu-rsync-slot.$i"; } 2>/dev/null || continue
-			if flock -n "$fd"; then
-				command rsync --bwlimit="$bw" "$@"; rc=$?
+		pos=0
+		if [[ -n $me ]]; then
+			for f in "$dir"/*; do
+				[[ -e $f ]] || continue
+				[[ $f == "$me" ]] && break
+				p=$(<"$f") 2>/dev/null
+				if [[ -n $p ]] && ! kill -0 "$p" 2>/dev/null; then rm -f "$f"; continue; fi
+				pos=$((pos + 1))
+			done
+		fi
+		if (( pos < slots )); then
+			for ((i = 1; i <= slots; i++)); do
+				{ exec {fd}>"$dir/slot.$i.lock"; } 2>/dev/null || continue
+				if flock -n "$fd"; then
+					(( noted )) && echo "gpu.sh: rsync slot after $((SECONDS - t0)) s" >&2
+					command rsync --bwlimit="$bw" "$@"; rc=$?
+					exec {fd}>&-
+					[[ -n $me ]] && rm -f "$me"
+					return $rc
+				fi
 				exec {fd}>&-
-				return $rc
-			fi
-			exec {fd}>&-
-		done
+			done
+		fi
+		if (( SECONDS - t0 >= nextnote )); then
+			echo "gpu.sh: waiting for an rsync slot, $pos ticket(s) ahead ($((SECONDS - t0)) s)" >&2
+			noted=1; nextnote=$((nextnote + note))
+		fi
 		sleep 0.5
 	done
 }
