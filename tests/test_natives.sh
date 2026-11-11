@@ -24,9 +24,9 @@ echo lib > "$T/z/addons/dot_sim/bin/$plat/libdot_sim.so"; echo ext > "$T/z/addon
 export DOT_NATIVES_BASE="file://$T/rel"
 WARNED=; ERRED=; fetch_natives game-x
 [ -f "$PROJECTS_DIR/dot-sim/addons/dot_sim/bin/$plat/libdot_sim.so" ] && [ -f "$PROJECTS_DIR/dot-sim/addons/dot_sim/dot_sim.gdextension" ]; ok_ "installs the library and .gdextension" $?
-[ "$(cat "$PROJECTS_DIR/dot-sim/addons/dot_sim/bin/.natives")" = "v9.9.9 $plat" ]; ok_ "writes the stamp" $?
+[ "$(cat "$PROJECTS_DIR/dot-sim/addons/dot_sim/bin/.natives-$plat")" = "v9.9.9 $plat" ]; ok_ "writes the per-platform stamp" $?
 rm "$R/dot_sim-9.9.9-$plat.zip"; fetch_natives game-x; [ -z "$ERRED$WARNED" ]; ok_ "a matching stamp skips the download" $?
-rm "$PROJECTS_DIR/dot-sim/addons/dot_sim/bin/.natives"; WARNED=; fetch_natives game-x; [ -z "$WARNED$ERRED" ]; ok_ "a local build (no stamp) is kept" $?
+rm "$PROJECTS_DIR/dot-sim/addons/dot_sim/bin/.natives-$plat"; WARNED=; fetch_natives game-x; [ -z "$WARNED$ERRED" ]; ok_ "a local build (no stamp) is kept" $?
 rm -rf "$PROJECTS_DIR/dot-sim/addons/dot_sim/bin"; echo bad > "$R/dot_sim-9.9.9-$plat.zip"; ERRED=; fetch_natives game-x
 [ -n "$ERRED" ] && [ ! -e "$PROJECTS_DIR/dot-sim/addons/dot_sim/bin/$plat" ]; ok_ "a checksum mismatch installs nothing" $?
 WARNED=; DOT_NATIVES_BASE="file://$T/none" fetch_natives game-x; [ -n "$WARNED" ]; ok_ "no release: a warning, not an error" $?
@@ -46,10 +46,26 @@ echo lib > "$T/z2/addons/dot_net/native/bin/libdot_net_native.$os.template_relea
 (cd "$T/z2" && python3 -m zipfile -c "$R2/dot_net_native-1.2.3-$plat.zip" addons)
 (cd "$R2" && sha256sum "dot_net_native-1.2.3-$plat.zip" > SHA256SUMS.natives)
 WARNED=; ERRED=; fetch_natives game-y
-[ -f "$NB/libdot_net_native.$os.template_release.$arch.so" ] && [ "$(cat "$NB/.natives")" = "v1.2.3 $plat" ] && [ -z "$WARNED$ERRED" ]; ok_ "installs into the library directory and stamps it there" $?
+[ -f "$NB/libdot_net_native.$os.template_release.$arch.so" ] && [ "$(cat "$NB/.natives-$plat")" = "v1.2.3 $plat" ] && [ -z "$WARNED$ERRED" ]; ok_ "installs into the library directory and stamps it there" $?
 rm -rf "$NB"; mkdir -p "$NB"; echo committed > "$NB/libdot_net_native.$os.template_debug.$arch.so"
 WARNED=; ERRED=; fetch_natives game-y
-[ ! -f "$NB/.natives" ] && [ "$(cat "$NB/libdot_net_native.$os.template_debug.$arch.so")" = committed ]; ok_ "a committed library for this platform is kept" $?
+[ ! -f "$NB/.natives-$plat" ] && [ "$(cat "$NB/libdot_net_native.$os.template_debug.$arch.so")" = committed ]; ok_ "a committed library for this platform is kept" $?
+# Two macOS platforms keep separate stamps (the old single stamp flipped between them).
+SB="$PROJECTS_DIR/dot-sim/addons/dot_sim/bin"; rm -rf "$SB"
+for mp in macos-arm64 macos-x86_64; do
+    rm -rf "$T/z3"; mkdir -p "$T/z3/addons/dot_sim/bin/$mp"; echo lib > "$T/z3/addons/dot_sim/bin/$mp/libdot_sim.dylib"
+    (cd "$T/z3" && python3 -m zipfile -c "$R/dot_sim-9.9.9-$mp.zip" addons)
+done
+(cd "$R" && rm -f "dot_sim-9.9.9-$plat.zip" && sha256sum dot_sim-9.9.9-macos-*.zip > SHA256SUMS.natives)
+native_platform() { echo macos-arm64; }; fetch_natives game-x; native_platform() { echo macos-x86_64; }; fetch_natives game-x
+[ "$(cat "$SB/.natives-macos-arm64")" = "v9.9.9 macos-arm64" ] && [ "$(cat "$SB/.natives-macos-x86_64")" = "v9.9.9 macos-x86_64" ]; ok_ "each macOS platform keeps its own stamp" $?
+rm "$R"/dot_sim-9.9.9-macos-*.zip; WARNED=; ERRED=
+native_platform() { echo macos-arm64; }; fetch_natives game-x; native_platform() { echo macos-x86_64; }; fetch_natives game-x
+[ -z "$WARNED$ERRED" ]; ok_ "fetching both again downloads neither" $?
+# An old single stamp naming this platform is adopted, not re-downloaded.
+rm "$SB"/.natives-*; echo "v9.9.9 macos-arm64" > "$SB/.natives"; native_platform() { echo macos-arm64; }; WARNED=; ERRED=; fetch_natives game-x
+[ -z "$WARNED$ERRED" ] && [ "$(cat "$SB/.natives-macos-arm64")" = "v9.9.9 macos-arm64" ]; ok_ "an old single stamp is adopted" $?
+grep -q 'natives-\$plat' "$H/bootstrap.ps1"; ok_ "bootstrap.ps1 keeps a stamp per platform" $?
 grep -q 'function Fetch-Natives' "$H/bootstrap.ps1"; ok_ "bootstrap.ps1 has Fetch-Natives" $?
 grep -q 'LibDir' "$H/bootstrap.ps1" && grep -q 'function Test-NativeBuiltHere' "$H/bootstrap.ps1"; ok_ "bootstrap.ps1 reads the library directory too" $?
 [ "$(grep -c 'fetch_natives "\$p"' "$H/bootstrap.sh")" = 2 ]; ok_ "sync and --links both fetch natives" $?

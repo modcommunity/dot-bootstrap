@@ -971,7 +971,14 @@ function Fetch-Natives ($proj) {
         $addonDir = Join-Path $dir "addons\$($n.Addon)"
         if (-not (Test-Path $addonDir)) { Warn $proj "natives: $($n.Repo)/addons/$($n.Addon) is not cloned"; continue }
         $libDir = Join-Path $addonDir $n.LibDir
-        $stamp = Join-Path $libDir '.natives'
+        # One stamp per platform (.natives-<platform>): macos-arm64 and macos-x86_64 fetched
+        # side by side must not overwrite one stamp. An old single .natives naming this
+        # platform is adopted.
+        $stamp = Join-Path $libDir ".natives-$plat"
+        $old = Join-Path $libDir '.natives'
+        if (-not (Test-Path $stamp) -and (Test-Path $old) -and (((Get-Content $old -Raw).Trim() -split ' ')[1] -eq $plat)) {
+            Copy-Item $old $stamp
+        }
         $want = "$($n.Tag) $plat"
         if ((Test-Path $stamp) -and ((Get-Content $stamp -Raw).Trim() -eq $want)) { continue }
         $platDir = Join-Path $libDir $plat
