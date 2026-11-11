@@ -528,11 +528,15 @@ linked_siblings() {
 	# A link one level down (games/zombie-zone-maps -> ../../zombie-zone-maps, a whole sibling repo) must not
 	# be expanded by --copy-links either: it is excluded from the copy and relinked to the staged sibling.
 	# Prints the link's path relative to the project and its target as the link reads from its own directory.
+	# Only a link to the WHOLE repo: a link to a folder inside one (maps/imported_dm -> ../../arena-dm-maps/maps,
+	# addons/dot_x -> ../../dot-x/addons/dot_x) keeps being copied with --copy-links, because the staged sibling
+	# carries only git ls-files -co and that folder's content may be git-ignored (arena-dm-maps' maps/*, fetched
+	# from content.lock): relinked, the box saw an empty maps/ and crackhouse/dm-morpheus "not found" (2026-11-10).
 	while IFS= read -r l; do
 		t=$(readlink "$l") || continue
 		[[ $t == "$ROOT"/* ]] && t="../../${t#"$ROOT"/}"
 		[[ $t == ../../* ]] || continue
-		n=${t#../../}; n=${n%%/*}
+		n=${t#../../}; n=${n%/}
 		[[ $n =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ && $n != "$own" && -e $ROOT/$n/.git ]] || continue
 		printf '%s\t%s\t%s\n' "$n" "${l#"${1%/}"/}" "$t"
 	done < <(find "$1" -mindepth 2 -maxdepth 2 -type l -not -path '*/.godot/*' -not -path '*/.git/*' 2>/dev/null)
