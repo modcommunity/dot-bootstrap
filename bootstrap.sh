@@ -32,7 +32,9 @@
 #
 # --only works with every mode (sync, --links, --status). A name is a project
 # from projects.tsv, or its short form (arena = game-arena, wipeout = mg-wipeout,
-# core = dot-core), or a glob. Set DOT_ONLY to make a selection stick. Addons
+# core = dot-core), or another name projects.tsv lists for it (fatal-contact and
+# final-contact = game-arena, airdrift = game-g2gfast, playlot = game-playground),
+# or a glob. Set DOT_ONLY to make a selection stick. Addons
 # are linked (or copied) into the named projects only. Selecting a game also selects
 # the addons it requires and the content it links (maps, courses, optional weapon and
 # monster packs) unless --min. With no selection at all, EVERYTHING is cloned and linked.
@@ -209,6 +211,18 @@ err()  { printf '%-22s %s\n' "$1" "${RED}$2${OFF}"; fail=1; }
 # name<TAB>url, comments and blank lines dropped.
 projects() { grep -v '^[[:space:]]*#' "$LIST" | grep -v '^[[:space:]]*$' | cut -f1; }
 url_for()  { grep -v '^[[:space:]]*#' "$LIST" | awk -F'\t' -v p="$1" '$1==p{print $2; exit}'; }
+# The listed name an other name (third column) stands for: fatal-contact -> game-arena.
+alias_target() {
+    grep -v '^[[:space:]]*#' "$LIST" | awk -F'\t' -v a="$1" \
+        '{ n = split($3, x, ","); for (i = 1; i <= n; i++) if (x[i] == a) { print $1; exit } }'
+}
+# owner/repo of a GitHub URL, SSH or HTTPS, so the two forms compare equal.
+repo_path() { printf '%s' "$1" | sed -e 's#^git@github.com:##' -e 's#^https://github.com/##' -e 's#\.git$##'; }
+# A repository GitHub does not have is a renamed or deleted one, never a passing
+# network fault: say so in red, name the line to fix, and fail the run.
+missing_repo() {
+    err "$1" "REPOSITORY MISSING: $2 does not exist (renamed or deleted?). Fix its line in projects.tsv."
+}
 
 # The addons a project needs linked in, read out of its own .gitignore. A
 # project's own addon is never in there -- dot-net ignores dot_core and ships
@@ -294,6 +308,7 @@ resolve_name() {
         *[*?[]*) projects | while read -r p; do [[ "$p" == $n ]] && echo "$p"; done; return ;;
     esac
     for p in "$n" "game-$n" "mg-$n" "dot-$n"; do listed "$p" && { echo "$p"; return; }; done
+    p="$(alias_target "$n")"; [ -n "$p" ] && echo "$p"
 }
 
 # The listed repository an addon comes from, clone or no clone. The name rule first;
@@ -351,7 +366,10 @@ par_each() {
     for x in "$@"; do
         i=$((i+1))
         while [ "$(jobs -rp | wc -l)" -ge "$JOBS" ]; do wait -n 2>/dev/null || true; done
-        ( fail=0; out="$("$fn" "$x" 2>&1)"; [ -n "$out" ] && printf '%s\n' "$out"; [ "$fail" = 0 ] || : > "$tmp/$i.failed" ) &
+        # Into a file, not $(...): a command substitution is one more subshell, and the
+        # fail=1 an err() sets in there never reached the marker, so a parallel sync
+        # whose clone or pull failed still finished "ok".
+        ( fail=0; "$fn" "$x" > "$tmp/$i.out" 2>&1; [ -s "$tmp/$i.out" ] && cat "$tmp/$i.out"; [ "$fail" = 0 ] || : > "$tmp/$i.failed" ) &
     done
     wait
     compgen -G "$tmp/*.failed" >/dev/null && fail=1
@@ -440,13 +458,16 @@ sync_repo() {
             fi
         fi
 
-        if git clone -q "$effective" "$dir" 2>/dev/null; then
+        local clone_err
+        if clone_err="$(git clone -q "$effective" "$dir" 2>&1 >/dev/null)"; then
             # A repository created on GitHub and never pushed to clones fine and
             # has no HEAD, so rev-parse fails. Say so rather than leaking its
             # "fatal: Needed a single revision" to the terminal.
             local at; at="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null)"
             say "$proj" "${GRN}cloned${OFF} ${at:-${YLW}empty — nothing pushed to it yet${OFF}}"
             [ -n "$HUB" ] && git -C "$dir" remote add hub "$HUB/$proj.git" 2>/dev/null
+        elif printf '%s' "$clone_err" | grep -qiE 'repository not found|not found|does not exist'; then
+            missing_repo "$proj" "$effective"
         else
             err "$proj" "clone failed from $effective"
         fi
@@ -466,6 +487,16 @@ sync_repo() {
     # editor-rewritten .import files nobody meant to keep.
     local dirty; dirty=$(git -C "$dir" status --porcelain | wc -l)
     local origin; origin="$(git -C "$dir" remote get-url origin 2>/dev/null)"
+    # A repository renamed on GitHub: the list names the new one, this checkout
+    # still the old. GitHub's redirect is not to be relied on, so repoint it,
+    # keeping the SSH or HTTPS form the checkout already uses.
+    if [ -n "$origin" ] && [ "$(repo_path "$origin")" != "$(repo_path "$url")" ]; then
+        local moved="$url"
+        case "$origin" in https://*) moved="$(to_https "$url")" ;; esac
+        git -C "$dir" remote set-url origin "$moved"
+        say "$proj" "${YLW}origin moved${OFF} $(repo_path "$origin") -> $(repo_path "$url")"
+        origin="$moved"
+    fi
     local net=(); mapfile -t net < <(https_for "$origin")
 
     # A clone of a repository that had nothing pushed to it yet has no HEAD, and
@@ -530,6 +561,8 @@ sync_repo() {
         if [ -z "$before" ]; then say "$proj" "${GRN}first commits${OFF} $after$kept"
         elif [ "$before" = "$after" ]; then say "$proj" "${DIM}up to date${OFF} $after$kept"
         else say "$proj" "${GRN}updated${OFF} $before -> $after$kept"; fi
+    elif printf '%s' "$pull_err" | grep -qiE 'repository not found|does not exist'; then
+        missing_repo "$proj" "$origin"
     elif [ "$dirty" -gt 0 ] && printf '%s' "$pull_err" | grep -qE 'would be overwritten|commit your changes or stash'; then
         # The update touches files changed here. Name them, so the choice
         # between committing and discarding is made by somebody looking.
@@ -911,8 +944,8 @@ play_game() {
     local want="$1"
     # A game is game-<x> or mg-<x> (the minigames); the short form tries each prefix.
     local proj="$want" c
-    for c in "$want" "game-$want" "mg-$want"; do
-        games | grep -qx "$c" && { proj="$c"; break; }
+    for c in "$want" "game-$want" "mg-$want" "$(alias_target "$want")"; do
+        [ -n "$c" ] && games | grep -qx "$c" && { proj="$c"; break; }
     done
 
     if ! games | grep -qx "$proj"; then
@@ -963,8 +996,8 @@ EXPORT_PLAY_ARGS=(--offline +bot_quota 8 +profiler_overlay 1 +profiler_record_se
 # game-<x> or mg-<x> for a name or its short form; nothing when there is no such game.
 resolve_game() {
     local c
-    for c in "$1" "game-$1" "mg-$1"; do
-        games | grep -qx "$c" && { echo "$c"; return 0; }
+    for c in "$1" "game-$1" "mg-$1" "$(alias_target "$1")"; do
+        [ -n "$c" ] && games | grep -qx "$c" && { echo "$c"; return 0; }
     done
     return 1
 }

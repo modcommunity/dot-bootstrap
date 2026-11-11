@@ -9,6 +9,7 @@ RED=''; YLW=''; CYN=''; DIM=''; GRN=''; OFF=''
 SELF_DIR="$T/shboot"; PROJECTS_DIR="$T/proj"; mkdir -p "$SELF_DIR" "$PROJECTS_DIR"
 games() { printf '%s\n' game-arena mg-pong game-arena-maps; }
 ok() { :; }
+alias_target() { [ "$1" = fatal-contact ] && echo game-arena; }
 block="$(sed -n '/^# --- Release export /,/^# --- Modes /p' "$H/bootstrap.sh")"
 check 'the export block is found' '[ -n "$block" ]'
 eval "$block"
@@ -21,6 +22,7 @@ done
 check 'the help shows both modes' '[ "$(sed -n 3,48p "$H/bootstrap.sh" | grep -c -- "--export arena\|--play-export arena")" = 2 ]'
 
 check 'game: short name' '[ "$(resolve_game arena)" = game-arena ]'
+check 'game: another name from projects.tsv' '[ "$(resolve_game fatal-contact)" = game-arena ]'
 check 'game: full name' '[ "$(resolve_game mg-pong)" = mg-pong ]'
 check 'game: unknown is refused' '! resolve_game nothing >/dev/null'
 

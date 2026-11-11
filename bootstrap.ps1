@@ -32,7 +32,9 @@
 
     -Only works with every mode (sync, -Links, -Status). A name is a project
     from projects.tsv, or its short form (arena = game-arena, wipeout =
-    mg-wipeout, core = dot-core), or a wildcard. Set $env:DOT_ONLY to make a
+    mg-wipeout, core = dot-core), or another name projects.tsv lists for it
+    (fatal-contact and final-contact = game-arena, airdrift = game-g2gfast,
+    playlot = game-playground), or a wildcard. Set $env:DOT_ONLY to make a
     selection stick. Addons are copied (or linked) into the named projects only.
     Selecting a game also selects the addons it requires and the content it links
     (maps, courses, optional weapon and monster packs) unless -Min. With no
@@ -244,8 +246,16 @@ function Get-Projects {
         Where-Object { $_ -notmatch '^\s*#' -and $_ -match '\S' } |
         ForEach-Object {
             $parts = $_ -split "`t"
-            [pscustomobject]@{ Name = $parts[0].Trim(); Url = $parts[1].Trim() }
+            $aka = if ($parts.Count -gt 2) { @($parts[2].Trim() -split ',' | Where-Object { $_ }) } else { @() }
+            [pscustomobject]@{ Name = $parts[0].Trim(); Url = $parts[1].Trim(); Aliases = $aka }
         }
+}
+
+# The listed name an other name (third column) stands for: fatal-contact -> game-arena.
+function Get-AliasTarget ($n) {
+    $hit = Get-Projects | Where-Object { $_.Aliases -contains $n } | Select-Object -First 1
+    if ($hit) { return $hit.Name }
+    return $null
 }
 
 # The addons a project needs linked in, read out of its own .gitignore. A
@@ -312,6 +322,8 @@ function Resolve-Name ($n) {
     if ($n -eq 'addons') { return @(Get-Projects | Where-Object { $_.Name -like 'dot-*' } | ForEach-Object { $_.Name }) }
     if ($n -match '[*?\[]') { return @(Get-Projects | Where-Object { $_.Name -like $n } | ForEach-Object { $_.Name }) }
     foreach ($p in @($n, "game-$n", "mg-$n", "dot-$n")) { if (Test-Listed $p) { return @($p) } }
+    $a = Get-AliasTarget $n
+    if ($a) { return @($a) }
     return @()
 }
 
@@ -516,7 +528,7 @@ function Sync-Repo ($proj, $url) {
             }
         }
 
-        git clone -q $effective $dir 2>$null
+        $cloneErr = @(git clone -q $effective $dir 2>&1 | ForEach-Object { "$_" })
         if ($LASTEXITCODE -eq 0) {
             # A repository created on GitHub and never pushed to clones fine and
             # has no HEAD, so rev-parse fails. Say so rather than leaking its
@@ -525,6 +537,10 @@ function Sync-Repo ($proj, $url) {
             if ($at) { Say $proj "cloned $at" 'Green' }
             else     { Warn $proj 'cloned, empty -- nothing pushed to it yet' }
             if ($Hub) { git -C $dir remote add hub "$Hub/$proj.git" 2>$null | Out-Null }
+        } elseif (($cloneErr -join "`n") -match '(?i)repository not found|not found|does not exist') {
+            # A repository GitHub does not have is a renamed or deleted one, never
+            # a passing network fault: say so, and name the line to fix.
+            Err $proj "REPOSITORY MISSING: $effective does not exist (renamed or deleted?). Fix its line in projects.tsv."
         } else {
             Err $proj "clone failed from $effective"
         }
@@ -545,6 +561,17 @@ function Sync-Repo ($proj, $url) {
     $dirty = @(git -C $dir status --porcelain).Count
 
     $origin = git -C $dir remote get-url origin 2>$null
+    # A repository renamed on GitHub: the list names the new one, this checkout
+    # still the old. GitHub's redirect is not to be relied on, so repoint it,
+    # keeping the SSH or HTTPS form the checkout already uses. (Inline, not a
+    # helper: Sync-Many would have to carry one into every runspace.)
+    $strip = { param($u) "$u" -replace '^git@github\.com:', '' -replace '^https://github\.com/', '' -replace '\.git$', '' }
+    if ($origin -and ((& $strip $origin) -ne (& $strip $url))) {
+        $moved = if ("$origin" -like 'https://*') { ConvertTo-HttpsUrl $url } else { $url }
+        git -C $dir remote set-url origin $moved 2>$null | Out-Null
+        Say $proj "origin moved $(& $strip $origin) -> $(& $strip $url)" 'Yellow'
+        $origin = $moved
+    }
     $net    = @(Get-HttpsArgs $origin)
 
     # A clone of a repository that had nothing pushed to it yet has no HEAD, and
@@ -624,7 +651,9 @@ function Sync-Repo ($proj, $url) {
     }
     if (-not $pullOk) {
         $alt = ConvertTo-HttpsUrl $origin
-        if ($dirty -gt 0 -and ($pullErr -join "`n") -match 'would be overwritten|commit your changes or stash') {
+        if (($pullErr -join "`n") -match '(?i)repository not found|does not exist') {
+            Err $proj "REPOSITORY MISSING: $origin does not exist (renamed or deleted?). Fix its line in projects.tsv."
+        } elseif ($dirty -gt 0 -and ($pullErr -join "`n") -match 'would be overwritten|commit your changes or stash') {
             # The update touches files changed here. Name them, so the choice
             # between committing and discarding is made by somebody looking.
             $files = @($pullErr | Where-Object { $_ -match '^\s+\S' -and $_ -notmatch '^\s*(Please|Aborting)' } |
@@ -1169,8 +1198,8 @@ function List-Games {
 function Play-Game ($want) {
     # game-<x> or mg-<x>; the short form tries each prefix.
     $proj = $want
-    foreach ($c in @($want, "game-$want", "mg-$want")) {
-        if (Get-Games | Where-Object { $_.Name -eq $c }) { $proj = $c; break }
+    foreach ($c in @($want, "game-$want", "mg-$want", (Get-AliasTarget $want))) {
+        if ($c -and (Get-Games | Where-Object { $_.Name -eq $c })) { $proj = $c; break }
     }
 
     if (-not (Get-Games | Where-Object { $_.Name -eq $proj })) {
@@ -1218,8 +1247,8 @@ function Play-Game ($want) {
 $script:exportPreset = 'Windows x86_64'
 
 function Resolve-Game ($want) {
-    foreach ($c in @($want, "game-$want", "mg-$want")) {
-        if (Get-Games | Where-Object { $_.Name -eq $c }) { return $c }
+    foreach ($c in @($want, "game-$want", "mg-$want", (Get-AliasTarget $want))) {
+        if ($c -and (Get-Games | Where-Object { $_.Name -eq $c })) { return $c }
     }
     return $null
 }
