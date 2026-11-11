@@ -4,12 +4,17 @@ set -u
 here=$(cd "$(dirname "$0")/.." && pwd)
 src=$here/tools/gpu.sh
 proj=$(mktemp -d); mkdir -p "$proj/game-x"; : > "$proj/game-x/project.godot"; printf '#!/bin/sh\n' > "$proj/game-x/game.sh"; chmod +x "$proj/game-x/game.sh"
+mkdir -p "$proj/game-x/tools"
+printf '#!/bin/sh\ngit ls-files -co --exclude-standard\n' > "$proj/game-x/tools/check_ls.sh"
+printf '#!/bin/sh\ngit diff --stat\n' > "$proj/game-x/tools/check_diff.sh"
+printf 'parse_all() {\n:\n}\n' > "$proj/game-x/game.sh"
+chmod +x "$proj/game-x/tools/"*.sh
 fail=0
 run() { # expect, command...
 	local want=$1; shift
 	local got=no
 	got=$(cd "$proj/game-x" && ROOT=$proj WT_ROOT=$proj/wt bash -c '
-		eval "$(sed -n "/^unwrap() {/,/^}/p;/^offer_eligible() {/,/^}/p" "$0")"
+		eval "$(sed -n "/^unwrap() {/,/^}/p;/^offer_eligible() {/,/^}/p;/^TOOL_ALLOW=/p;/^TOOL_DENY=/p;/^tool_job() {/,/^}/p" "$0")"
 		offer_eligible "$@" && echo yes || echo no' "$src" "$@")
 	if [[ $got == "$want" ]]; then echo "ok   $want: $*"; else echo "FAIL want $want got $got: $*"; fail=$((fail+1)); fi
 }
@@ -26,6 +31,10 @@ run no env X='a b' ./game.sh --no-parse test headless_a
 run no godot --headless --path . --import
 run no godot --headless --path . --script res://../x.gd
 run no tools/check_pinned_parse.sh game-x
+run yes bash tools/check_ls.sh --quick
+run no bash tools/check_diff.sh --quick
+run yes bash -c 'echo snippet' hv-parse-pass
+run no bash -c 'echo snippet' other-name
 run yes ./game.sh --no-parse test headless_maps -- --map=sunken_resort
 run yes timeout 900 ./game.sh --no-parse test headless_maps -- --map=a-b.c_1
 run no ./game.sh --no-parse test headless_maps -- --map=a/b
