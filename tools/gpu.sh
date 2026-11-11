@@ -577,6 +577,9 @@ cd ~/gpu || exit 3
 # A person at the machine gets it to themselves (person_here, from GUARD_FN).
 [ "$guard" = 1 ] && person_here && exit 0
 mkdir -p suite/.shim ws
+# Refuse to stage onto a nearly full disk (staging hit 0 avail 2026-11-10): the box answers BUSY and the job goes elsewhere.
+disk_gb=$(df -BG --output=avail "$HOME/gpu" 2>/dev/null | tail -1 | tr -dc 0-9)
+[ -z "$disk_gb" ] || [ "$disk_gb" -ge "${GPU_MIN_DISK_GB:-20}" ] || { echo "BUSY only ${disk_gb}G disk free (gpu.sh clean --apply)"; exit 0; }
 flock -n .gate true || { echo "BUSY a GPU job is running or waiting"; exit 0; }
 exec 9>>.lock
 flock -n -s 9 || { echo "BUSY a GPU job is running"; exit 0; }
