@@ -206,18 +206,33 @@ rsync() {
 }
 set_box "${GPU_BOX:-staging}"
 
+# A project argument is a name under $ROOT, a worktree name under $WT_ROOT, or an absolute path to either;
+# proj_name reduces it to the name (the box keeps one copy per name) and proj_src prints its local directory
+# ($ROOT wins when both exist, so sibling-repo lookups are unchanged).
+proj_name() {
+	local n=${1:-}
+	if [[ $n == "$ROOT"/* ]]; then n=${n#"$ROOT"/}; elif [[ $n == "$WT_ROOT"/* ]]; then n=${n#"$WT_ROOT"/}; fi
+	printf '%s' "${n%%/*}"
+}
+proj_src() {
+	local n; n=$(proj_name "$1")
+	if [[ ! -f "$ROOT/$n/project.godot" && -f "$WT_ROOT/$n/project.godot" ]]; then printf '%s' "$WT_ROOT/$n"; else printf '%s' "$ROOT/$n"; fi
+}
+
 project_dir() {
-	[[ -n "${1:-}" ]] || die "which project? (a directory under $ROOT)"
-	[[ -f "$ROOT/$1/project.godot" ]] || die "$ROOT/$1 is not a Godot project"
+	[[ -n "${1:-}" ]] || die "which project? (a directory under $ROOT or $WT_ROOT)"
+	local d; d=$(proj_src "$1")
+	[[ -f "$d/project.godot" ]] || die "$d is not a Godot project"
 }
 
 sync_project() {
 	project_dir "$1"
-	"${SSHQ[@]}" "mkdir -p ~/$REMOTE_ROOT/$1"
+	local n d; n=$(proj_name "$1"); d=$(proj_src "$1")
+	"${SSHQ[@]}" "mkdir -p ~/$REMOTE_ROOT/$n"
 	rsync -az --delete --copy-links \
 		--exclude '.godot/' --exclude '.git/' --exclude 'screenshots/' \
 		-e "$RSH" \
-		"$ROOT/$1/" "$HOST:$REMOTE_ROOT/$1/"
+		"$d/" "$HOST:$REMOTE_ROOT/$n/"
 }
 
 # Runs a command on the laptop under the one-job lock. printf %q keeps arguments
@@ -1148,11 +1163,11 @@ shot_cmd() {
 			*) break ;;
 		esac
 	done
-	project=${1:-}; shift || true
+	project=$(proj_name "${1:-}"); shift || true
 	# SHOT_DIR: the checkout the frames come from and go back to; a builder worktree (~/wt/<name>, set by
 	# route_cmd) or ~/godot/<project>. The box keeps one shot copy per name, so worktrees do not collide.
 	if [[ -n ${SHOT_DIR:-} ]]; then [[ -f $SHOT_DIR/project.godot && $project == "$(basename "$SHOT_DIR")" ]] || die "SHOT_DIR $SHOT_DIR is not the project $project"
-	else project_dir "$project"; SHOT_DIR=$ROOT/$project; fi
+	else project_dir "$project"; SHOT_DIR=$(proj_src "$project"); fi
 	[[ $# -gt 0 ]] || die "shot $project: which command?"
 	unwrap "$@"
 	case ${UW_REST[0]} in tools/*.sh|./tools/*.sh|xvfb-run|godot) ;;
@@ -1579,7 +1594,7 @@ case "${1:-}" in
 		sync_project "${2:-}"
 		;;
 	run)
-		project="${2:-}"
+		project=$(proj_name "${2:-}")
 		project_dir "$project"
 		shift 2
 		# A function so excl can pick the box again when this one stays busy; set -e is off
@@ -1607,11 +1622,12 @@ case "${1:-}" in
 		excl remote_locked "$@"
 		;;
 	pull)
-		project_dir "${2:-}"
+		set -- "$1" "$(proj_name "${2:-}")" "${@:3}"
+		project_dir "$2"
 		[[ -n "${3:-}" ]] || die "pull which path inside $2?"
 		[[ -n ${GPU_BOX:-} || ! -f "$HOME/.cache/gpu-last-box.$2" ]] || set_box "$(cat "$HOME/.cache/gpu-last-box.$2")"
 		# dest is a directory the path lands IN (rsync semantics), by default its own folder here.
-		dest="${4:-$ROOT/$2/$(dirname "$3")}"
+		dest="${4:-$(proj_src "$2")/$(dirname "$3")}"
 		mkdir -p "$dest"
 		rsync -az -e "$RSH" "$HOST:$REMOTE_ROOT/$2/$3" "$dest/"
 		;;
