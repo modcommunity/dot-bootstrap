@@ -525,6 +525,17 @@ linked_siblings() {
 		[[ $n =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ && $n != "$own" && -e $ROOT/$n/.git && $rel != "${t#../}" ]] || continue
 		printf '%s\t%s\t%s\n' "$n" "$(basename "$l")" "$t"
 	done < <(find "$1" -maxdepth 1 -type l)
+	# A link one level down (games/zombie-zone-maps -> ../../zombie-zone-maps, a whole sibling repo) must not
+	# be expanded by --copy-links either: it is excluded from the copy and relinked to the staged sibling.
+	# Prints the link's path relative to the project and its target as the link reads from its own directory.
+	while IFS= read -r l; do
+		t=$(readlink "$l") || continue
+		[[ $t == "$ROOT"/* ]] && t="../../${t#"$ROOT"/}"
+		[[ $t == ../../* ]] || continue
+		n=${t#../../}; n=${n%%/*}
+		[[ $n =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ && $n != "$own" && -e $ROOT/$n/.git ]] || continue
+		printf '%s\t%s\t%s\n' "$n" "${l#"${1%/}"/}" "$t"
+	done < <(find "$1" -mindepth 2 -maxdepth 2 -type l -not -path '*/.godot/*' -not -path '*/.git/*' 2>/dev/null)
 }
 
 # Stages one sibling into the box's content-addressed store, ~/gpu/sib/<name>/<fingerprint>/,
@@ -816,7 +827,7 @@ offer_on() {
 	copyfail_reset "$BOX" "$@"
 
 	while IFS=$'\t' read -r _ lk lt; do
-		"${SSHQ[@]}" "cd ~/gpu/ws/$wsid/$project && rm -rf ./$lk && ln -s $lt ./$lk" </dev/null ||
+		"${SSHQ[@]}" "cd ~/gpu/ws/$wsid/$project && rm -rf ./$lk && mkdir -p ./$(dirname $lk) && ln -s $lt ./$lk" </dev/null ||
 			back_to_queue "linking $lk into the workspace on $BOX failed"
 	done < <(linked_siblings "$PROJ_DIR")
 	local sibarg; sibarg=$(IFS=,; echo "${sibs[*]}"); : "${sibarg:=-}"
@@ -885,6 +896,8 @@ if [ "$mode" = probe ]; then
 	command -v xvfb-run >/dev/null && command -v Xvfb >/dev/null || { echo "BUSY no xvfb-run/Xvfb installed (sudo apt install xvfb)"; exit 75; }
 	# The sheet tools tile their frames with ffmpeg; without it the run ends with no image.
 	command -v ffmpeg >/dev/null || { echo "BUSY no ffmpeg installed (sudo apt install ffmpeg)"; exit 75; }
+	disk_gb=$(df -BG --output=avail "$HOME/gpu" 2>/dev/null | tail -1 | tr -dc 0-9)
+	[ -z "$disk_gb" ] || [ "$disk_gb" -ge "${GPU_MIN_DISK_GB:-20}" ] || { echo "BUSY only ${disk_gb}G disk free (gpu.sh clean --apply)"; exit 75; }
 	echo OK; exit 0
 fi
 mkdir -p shot shot-shim
