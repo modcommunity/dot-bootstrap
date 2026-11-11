@@ -1135,6 +1135,27 @@ route_cmd() {
 	exit 75
 }
 
+# publish_extra_siblings DIR: siblings a publish copies although no argument names them: the project's
+# .gpu-siblings and $GPU_SIBLINGS (opt-in; a script that reaches ../<x> by itself needs <x> on the box).
+publish_extra_siblings() {
+	{ [[ -f $1/.gpu-siblings ]] && sed 's/#.*//' "$1/.gpu-siblings"; printf '%s\n' ${GPU_SIBLINGS:-}; } | tr -d ' \r' | grep -v '^$'
+}
+
+# publish_host_addons_resolves DIR: 0 when publish_pack.sh --host-addons gives the same answer in the box's copy.
+# The copy resolves addons/ links (--copy-links), and publish_pack.sh also matches an addon by the repo its link
+# points into (zee-dot-weapons ships addons/zee_weapons); that match is lost in the copy. 1 when a link's repo
+# name differs from its folder name (normalised to underscores), so the publish has to stay local.
+publish_host_addons_resolves() {
+	local l n repo
+	for l in "$1"/addons/*; do
+		[[ -L $l ]] || continue
+		n=$(basename "$l" | tr - _)
+		repo=$(readlink -f "$l" | sed -n 's|.*/\([^/]*\)/addons/[^/]*$|\1|p' | tr - _)
+		[[ -z $repo || $repo == "$n" ]] || return 1
+	done
+	return 0
+}
+
 # gpu.sh publish [--local-ok] [env K=V...] tools/publish*.sh [args]   (run from a project directory)
 # Runs a pack publish on a staging box (default staging02, GPU_PUBLISH_BOX) because dev02 is short of
 # memory. The project, the dot-cloud checkout and every ../sibling the command names are copied to the
@@ -1158,6 +1179,12 @@ publish_cmd() {
 		envs+=("$kv")
 	done
 	[[ -z ${DOT_CLI_TOKEN:-} ]] || $fail "DOT_CLI_TOKEN is set; it would have to travel, so it stays local"
+	local ha
+	for ha in "${cmd[@]:1}"; do
+		[[ $ha == --host-addons || $ha == --host-addons=* ]] || continue
+		publish_host_addons_resolves "$PWD" || $fail "--host-addons matches linked addons by repo name, which the box's copy cannot; run with GPU_PUBLISH=0"
+		break
+	done
 	set_box "${GPU_PUBLISH_BOX:-staging02}"
 	"${SSHQ[@]}" true 2>/dev/null || $fail "$BOX_DESC does not answer"
 	local rroot="$REMOTE_HOME/$REMOTE_ROOT" rhome=$REMOTE_HOME
@@ -1188,12 +1215,13 @@ publish_cmd() {
 	for kv in "${envs[@]}"; do [[ $kv == DOT_CLI_TOKEN_FILE=* ]] && { tok=${kv#*=}; "${SSHQ[@]}" "[ -s $(printf '%q' "$tok") ]" || $fail "no token file $tok on $BOX_DESC"; }; done
 
 	# Projects to copy: this one, dot-cloud, and every $ROOT/<name> or ../<name> the arguments name
-	# (not the ../ references in scripts: some siblings are GBs). Links are resolved in the copy.
+	# (not the ../ references in scripts: some siblings are GBs; list those in .gpu-siblings). Links are resolved in the copy.
 	local want=("$project" dot-cloud) n
 	for a in "${cmd[@]:1}"; do
 		[[ $a == "$ROOT"/* ]] && { n=${a#"$ROOT"/}; want+=("${n%%/*}"); }
 		[[ $a == ../* ]] && { n=${a#../}; want+=("${n%%/*}"); }
 	done
+	while read -r n; do want+=("$n"); done < <(publish_extra_siblings "$PWD")
 	local rs=(-e "$RSH") seen=" "
 	for n in "${want[@]}"; do
 		[[ $seen == *" $n "* || ! $n =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ || ! -d $ROOT/$n ]] && continue
