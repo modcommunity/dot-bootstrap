@@ -803,8 +803,9 @@ link_addons() {
 # and this fetches that release's zip for this machine (SHA256SUMS.natives, checked)
 # and unpacks it at the addon repository's root, which is where ci/install.sh puts a
 # local build: addons/<addon>/bin/<platform>/ and the .gdextension. It runs before the
-# links, so --copy carries the library too. A stamp (bin/.natives) skips the download
-# next time; a library built locally (bin without a stamp) is kept. No release for
+# links, so --copy carries the library too. A stamp per platform (bin/.natives-<platform>, so a
+# mac with arm64 and x86_64 fetched side by side does not flip one stamp) skips the download
+# next time (an old single bin/.natives naming this platform is adopted); a library built locally (bin without a stamp) is kept. No release for
 # this platform, or offline: a warning, and the GDScript twins run. DOT_NATIVES=none
 # skips the lot; DOT_NATIVES_BASE replaces https://github.com/modcommunity.
 #
@@ -856,7 +857,12 @@ fetch_natives() {
         dir="$PROJECTS_DIR/$repo"
         [ -d "$dir/addons/$addon" ] || { warn "$proj" "natives: $repo/addons/$addon is not cloned"; continue; }
         lib="$dir/addons/$addon/${libdir:-bin}"
-        stamp="$lib/.natives"
+        stamp="$lib/.natives-$plat"
+        # The single-stamp layout ("<tag> <platform>" in .natives): adopted when it names
+        # this platform, so the next platform fetched cannot overwrite it.
+        if [ ! -f "$stamp" ] && [ -f "$lib/.natives" ] && [ "$(cut -d' ' -f2 "$lib/.natives")" = "$plat" ]; then
+            cp "$lib/.natives" "$stamp"
+        fi
         [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$tag $plat" ] && continue
         if [ ! -f "$stamp" ] && native_built_here "$lib" "$plat"; then
             say "$proj" "${DIM}natives: keeps the $addon library built here ($plat)${OFF}"; continue
