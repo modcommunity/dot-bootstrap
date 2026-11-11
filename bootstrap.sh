@@ -23,7 +23,7 @@
 #   ./bootstrap.sh --import              import every game headless (the editor can crash on a first import); --only narrows it
 #   ./bootstrap.sh --get-godot          download the latest stable Godot into .godot-bin beside this script; with --import, a selection or --discard-generated it carries on (sync, link, then import)
 #   ./bootstrap.sh --discard-generated   when an update is blocked, restore every modified .import/.uid file and retry
-#   ./bootstrap.sh game-arena mg-wipeout    the same as --only (names, short forms, globs)
+#   ./bootstrap.sh game-fatal-contact mg-wipeout    the same as --only (names, short forms, globs)
 #   ./bootstrap.sh --games arena,wipeout --addons dot-core   games and/or addons by kind
 #   ./bootstrap.sh zees-games               every game, with the addons and content it needs
 #   ./bootstrap.sh --zees-games-min         every game, base repository + addons only
@@ -31,10 +31,11 @@
 #   ./bootstrap.sh --plan [selection]       print what would be cloned and linked, change nothing
 #
 # --only works with every mode (sync, --links, --status). A name is a project
-# from projects.tsv, or its short form (arena = game-arena, wipeout = mg-wipeout,
-# core = dot-core), or another name projects.tsv lists for it (fatal-contact and
-# final-contact = game-arena, airdrift = game-g2gfast, playlot = game-playground),
-# or a glob. Set DOT_ONLY to make a selection stick. Addons
+# from projects.tsv, or its short form (fatal-contact = game-fatal-contact, wipeout =
+# mg-wipeout, core = dot-core), or another name projects.tsv lists for it, old names
+# included (arena and game-arena = game-fatal-contact, g2gfast = game-airdrift,
+# playground = game-playlot, arena-weapons = fc-weapons), or a glob. A sync moves a
+# checkout still under an old name to the new one (see "Renamed checkouts"). Set DOT_ONLY to make a selection stick. Addons
 # are linked (or copied) into the named projects only. Selecting a game also selects
 # the addons it requires and the content it links (maps, courses, optional weapon and
 # monster packs) unless --min. With no selection at all, EVERYTHING is cloned and linked.
@@ -216,6 +217,28 @@ alias_target() {
     grep -v '^[[:space:]]*#' "$LIST" | awk -F'\t' -v a="$1" \
         '{ n = split($3, x, ","); for (i = 1; i <= n; i++) if (x[i] == a) { print $1; exit } }'
 }
+# Every listed name with each of its other names: "fc-weapons<TAB>arena-weapons".
+alias_pairs() {
+    grep -v '^[[:space:]]*#' "$LIST" | awk -F'\t' \
+        '{ n = split($3, x, ","); for (i = 1; i <= n; i++) if (x[i] != "") print $1 "\t" x[i] }'
+}
+# The listed name for a name that may be an old one: arena-weapons -> fc-weapons. A name
+# that is neither listed nor another name comes back unchanged. Games' .gitignore lines
+# (/addons/arena_weapons, "# bootstrap-link: g2gfast-maps/maps") still say the old names,
+# so the addon rule and the content links go through this.
+canon() {
+    projects | grep -qxF "$1" && { echo "$1"; return; }
+    local p; p="$(alias_target "$1")"; echo "${p:-$1}"
+}
+# The folder a name is on disk under: the listed name, unless only the old one is there
+# (a checkout whose move migrate_renamed refused, see below).
+on_disk() {
+    local c; c="$(canon "$1")"
+    [ ! -e "$PROJECTS_DIR/$c" ] && [ "$c" != "$1" ] && [ -d "$PROJECTS_DIR/$1" ] && c="$1"
+    echo "$c"
+}
+# The same for a path whose first part is a project: g2gfast-maps/maps -> airdrift-maps/maps.
+canon_path() { local h="${1%%/*}"; printf '%s%s\n' "$(on_disk "$h")" "${1#"$h"}"; }
 # owner/repo of a GitHub URL, SSH or HTTPS, so the two forms compare equal.
 repo_path() { printf '%s' "$1" | sed -e 's#^git@github.com:##' -e 's#^https://github.com/##' -e 's#\.git$##'; }
 # A repository GitHub does not have is a renamed or deleted one, never a passing
@@ -244,7 +267,13 @@ links_for() {
 # A project's .gitignore: its checkout, else (for --plan) the one in PLAN_FROM.
 gi_path() {
     if [ -f "$PROJECTS_DIR/$1/.gitignore" ]; then echo "$PROJECTS_DIR/$1/.gitignore"
-    elif [ -n "$PLAN_FROM" ]; then echo "$PLAN_FROM/$1/.gitignore"
+    elif [ -n "$PLAN_FROM" ]; then
+        # A tree whose checkouts still have their old names (dev02's game-arena).
+        local o
+        [ -f "$PLAN_FROM/$1/.gitignore" ] || while IFS=$'\t' read -r _ o; do
+            [ -n "$o" ] && [ -f "$PLAN_FROM/$o/.gitignore" ] && { echo "$PLAN_FROM/$o/.gitignore"; return; }
+        done <<< "$(alias_pairs | awk -F'\t' -v n="$1" '$1 == n')"
+        echo "$PLAN_FROM/$1/.gitignore"
     else echo "$PROJECTS_DIR/$1/.gitignore"; fi
 }
 
@@ -264,9 +293,15 @@ optional_for() {
 # dot-server-deploy, which vendors a copy of everything, ignores /addons/ whole.
 addon_source() {
     local addon="$1" src="${1//_/-}" d
+    # The listed name first (arena_weapons is in fc-weapons), then the raw one: a machine
+    # whose checkout has not been renamed yet still has it under arena-weapons.
+    d="$(canon "$src")"
+    if [ -d "$PROJECTS_DIR/$d/addons/$addon" ]; then echo "$d"; return 0; fi
     if [ -d "$PROJECTS_DIR/$src/addons/$addon" ]; then echo "$src"; return 0; fi
     for d in "$PROJECTS_DIR"/*/; do
         d="${d%/}"
+        # An old-name link left by a rename (see migrate_renamed) is not a second owner.
+        [ -L "$d" ] && continue
         [ -d "$d/addons/$addon" ] && [ -d "$d/.git" ] || continue
         # Git's own answer, not a line match: dot-server-deploy ignores /addons/ whole.
         git -C "$d" check-ignore -q "addons/$addon" && continue
@@ -316,7 +351,8 @@ resolve_name() {
 # taken out -- zee_weapons is zee-dot-weapons -- which is unambiguous because no two
 # names in projects.tsv are equal that way (`--check`'s neighbour, measured 10-07).
 addon_repo() {
-    local src="${1//_/-}" p
+    local src p
+    src="$(canon "${1//_/-}")"
     listed "$src" && { echo "$src"; return; }
     p="$(addon_source "$1")"; listed "$p" && [ -d "$PROJECTS_DIR/$p/addons/$1" ] && { echo "$p"; return; }
     projects | while read -r p; do [ "${p//dot-/}" = "${src//dot-/}" ] && { echo "$p"; break; }; done
@@ -328,7 +364,7 @@ deps_of() {
     local a src path
     while read -r a; do [ -n "$a" ] && addon_repo "$a"; done <<< "$(links_for "$1")"
     while IFS=$'\t' read -r path src; do
-        [ -n "$src" ] && listed "${src%%/*}" && echo "${src%%/*}"
+        [ -n "$src" ] && src="$(canon "${src%%/*}")" && listed "$src" && echo "$src"
     done <<< "$(content_links_for "$1")"
 }
 
@@ -435,8 +471,119 @@ resolve_blocked_pull() {
     return $pulled
 }
 
+# --- Renamed checkouts -----------------------------------------------------
+#
+# A repository renamed on GitHub is listed under its new name, and its checkout is
+# moved to that name, so that what is on disk and what this prints are the names the
+# repositories have (a laptop said "game-playground-maps cloned" for playlot-maps).
+# The old names stay in projects.tsv's third column, so they keep selecting it.
+#
+# The move happens only when it is safe: the old directory is a real checkout (not a
+# link, not a linked worktree) of this project, the new name is free, and no process
+# is working in it. A dirty tree moves as it is -- a rename touches no file in it.
+# Afterwards every link beside the projects that went through the old name (a game's
+# addons/arena_weapons, maps/imported) is pointed at the new one, linked worktrees are
+# repaired, and the old name is left as a link to the new one, so a path written
+# somewhere this cannot see (another worktree's link, a script, an editor's project
+# list) still arrives. Delete that link once nothing uses the old name.
+#
+# When the move is refused the checkout stays under its old name and the new one is
+# NOT cloned beside it: a second copy is how work ends up in the wrong one. DOT_NO_RENAME=1
+# refuses every move (a machine whose running jobs use the old paths).
+declare -A KEPT_OLD=()
+
+# A process whose working directory or command line is inside <dir>; prints its pid.
+in_use_by() {
+    local d="$1" phys p cwd
+    [ -d /proc/self ] || return 1
+    phys="$(cd "$d" 2>/dev/null && pwd -P)" || phys="$d"
+    for p in /proc/[0-9]*; do
+        [ "${p#/proc/}" = "$$" ] && continue
+        cwd="$(readlink "$p/cwd" 2>/dev/null)" || cwd=""
+        case "$cwd/" in "$d"/*|"$phys"/*) echo "${p#/proc/}"; return 0 ;; esac
+        [ -r "$p/cmdline" ] || continue
+        if tr '\0' '\n' < "$p/cmdline" 2>/dev/null | awk -v a="$d" -v b="$phys" '
+                { for (k = 1; k <= 2; k++) { x = (k == 1 ? a : b)
+                    if ($0 == x || index($0, x "/") || substr($0, length($0) - length(x)) == "=" x) f = 1 } }
+                END { exit !f }'; then
+            echo "${p#/proc/}"; return 0
+        fi
+    done
+    return 1
+}
+
+# Every link under the projects (to a few levels: addons/x, maps/imported, content/x/y)
+# that the move of <old> left pointing nowhere is pointed through <new> instead -- only
+# when the new target is really there, so nothing that was fine is touched.
+relink_moved() {
+    local old="$1" new="$2" l t nt
+    while IFS= read -r -d '' l; do
+        [ -e "$l" ] && continue
+        t="$(readlink "$l")" || continue
+        case "/$t/" in */"$old"/*) ;; *) continue ;; esac
+        nt="$(printf '%s' "$t" | awk -v o="$old" -v n="$new" '{
+            m = split($0, x, "/"); s = ""; done = 0
+            for (i = 1; i <= m; i++) { if (!done && x[i] == o) { x[i] = n; done = 1 } s = s (i > 1 ? "/" : "") x[i] }
+            print s }')"
+        case "$nt" in /*) [ -e "$nt" ] ;; *) [ -e "$(dirname "$l")/$nt" ] ;; esac || continue
+        ln -sfn "$nt" "$l" && say "${l#"$PROJECTS_DIR"/}" "${DIM}relinked -> $nt${OFF}"
+    done < <(find "$PROJECTS_DIR" -mindepth 2 -maxdepth 5 \( -name .git -o -name .godot -o -name node_modules \) -prune -o -type l -print0 2>/dev/null)
+}
+
+migrate_renamed() {
+    local new old src dst url origin pid why n
+    while IFS=$'\t' read -r new old; do
+        [ -n "$old" ] && [ "$old" != "$new" ] || continue
+        src="$PROJECTS_DIR/$old"; dst="$PROJECTS_DIR/$new"
+        # Only a real directory; an alias like "fc" or "playlot" is never one here.
+        [ -d "$src" ] && [ ! -L "$src" ] || continue
+        if [ -e "$dst" ] || [ -L "$dst" ]; then
+            [ -L "$dst" ] || warn "$new" "an old checkout is still at $old beside it; left alone (move anything you need out of it, then delete it)"
+            continue
+        fi
+        why=""
+        if [ ! -d "$src/.git" ]; then
+            why="$old is not a main git checkout"
+        else
+            url="$(url_for "$new")"; origin="$(git -C "$src" remote get-url origin 2>/dev/null)"
+            # This project's checkout: origin is the new repository, or one of its old names.
+            n="$(basename "$(repo_path "$origin")")"
+            if [ "$(repo_path "$origin")" != "$(repo_path "$url")" ] && [ "$n" != "$new" ] && [ "$(alias_target "$n")" != "$new" ]; then
+                why="$old's origin is $origin, not $new"
+            elif [ "${DOT_NO_RENAME:-}" = 1 ]; then
+                why="DOT_NO_RENAME=1"
+            elif pid="$(in_use_by "$src")"; then
+                why="in use by process $pid ($(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | cut -c1-60))"
+            fi
+        fi
+        if [ -n "$why" ]; then
+            # Something else under the old name: not this checkout, so the new one is cloned.
+            case "$why" in *"not a main git checkout"|*"'s origin is "*) warn "$old" "left alone: $why"; continue ;; esac
+            KEPT_OLD[$new]="$old"
+            warn "$new" "still at its old name $old, not renamed: $why. Run again once that is fixed."
+            continue
+        fi
+        mv -n "$src" "$dst" 2>/dev/null
+        if [ ! -d "$dst" ] || { [ -e "$src" ] && [ ! -L "$src" ]; }; then
+            KEPT_OLD[$new]="$old"
+            err "$new" "could not move $old to $new; it is still at $old"
+            continue
+        fi
+        git -C "$dst" worktree repair >/dev/null 2>&1 || true
+        relink_moved "$old" "$new"
+        ln -s "$new" "$src" 2>/dev/null || true
+        n=$(git -C "$dst" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+        ok "$new" "renamed from $old$([ "$n" -gt 0 ] && echo " (with its $n uncommitted file(s))"); $old is now a link to it"
+    done <<< "$(alias_pairs)"
+}
+
 sync_repo() {
     local proj="$1"; local dir="$PROJECTS_DIR/$proj"; local url; url="$(url_for "$proj")"
+
+    if [ -n "${KEPT_OLD[$proj]:-}" ]; then
+        warn "$proj" "not cloned: the checkout is still at ${KEPT_OLD[$proj]} (see above)"
+        return
+    fi
 
     if [ ! -d "$dir/.git" ]; then
         if [ "$url" = "LOCAL" ]; then
@@ -705,6 +852,7 @@ fetch_natives() {
     plat="$(native_platform)" || return 0
     while IFS=$'\t' read -r repo tag addon libdir; do
         [ -n "$repo" ] && [ -n "$tag" ] || continue
+        repo="$(on_disk "$repo")"
         dir="$PROJECTS_DIR/$repo"
         [ -d "$dir/addons/$addon" ] || { warn "$proj" "natives: $repo/addons/$addon is not cloned"; continue; }
         lib="$dir/addons/$addon/${libdir:-bin}"
@@ -754,7 +902,11 @@ content_links_for() {
     [ "$MIN" = "1" ] && return 0
     local gi; gi="$(gi_path "$1")"
     [ -f "$gi" ] || return 0
-    awk '/^# bootstrap-link: /{src=$3; next} src!="" && /^\//{print $0 "\t" src} {src=""}' "$gi"
+    local path src
+    # The source through canon: games still name g2gfast-maps/maps, which is airdrift-maps.
+    while IFS=$'\t' read -r path src; do
+        [ -n "$path" ] && printf '%s\t%s\n' "$path" "$(canon_path "$src")"
+    done < <(awk '/^# bootstrap-link: /{src=$3; next} src!="" && /^\//{print $0 "\t" src} {src=""}' "$gi")
 }
 
 # A maps repo's lock pins its art stores only when an item goes `into` ".stores"; a lock that pins just the maps
@@ -832,11 +984,28 @@ check_list() {
     listed="$(projects | sort)"
     # This repository is skipped when it is sitting among the projects it
     # manages: it is the thing doing the cloning, not a thing to be cloned.
+    # A checkout still under a renamed repository's old name counts as that repository
+    # (reported below: the next sync renames it); the link a rename leaves at the old
+    # name is no repository at all.
+    local d c
     disk="$(cd "$PROJECTS_DIR" 2>/dev/null && for d in */; do
                 d="${d%/}"
                 [ "$PROJECTS_DIR/$d" = "$REPO_DIR" ] && continue
-                [ -d "$d/.git" ] && echo "$d"
-            done | sort)"
+                [ -L "$d" ] && continue
+                [ -d "$d/.git" ] || continue
+                c="$(alias_target "$d")"
+                if [ -n "$c" ] && ! listed "$d" && [ ! -d "$c/.git" ]; then echo "$c"; else echo "$d"; fi
+            done | sort -u)"
+    while IFS=$'\t' read -r c d; do
+        [ -n "$d" ] && [ -d "$PROJECTS_DIR/$d" ] || continue
+        if [ -L "$PROJECTS_DIR/$d" ]; then
+            say "$d" "${DIM}old name of $c, a link to it; delete it once nothing uses the old path${OFF}"
+        elif [ -d "$PROJECTS_DIR/$c/.git" ]; then
+            [ -d "$PROJECTS_DIR/$d/.git" ] && warn "$d" "old checkout of $c, which is also here; move anything you need out of it, then delete it"
+        elif [ -d "$PROJECTS_DIR/$d/.git" ]; then
+            warn "$c" "checked out under its old name $d; the next sync renames it"
+        fi
+    done <<< "$(alias_pairs)"
 
     local missing extra
     missing="$(comm -13 <(echo "$listed") <(echo "$disk"))"
@@ -867,6 +1036,7 @@ check_list() {
         [ -d "$d" ] || continue
         d="$(basename "${d%/}")"
         [ "$PROJECTS_DIR/$d" = "$REPO_DIR" ] && continue
+        [ -L "$PROJECTS_DIR/$d" ] && [ -n "$(alias_target "$d")" ] && continue
         [ -d "$PROJECTS_DIR/$d/.git" ] && continue
         warn "$d" "a directory beside the projects that is not a git repository"
     done
@@ -1420,6 +1590,7 @@ case "$mode" in
         check_list
         ;;
     --links)
+        migrate_renamed
         targets="$(link_targets)"
         while read -r p; do [ -n "$p" ] && fetch_natives "$p"; done <<< "$targets"
         while read -r p; do [ -n "$p" ] && { link_addons "$p"; link_content "$p"; }; done <<< "$targets"
@@ -1458,6 +1629,8 @@ case "$mode" in
         # Repositories first, all of them, then links -- a link can point into a
         # project that this same run is about to clone.
         [ ${#ONLY[@]} -gt 0 ] && echo "only:     ${ONLY[*]}$([ "$NO_DEPS" = "1" ] && echo " (no deps)")" && echo
+        # Before anything is cloned: a checkout under an old name is this run's copy.
+        migrate_renamed
         sync_selected
         echo
         targets="$(link_targets)"

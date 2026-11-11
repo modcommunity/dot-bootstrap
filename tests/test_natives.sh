@@ -9,6 +9,7 @@ pass=0; fail=0
 ok_() { if [ "$2" = 0 ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $1"; fi; }
 for f in gi_path natives_for native_platform native_built_here fetch_natives; do eval "$(sed -n "/^$f() {/,/^}/p" "$H/bootstrap.sh")"; done
 say() { :; }; ok() { :; }; warn() { WARNED="$2"; }; err() { ERRED="$2"; fail_=1; }
+on_disk() { echo "$1"; }   # no renamed repositories here
 DIM=; OFF=; PLAN_FROM=
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 PROJECTS_DIR="$T/p"; mkdir -p "$PROJECTS_DIR/game-x" "$PROJECTS_DIR/dot-sim/addons/dot_sim"
