@@ -251,11 +251,36 @@ function Get-Projects {
         }
 }
 
-# The listed name an other name (third column) stands for: fatal-contact -> game-arena.
+# The listed name an other name (third column) stands for: arena -> game-fatal-contact.
 function Get-AliasTarget ($n) {
     $hit = Get-Projects | Where-Object { $_.Aliases -contains $n } | Select-Object -First 1
     if ($hit) { return $hit.Name }
     return $null
+}
+
+# The listed name for a name that may be an old one (arena-weapons -> fc-weapons); any
+# other name comes back unchanged. Games' .gitignore lines still say the old names.
+function Get-Canon ($n) {
+    if (Get-Projects | Where-Object { $_.Name -eq $n }) { return $n }
+    $a = Get-AliasTarget $n
+    if ($a) { return $a }
+    return $n
+}
+
+# The folder a name is on disk under: the listed name, unless only the old one is there
+# (a checkout whose move Move-Renamed refused).
+function Get-OnDisk ($n) {
+    $c = Get-Canon $n
+    if ($c -ne $n -and -not (Test-Path (Join-Path $projectsDir $c)) -and (Test-Path (Join-Path $projectsDir $n) -PathType Container)) { return $n }
+    return $c
+}
+
+# The same for repo/path: g2gfast-maps/maps -> airdrift-maps/maps.
+function Get-OnDiskPath ($p) {
+    $parts = $p -split '/', 2
+    $head = Get-OnDisk $parts[0]
+    if ($parts.Count -gt 1) { return "$head/$($parts[1])" }
+    return $head
 }
 
 # The addons a project needs linked in, read out of its own .gitignore. A
@@ -289,7 +314,12 @@ function Get-OptionalFor ($proj) {
 function Get-GitignorePath ($proj) {
     $here = Join-Path $projectsDir "$proj\.gitignore"
     if ((Test-Path $here) -or -not $env:DOT_PLAN_FROM) { return $here }
-    return (Join-Path $env:DOT_PLAN_FROM "$proj\.gitignore")
+    $there = Join-Path $env:DOT_PLAN_FROM "$proj\.gitignore"
+    if (Test-Path $there) { return $there }
+    # A tree whose checkouts still have their old names (game-arena for game-fatal-contact).
+    $p = Get-Projects | Where-Object { $_.Name -eq $proj } | Select-Object -First 1
+    if ($p) { foreach ($o in $p.Aliases) { $g = Join-Path $env:DOT_PLAN_FROM "$o\.gitignore"; if (Test-Path $g) { return $g } } }
+    return $there
 }
 
 # Which repository an addon comes from. bootstrap.sh's addon_source has the reasoning:
@@ -297,8 +327,13 @@ function Get-GitignorePath ($proj) {
 # checkouts for the project that has the folder and does not ignore it.
 function Get-AddonSource ($addon) {
     $src = $addon -replace '_', '-'
+    # The listed name first (arena_weapons is in fc-weapons), then the raw, old one.
+    $c = Get-Canon $src
+    if (Test-Path (Join-Path $projectsDir "$c\addons\$addon")) { return $c }
     if (Test-Path (Join-Path $projectsDir "$src\addons\$addon")) { return $src }
     foreach ($d in Get-ChildItem -Path $projectsDir -Directory -ErrorAction SilentlyContinue) {
+        # An old-name junction left by a rename is not a second owner.
+        if ($d.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
         if (-not (Test-Path (Join-Path $d.FullName "addons\$addon")) -or -not (Test-Path (Join-Path $d.FullName '.git'))) { continue }
         # Git's own answer, not a line match: dot-server-deploy ignores /addons/ whole.
         git -C $d.FullName check-ignore -q "addons/$addon" 2>$null
@@ -331,7 +366,7 @@ function Resolve-Name ($n) {
 # checkout that owns it, then the listed name it matches with every "dot-" taken out
 # (zee_weapons is zee-dot-weapons; no two names in projects.tsv are equal that way).
 function Get-AddonRepo ($addon) {
-    $src = $addon -replace '_', '-'
+    $src = Get-Canon ($addon -replace '_', '-')
     if (Test-Listed $src) { return $src }
     $owner = Get-AddonSource $addon
     if ((Test-Listed $owner) -and (Test-Path (Join-Path $projectsDir "$owner\addons\$addon"))) { return $owner }
@@ -346,7 +381,7 @@ function Get-ContentRepos ($proj) {
     $gi = Get-GitignorePath $proj
     if (-not (Test-Path $gi)) { return @() }
     Get-Content $gi | ForEach-Object {
-        if ($_ -match '^# bootstrap-link: ([^/\s]+)') { $Matches[1] }
+        if ($_ -match '^# bootstrap-link: ([^/\s]+)') { Get-Canon $Matches[1] }
     }
 }
 
@@ -501,8 +536,68 @@ function Resolve-BlockedPull ($proj, $dir, $net, $pullErr) {
     return $pulled
 }
 
+# --- Renamed checkouts -----------------------------------------------------
+#
+# bootstrap.sh's "Renamed checkouts" has the reasoning. A repository renamed on GitHub is
+# listed under its new name and its checkout is moved there when that is safe: a real
+# checkout of this project, the new name free, and Windows lets the folder move (it does
+# not while a program has a file or its working directory in it). A dirty tree moves as
+# it is. The old name is left as a junction to the new one, so junctions and paths that
+# went through it still arrive. A refused move keeps the old folder and does NOT clone a
+# second copy beside it. $env:DOT_NO_RENAME = '1' refuses every move.
+$script:keptOld = @{}
+
+function Move-Renamed {
+    foreach ($p in Get-Projects) {
+        foreach ($old in $p.Aliases) {
+            $new = $p.Name
+            if (-not $old -or $old -eq $new) { continue }
+            $src = Join-Path $projectsDir $old
+            $dst = Join-Path $projectsDir $new
+            $item = Get-Item -LiteralPath $src -Force -ErrorAction SilentlyContinue
+            if (-not $item -or -not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
+            $dstItem = Get-Item -LiteralPath $dst -Force -ErrorAction SilentlyContinue
+            if ($dstItem) {
+                if (-not ($dstItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                    Warn $new "an old checkout is still at $old beside it; left alone (move anything you need out of it, then delete it)"
+                }
+                continue
+            }
+            if (-not (Test-Path (Join-Path $src '.git') -PathType Container)) { Warn $old "left alone: $old is not a main git checkout"; continue }
+            $origin = (git -C $src remote get-url origin 2>$null | Out-String).Trim()
+            $repoOf = { param($u) ($u -replace '^git@github\.com:', '' -replace '^https://github\.com/', '' -replace '\.git$', '') }
+            $base = ((& $repoOf $origin) -split '/')[-1]
+            if ((& $repoOf $origin) -ne (& $repoOf $p.Url) -and $base -ne $new -and (Get-AliasTarget $base) -ne $new) {
+                Warn $old "left alone: $old's origin is $origin, not $new"; continue
+            }
+            if ($env:DOT_NO_RENAME -eq '1') {
+                $script:keptOld[$new] = $old
+                Warn $new "still at its old name $old, not renamed: DOT_NO_RENAME=1. Run again once that is fixed."
+                continue
+            }
+            try {
+                Move-Item -LiteralPath $src -Destination $dst -ErrorAction Stop
+            } catch {
+                $script:keptOld[$new] = $old
+                Err $new "could not move $old to $new (a program has it open?); it is still at $old"
+                continue
+            }
+            git -C $dst worktree repair 2>$null | Out-Null
+            New-Item -ItemType Junction -Path $src -Target $dst -ErrorAction SilentlyContinue | Out-Null
+            $n = @(git -C $dst status --porcelain 2>$null).Count
+            $dirty = if ($n -gt 0) { " (with its $n uncommitted file(s))" } else { '' }
+            Ok $new "renamed from $old$dirty; $old is now a junction to it"
+        }
+    }
+}
+
 function Sync-Repo ($proj, $url) {
     $dir = Join-Path $projectsDir $proj
+
+    if ($script:keptOld.ContainsKey($proj)) {
+        Warn $proj "not cloned: the checkout is still at $($script:keptOld[$proj]) (see above)"
+        return
+    }
 
     if (-not (Test-Path (Join-Path $dir '.git'))) {
         if ($url -eq 'LOCAL') {
@@ -871,6 +966,7 @@ function Fetch-Natives ($proj) {
     $plat = Get-NativePlatform
     $root = if ($env:DOT_NATIVES_BASE) { $env:DOT_NATIVES_BASE } else { 'https://github.com/modcommunity' }
     foreach ($n in @(Get-NativesFor $proj)) {
+        $n.Repo = Get-OnDisk $n.Repo
         $dir = Join-Path $projectsDir $n.Repo
         $addonDir = Join-Path $dir "addons\$($n.Addon)"
         if (-not (Test-Path $addonDir)) { Warn $proj "natives: $($n.Repo)/addons/$($n.Addon) is not cloned"; continue }
@@ -919,7 +1015,7 @@ function Link-Content ($proj) {
     if (-not (Test-Path $gi)) { return }
     $src = $null
     foreach ($line in Get-Content $gi) {
-        if ($line -match '^# bootstrap-link: (\S+)(\s+ci)?\s*$') { $src = $Matches[1]; continue }
+        if ($line -match '^# bootstrap-link: (\S+)(\s+ci)?\s*$') { $src = Get-OnDiskPath $Matches[1]; continue }
         if ($src -and $line -match '^/(.+?)/?\s*$') {
             $path   = $Matches[1] -replace '/', '\'
             $target = Join-Path $projectsDir ($src -replace '/', '\')
@@ -1078,10 +1174,31 @@ function Check-List {
     $names = @(Get-Projects | ForEach-Object { $_.Name })
     # This repository is skipped when it is sitting among the projects it
     # manages: it is the thing doing the cloning, not a thing to be cloned.
+    # A checkout still under a renamed repository's old name counts as that repository
+    # (reported below: the next sync renames it); the junction a rename leaves at the old
+    # name is no repository at all.
     $dirs  = @(Get-ChildItem -Directory $projectsDir |
-               Where-Object { $_.FullName -ne $repoDir })
+               Where-Object { $_.FullName -ne $repoDir -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })
     $disk  = @($dirs | Where-Object { Test-Path (Join-Path $_.FullName '.git') } |
-               ForEach-Object { $_.Name })
+               ForEach-Object {
+                   $c = Get-AliasTarget $_.Name
+                   if ($c -and $names -notcontains $_.Name -and -not (Test-Path (Join-Path $projectsDir "$c\.git"))) { $c } else { $_.Name }
+               } | Sort-Object -Unique)
+    foreach ($p in Get-Projects) {
+        foreach ($old in $p.Aliases) {
+            $o = Get-Item -LiteralPath (Join-Path $projectsDir $old) -Force -ErrorAction SilentlyContinue
+            if (-not $o -or -not $o.PSIsContainer) { continue }
+            $hasNew = Test-Path (Join-Path $projectsDir "$($p.Name)\.git")
+            $oldGit = Test-Path (Join-Path $o.FullName '.git')
+            if ($o.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                Say $old "old name of $($p.Name), a junction to it; delete it once nothing uses the old path" 'DarkGray'
+            } elseif ($hasNew) {
+                if ($oldGit) { Warn $old "old checkout of $($p.Name), which is also here; move anything you need out of it, then delete it" }
+            } elseif ($oldGit) {
+                Warn $p.Name "checked out under its old name $old; the next sync renames it"
+            }
+        }
+    }
 
     foreach ($d in $disk) {
         if ($names -notcontains $d) { Err $d 'a repository on disk that projects.tsv does not list' }
@@ -1645,7 +1762,7 @@ function Show-Plan {
         if (-not (Test-Path $gi)) { continue }
         $src = $null
         foreach ($line in Get-Content $gi) {
-            if ($line -match '^# bootstrap-link: (\S+)(\s+ci)?\s*$') { $src = $Matches[1]; continue }
+            if ($line -match '^# bootstrap-link: (\S+)(\s+ci)?\s*$') { $src = Get-OnDiskPath $Matches[1]; continue }
             if ($src -and $line -match '^/(.+?)/?\s*$') { Write-Output "link $p content $($Matches[1]) -> $src" }
             $src = $null
         }
@@ -1677,6 +1794,7 @@ elseif ($Status)  {
     foreach ($p in Get-Selected) { Status-Repo $p }
 }
 elseif ($Links)   {
+    Move-Renamed
     $targets = @(Get-LinkTargets)
     foreach ($p in $targets) { Fetch-Natives $p }
     Link-Many $targets
@@ -1698,6 +1816,7 @@ else {
         $note = if ($NoDeps) { ' (no deps)' } else { '' }
         Write-Host "only:     $($script:selection -join ' ')$note`n"
     }
+    Move-Renamed
     Get-Selected -Sync | Out-Null
     Write-Host ''
     $targets = @(Get-LinkTargets)

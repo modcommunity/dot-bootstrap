@@ -18,10 +18,13 @@
 # Columns: name <TAB> clone URL, or the word LOCAL for a project with no remote
 # yet -- a LOCAL project cannot be cloned onto another machine at all. An
 # optional third column lists other names for it, comma-separated, which every
-# selection, --play and --export accept: a renamed repository keeps its folder
-# name here (every game's "# bootstrap-link:" lines, the addon name rule and each
-# machine's existing checkout use it) and its new names go in this column.
-# game-arena is cloned from game-fatal-contact and answers to fatal-contact.
+# selection, --play and --export accept. A renamed repository is listed, and
+# cloned, under its NEW name, and its old names go in this column:
+# game-fatal-contact answers to game-arena and arena. The next sync moves a
+# checkout still under an old name to the new one (only a clean move: never over
+# an existing folder, never while a process works in it) and leaves a link at
+# the old name; games' .gitignore lines that still say /addons/arena_weapons or
+# "# bootstrap-link: g2gfast-maps/maps" resolve through this column.
 # A checkout whose origin still names the old repository is repointed at the
 # URL here on the next sync (GitHub's redirect for a renamed repository is not
 # something to lean on: it ends the moment a repository takes the old name).
@@ -111,24 +114,24 @@ dot-workbench	git@github.com:modcommunity/dot-workbench.git
 dot-weather	git@github.com:modcommunity/dot-weather.git
 dot-radio	git@github.com:zees-games/dot-radio.git
 dot-trail	git@github.com:zees-games/dot-trail.git
-game-arena	git@github.com:zees-games/game-fatal-contact.git	game-fatal-contact,fatal-contact,final-contact,fc
-arena-surf-dm-maps	git@github.com:zees-games/fc-surf-dm-maps.git	fc-surf-dm-maps
-arena-dm-maps	git@github.com:zees-games/fc-dm-maps.git	fc-dm-maps
-game-g2gfast	git@github.com:zees-games/game-airdrift.git	game-airdrift,airdrift
-g2gfast-maps	git@github.com:zees-games/airdrift-maps.git	airdrift-maps
+game-fatal-contact	git@github.com:zees-games/game-fatal-contact.git	game-arena,arena,final-contact,fc
+fc-surf-dm-maps	git@github.com:zees-games/fc-surf-dm-maps.git	arena-surf-dm-maps
+fc-dm-maps	git@github.com:zees-games/fc-dm-maps.git	arena-dm-maps
+game-airdrift	git@github.com:zees-games/game-airdrift.git	game-g2gfast,g2gfast
+airdrift-maps	git@github.com:zees-games/airdrift-maps.git	g2gfast-maps
 game-hide-n-seek	git@github.com:zees-games/game-hide-n-seek.git
 game-hungario	git@github.com:zees-games/game-hungario.git
 game-murder-mystery	git@github.com:zees-games/game-murder-mystery.git
-game-playground	git@github.com:zees-games/game-playlot.git	game-playlot,playlot
-game-playground-maps	git@github.com:zees-games/playlot-maps.git	playlot-maps
+game-playlot	git@github.com:zees-games/game-playlot.git	game-playground,playground
+playlot-maps	git@github.com:zees-games/playlot-maps.git	game-playground-maps
 game-zombie-zone	git@github.com:zees-games/game-zombie-zone.git
 hide-n-seek-maps	git@github.com:zees-games/hide-n-seek-maps.git
 mg-buses-from-hell	git@github.com:zees-games/mg-buses-from-hell.git
-mg-deathrun	git@github.com:zees-games/game-deathrun.git
+game-deathrun	git@github.com:zees-games/game-deathrun.git	mg-deathrun
 mg-deathrun-maps	git@github.com:zees-games/mg-deathrun-maps.git
 mg-dangerous-delivery	git@github.com:zees-games/mg-dangerous-delivery.git
 mg-look-at-me	git@github.com:zees-games/mg-look-at-me.git
-mg-prop-hunt	git@github.com:zees-games/game-prop-hunt.git
+game-prop-hunt	git@github.com:zees-games/game-prop-hunt.git	mg-prop-hunt
 mg-prop-hunt-maps	git@github.com:zees-games/mg-prop-hunt-maps.git
 mg-smash-copter	git@github.com:zees-games/mg-smash-copter.git
 mg-wipeout	git@github.com:zees-games/mg-wipeout.git
@@ -136,7 +139,7 @@ mg-wipeout-maps	git@github.com:zees-games/mg-wipeout-maps.git
 murder-mystery-maps	git@github.com:zees-games/murder-mystery-maps.git
 lam-maps	git@github.com:zees-games/lam-maps.git
 natural-disasters	git@github.com:zees-games/natural-disasters.git
-arena-weapons	git@github.com:zees-games/fc-weapons.git	fc-weapons
+fc-weapons	git@github.com:zees-games/fc-weapons.git	arena-weapons
 zed-dot-weapons	git@github.com:zees-games/zed-dot-weapons.git
 zee-dot-weapons	git@github.com:zees-games/zee-dot-weapons.git
 zombie-zone-maps	git@github.com:zees-games/zombie-zone-maps.git

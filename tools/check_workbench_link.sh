@@ -14,14 +14,19 @@ bad() { echo "FAIL $*"; fail=1; }
 
 games=$(grep -v '^[[:space:]]*#' "$here/projects.tsv" | cut -f1 | grep -E '^(game|mg)-' | grep -v -- '-maps$')
 for g in $games dot-game-template; do
-    [ -d "$sib/$g" ] || { bad "$g is not checked out"; continue; }
-    grep -qx '/addons/dot_workbench' "$sib/$g/.gitignore" || bad "$g/.gitignore lacks /addons/dot_workbench"
+    d="$sib/$g"
+    # A checkout still under a renamed repository's old name (projects.tsv column 3).
+    [ -d "$d" ] || for o in $(grep -v '^[[:space:]]*#' "$here/projects.tsv" | awk -F'\t' -v n="$g" '$1 == n { gsub(",", " ", $3); print $3 }'); do
+        [ -d "$sib/$o" ] && { d="$sib/$o"; break; }
+    done
+    [ -d "$d" ] || { bad "$g is not checked out"; continue; }
+    grep -qx '/addons/dot_workbench' "$d/.gitignore" || bad "$g/.gitignore lacks /addons/dot_workbench"
 done
 
 mkdir -p "$tmp/empty"
 plan="$(DOT_PROJECTS="$tmp/empty" DOT_PLAN_FROM="$sib" "$here/bootstrap.sh" --plan arena 2>&1)"
 grep -qx 'clone dot-workbench' <<<"$plan" || bad "plan arena does not clone dot-workbench"
-grep -qx 'link game-arena addon dot_workbench' <<<"$plan" || bad "plan arena does not link dot_workbench"
+grep -qx 'link game-fatal-contact addon dot_workbench' <<<"$plan" || bad "plan arena does not link dot_workbench"
 
 # A real run for dot-workbench itself (small): clone, then its four links.
 mkdir -p "$tmp/src" "$tmp/out"

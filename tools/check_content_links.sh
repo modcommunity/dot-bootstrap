@@ -25,6 +25,21 @@ plan() { DOT_PROJECTS="$tmp/empty" DOT_PLAN_FROM="$sib" "$here/bootstrap.sh" --p
 mkdir -p "$tmp/empty"
 
 listed() { grep -v '^[[:space:]]*#' "$tsv" | cut -f1 | grep -qxF "$1"; }
+# A renamed repository is listed under its new name with its old ones in column 3; games'
+# .gitignore lines may still say the old name, and a sibling tree may still hold it there.
+canon() {
+    listed "$1" && { echo "$1"; return; }
+    local c; c="$(grep -v '^[[:space:]]*#' "$tsv" | awk -F'\t' -v a="$1" '{ n = split($3, x, ","); for (i = 1; i <= n; i++) if (x[i] == a) { print $1; exit } }')"
+    echo "${c:-$1}"
+}
+sibdir() {
+    [ -d "$sib/$1" ] && { echo "$sib/$1"; return; }
+    local o
+    for o in $(grep -v '^[[:space:]]*#' "$tsv" | awk -F'\t' -v n="$1" '$1 == n { gsub(",", " ", $3); print $3 }'); do
+        [ -d "$sib/$o" ] && { echo "$sib/$o"; return; }
+    done
+    echo "$sib/$1"
+}
 games=$(grep -v '^[[:space:]]*#' "$tsv" | cut -f1 | grep -E '^(game|mg)-' | grep -v -- '-maps$')
 [ "$(echo "$games" | wc -l)" -ge 14 ] || bad "fewer than 14 games found in projects.tsv"
 
@@ -42,18 +57,18 @@ fi
 printf '%-22s %-40s %-8s %-8s %s\n' game "content repos" ".sh" ".ps1" status
 linked_repos=""
 for g in $games; do
-    gi="$sib/$g/.gitignore"
+    gi="$(sibdir "$g")/.gitignore"
     if [ ! -f "$gi" ]; then bad "$g: no checkout beside dot-bootstrap, cannot audit"; continue; fi
     repos=""; shline=ok; psline=ok; st=ok
     while read -r line; do
-        spec="$(awk '{print $3}' <<< "$line")"; repo="${spec%%/*}"; dir="${spec#*/}"
+        spec="$(awk '{print $3}' <<< "$line")"; repo="$(canon "${spec%%/*}")"; dir="${spec#*/}"
         repos="$repos $repo"; linked_repos="$linked_repos $repo"
         listed "$repo" || { bad "$g: link target $repo is not in projects.tsv"; st=FAIL; }
-        [ -d "$sib/$repo/$dir" ] || { bad "$g: $spec does not exist in the $repo checkout"; st=FAIL; }
+        [ -d "$(sibdir "$repo")/$dir" ] || { bad "$g: $spec does not exist in the $repo checkout"; st=FAIL; }
         grep -qx "clone $repo\|have $repo" <<< "$default_plan" || { bad "$g: $repo is not cloned by default"; st=FAIL; shline=MISSING; }
         # the linked path is the .gitignore line below the comment, not necessarily $dir
         path="$(awk -v s="$spec" '$0 ~ "^# bootstrap-link: "s"( |$)"{f=1;next} f&&/^\//{sub("^/","");sub("/$","");print;exit} {f=0}' "$gi")"
-        want="link $g content $path -> $spec"
+        want="link $g content $path -> $repo/$dir"
         grep -qxF "$want" <<< "$default_plan" || { bad "$g: bootstrap.sh does not link '$want'"; st=FAIL; shline=MISSING; }
         printf '%s\n' "# bootstrap-link: $spec" | grep -qE '^# bootstrap-link: (\S+)(\s+ci)?\s*$' || { bad "$g: ps1 pattern rejects $spec"; psline=NO; st=FAIL; }
     done < <(grep '^# bootstrap-link: ' "$gi")
@@ -62,8 +77,9 @@ for g in $games; do
         grep -qxF "link $g addon $a" <<< "$default_plan" || { bad "$g: optional pack $a is not linked by default"; st=FAIL; }
         min="$(plan "$g" --min)"
         grep -qxF "link $g addon $a" <<< "$min" && { bad "$g: --min still links optional pack $a"; st=FAIL; }
-        repos="$repos $(grep -qx "clone ${a//_/-}\|have ${a//_/-}" <<< "$default_plan" && echo "${a//_/-}")"
-        linked_repos="$linked_repos ${a//_/-}"
+        r="$(canon "${a//_/-}")"
+        repos="$repos $(grep -qx "clone $r\|have $r" <<< "$default_plan" && echo "$r")"
+        linked_repos="$linked_repos $r"
     done < <(awk '/^# bootstrap-optional/{o=1;next} o&&/^\/addons\//{sub("^/addons/","");print} {o=0}' "$gi")
     # Content rule: a zz-* pack (weapons, monsters) is content, so its /addons line must carry
     # "# bootstrap-optional". zee/zed weapons are not: game scripts name their classes.
@@ -90,11 +106,11 @@ done
 # --- selectors ---
 out="$(plan)"
 [ "$(grep -c '^clone ' <<< "$out")" -eq "$(grep -v '^[[:space:]]*#' "$tsv" | grep -c .)" ] || bad "default plan does not clone every project in projects.tsv"
-out="$(plan game-arena)"
-grep -qx 'clone game-arena' <<< "$out" && grep -qx 'clone arena-surf-dm-maps' <<< "$out" && grep -qx 'clone dot-core' <<< "$out" \
-    && ! grep -qx 'clone mg-wipeout' <<< "$out" || bad "one game: want game-arena, its maps and addons, no other game"
+out="$(plan game-arena)"   # an old name selects the renamed game
+grep -qx 'clone game-fatal-contact' <<< "$out" && grep -qx 'clone fc-surf-dm-maps' <<< "$out" && grep -qx 'clone dot-core' <<< "$out" \
+    && ! grep -qx 'clone mg-wipeout' <<< "$out" || bad "one game: want game-fatal-contact, its maps and addons, no other game"
 out="$(plan arena --games wipeout)"
-grep -qx 'clone mg-wipeout-maps' <<< "$out" && grep -qx 'clone arena-surf-dm-maps' <<< "$out" || bad "short names / --games selection"
+grep -qx 'clone mg-wipeout-maps' <<< "$out" && grep -qx 'clone fc-surf-dm-maps' <<< "$out" || bad "short names / --games selection"
 out="$(plan zees-games)"
 for g in $games; do grep -qx "clone $g" <<< "$out" || bad "group zees-games lacks $g"; done
 grep -qx 'clone zz-modern-weapons' <<< "$out" || bad "group zees-games did not pull zz-modern-weapons"
