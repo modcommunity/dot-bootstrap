@@ -253,6 +253,8 @@ remote_locked() {
 # tools/xorg-headless.conf) instead of Xvfb. Xvfb's framebuffer makes the NVIDIA Vulkan driver spin on
 # sched_yield and copy every frame with XPutImage (~10 ms of a perf bench frame, 2026-11-11; __GL_YIELD/__GL_SYNC_TO_VBLANK
 # knobs changed nothing, n=3); Xorg presents on the card (p50 57.4 -> 46.5 ms, n=3). Needs passwordless sudo on the box (gamedev has it); started once, as unit gpu-xorg.
+# Manage it on the box: systemctl status gpu-xorg; sudo systemctl restart gpu-xorg (after editing ~/gpu/xorg-headless.conf); sudo systemctl stop gpu-xorg
+# (the next GPU_XORG=1 run starts it again; if a stop leaves a failed unit, sudo systemctl reset-failed gpu-xorg). Log: /tmp/xorg90.log.
 ensure_xorg() {
 	"${SSHQ[@]}" "systemctl is-active -q gpu-xorg" 2>/dev/null && return 0
 	rsync -az -e "$RSH" "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/xorg-headless.conf" "$HOST:gpu/xorg-headless.conf" || return
