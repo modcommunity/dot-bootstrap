@@ -20,6 +20,7 @@
 #                                            lock exclusively, so they wait out every suite and shot on the box: they go to the
 #                                            laptop, or to the desktop when it has the shorter wait (GPU_BOX pins one,
 #                                            GPU_EXCL_BOXES sets the order); pull then reads from the box run used
+#                                            GPU_XORG=1 run: present through a headless Xorg on the NVIDIA card (:90) instead of Xvfb; see ensure_xorg
 #   ./gpu.sh exec <command...>               any shell command there, under the lock
 #   ./gpu.sh pull <project> <path> [dir]     copy a file or folder back into dir (default: its folder here)
 #   ./gpu.sh browser-shot <url> <out.png>    load a page in the laptop's Chrome (WebGL2 on the 1660 Ti), save a frame
@@ -246,6 +247,16 @@ remote_locked() {
 	cmd=$(printf '%q ' "$@")
 	(( ${GATE_WAIT:-0} > 0 )) && w="-E 197 -w $GATE_WAIT "
 	"${SSH[@]}" "flock -o ~/gpu/.gate flock $w-o ~/gpu/.lock bash -lc $(printf '%q' "$cmd")"
+}
+
+# GPU_XORG=1 (run): present through a real headless Xorg on the NVIDIA card (display :90, no monitor,
+# tools/xorg-headless.conf) instead of Xvfb. Xvfb's framebuffer makes the NVIDIA Vulkan driver spin on
+# sched_yield and copy every frame with XPutImage (~10 ms of a perf bench frame, 2026-11-11; __GL_YIELD/__GL_SYNC_TO_VBLANK
+# knobs changed nothing, n=3); Xorg presents on the card (p50 57.4 -> 46.5 ms, n=3). Needs passwordless sudo on the box (gamedev has it); started once, as unit gpu-xorg.
+ensure_xorg() {
+	"${SSHQ[@]}" "systemctl is-active -q gpu-xorg" 2>/dev/null && return 0
+	rsync -az -e "$RSH" "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/xorg-headless.conf" "$HOST:gpu/xorg-headless.conf" || return
+	"${SSHQ[@]}" "sudo -n systemd-run -q --unit=gpu-xorg /usr/bin/Xorg :90 -config $REMOTE_HOME/gpu/xorg-headless.conf -noreset -nolisten tcp -ac -novtswitch -sharevts -logfile /tmp/xorg90.log && sleep 4 && systemctl is-active -q gpu-xorg" || { echo "gpu.sh: could not start Xorg :90 on $BOX (see /tmp/xorg90.log there)" >&2; return 1; }
 }
 
 # excl <function> [args]: pick_box, then run the function (which uses remote_locked). When
@@ -1610,7 +1621,12 @@ case "${1:-}" in
 		remote_locked bash -c "cd $(printf '%q' "$REMOTE_HOME/$REMOTE_ROOT/$project") && { [ -f .godot/global_script_class_cache.cfg ] && [ -z \"\$(find . -path ./.godot -prune -o \\( -name \"*.import\" -o -name \"*.glb\" -o -name \"*.gd\" \\) -newer .godot/global_script_class_cache.cfg -print -quit)\" ] || timeout 900 $REMOTE_HOME/gpu/bin/godot --headless --path . --import >/dev/null 2>&1 </dev/null; }; true" || return
 		idx=$GPU_INDEX
 		[[ -n $idx ]] || idx=$("${SSHQ[@]}" "vulkaninfo --summary 2>/dev/null | awk '/^GPU[0-9]+:/ {g=substr(\$1,4)+0} /deviceName.*NVIDIA/ {print g; exit}'" 2>/dev/null) || true
-		remote_locked timeout -k 15 "${GPU_TIMEOUT:-1800}" xvfb-run -a -s "-screen 0 1920x1080x24" \
+		local xrun=(xvfb-run -a -s "-screen 0 1920x1080x24")
+		if [[ ${GPU_XORG:-0} == 1 ]]; then
+			ensure_xorg || return
+			xrun=(env DISPLAY=:90)
+		fi
+		remote_locked timeout -k 15 "${GPU_TIMEOUT:-1800}" "${xrun[@]}" \
 			"$REMOTE_HOME/gpu/bin/godot" --path "$REMOTE_HOME/$REMOTE_ROOT/$project" \
 			--rendering-driver vulkan --gpu-index "${idx:-0}" "$@"
 		}
