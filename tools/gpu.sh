@@ -56,6 +56,8 @@
 #                                            emulation) on staging02's 31 GB, the laptop when the desktop is off,
 #                                            and here under `heavy` when neither answers. The current git repo is
 #                                            staged and pulled back by default; see py_cmd.
+#                                            --mirror: a scratch script with hard-coded absolute paths (/tmp/x, ~/wt/y): the
+#                                            directories it names are staged and pulled back too; see py_cmd.
 #   ./gpu.sh publish [env K=V...] tools/publish.sh [args]   (from a project dir)
 #                                            a dev02-short-of-memory pack publish on staging02 (GPU_PUBLISH_BOX); the box's own
 #                                            creator-token-<dev|prod> is used, lock and --out come back; see publish_cmd.
@@ -397,6 +399,13 @@ offer_eligible() {
 		[[ $name =~ ^(GPU_|HEAVY_|PATH$|HOME$|LD_|XDG_|GODOT$|SSH_|DISPLAY$) || $name =~ (TOKEN|KEY|SECRET|PASS|CRED) ]] && return 1
 		[[ $kv =~ ^[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_./:,+=@%-]*$ ]] || return 1
 	done
+	# hv shard's parse pass (UW_KIND=parse): `bash -c <snippet> hv-parse-pass`. The box runs its own fixed snippet (REMOTE_SUITE),
+	# never the text it is given, so this only says "the whole-project parse pass of a game.sh project".
+	if [[ $# == 4 && $1 == bash && $2 == -c && $4 == hv-parse-pass ]]; then
+		[[ $has_godot == 1 && -f "$PWD/game.sh" ]] && grep -q '^parse_all()' "$PWD/game.sh" || return 1
+		UW_KIND=parse UW_REST=(hv-parse-pass)
+		return 0
+	fi
 	if [[ "${1:-}" != godot && "${1:-}" != ./game.sh && "${1:-}" != game.sh ]]; then
 		tool_job "$@" && return 0
 		return 1
@@ -461,8 +470,8 @@ offer_eligible() {
 # (or scripts/) with plain relative arguments. Sets UW_KIND=tool. Only scripts that are checks, self-tests, regen/import/convert
 # or lint by NAME (TOOL_ALLOW), never a shot/publish/perf/bench/deploy tool (TOOL_DENY: those have their own routes or need
 # a GPU, a person or this box's state). A script may say `# gpu-offload: ok` (opt in) or `# gpu-offload: local` (opt out)
-# on a line of its own; without `ok`, one that names /home, $HOME, ~/ or uses git stays local (the copy has no .git and
-# no dev02 paths). Arguments must be plain relative words: an absolute path means this box's files.
+# on a line of its own; without `ok`, one that names /home, $HOME, ~/ or uses git (except `git ls-files`, which the box answers
+# from dev02's `git ls-files -co --exclude-standard` list: it makes a throwaway repo of exactly those files) stays local (no dev02 paths). Arguments must be plain relative words: an absolute path means this box's files.
 TOOL_ALLOW='check* *_check *_check_* *selftest* *self_test* *_selftest profile_check* regen* *import* *convert* lint* validate* verify_* *_test *_tests'
 TOOL_DENY='screenshot* shot* camera_check* render* filmstrip* *_shot *_shots *_screenshot *_preview *killview* verify_ui* visual_check* publish* *publish* perf* *perf* *bench* deploy* *deploy* release* push* upload* link_* bootstrap* rename*'
 tool_job() {
@@ -489,7 +498,7 @@ tool_job() {
 			[[ $stem == $pat ]] && ok=1
 		done
 		[[ $ok == 1 ]] || return 1
-		grep -qE '/home/|\$HOME|\$\{HOME|~/|(^|[ ;&|(])git +(ls-files|diff|status|log|rev-parse|add|commit|worktree|show|grep|stash)' "$file" 2>/dev/null && return 1
+		grep -qE '/home/|\$HOME|\$\{HOME|~/|(^|[ ;&|(])git +(diff|status|log|rev-parse|add|commit|worktree|show|grep|stash)' "$file" 2>/dev/null && return 1
 	fi
 	for a in "${w[@]:1}"; do
 		[[ $a =~ ^[A-Za-z0-9_./=:,+@%-]+$ && $a != *..* && ! $a =~ (^|=)/ ]] || return 1
@@ -703,9 +712,15 @@ done
 cd "$ws/$project" || exit 3
 # Logs of an earlier run in this workspace would be copied back as if they were this run's.
 rm -rf .godot/test-logs
+# kind=tool with dev02's file list: a throwaway repository of exactly those files, so `git ls-files [-co --exclude-standard]` answers as on dev02.
+rm -rf .git
+if [ "$kind" = tool ] && [ "$mode" = git ] && [ -s "$list" ]; then
+	( /usr/bin/git init -q . && /usr/bin/git add -f --pathspec-from-file="$list" ) >/dev/null 2>&1 || rm -rf .git
+fi
 # kind=tool (2026-11-11): a repo tool script, not a suite. Stamp now; what the job changed comes back afterwards.
 [ "$kind" = tool ] && : > "$ws/.tool-stamp"
 export XDG_RUNTIME_DIR=/run/user/$(id -u) GODOT=$HOME/gpu/bin/godot GPU_LS_FILES=$list
+[ "$kind" = tool ] && unset GPU_LS_FILES
 export PATH=$HOME/gpu/suite/.shim:$PATH
 # All suites on a box share gpu-suites.slice; its MemoryMax is what they use now plus what the box has
 # free beyond its reserve, so together they leave the reserve alone (the laptop owner's 4 GB).
@@ -735,7 +750,9 @@ fi
 fi
 [ "$kind" = tool ] && export PATH=$HOME/gpu/bin:$PATH
 while [[ ${1:-} =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; do export "$1"; shift; done
-if [ "$kind" = godot ]; then set -- "$GODOT" "$@"; elif [ "$kind" = tool ]; then :; else set -- ./game.sh "$@"; fi
+# kind=parse (hv shard's parse pass): game.sh's own parse_all over the imported copy; the file list comes from the git shim.
+PARSE_BOX='RED= GRN= OFF=; eval "$(sed -n "/^PARSE_NOISE=/,/^}/p" game.sh)"; parse_all; f=$?; [ "$f" = 0 ] && echo "  ok   every script parses"; exit "$f"'
+if [ "$kind" = godot ]; then set -- "$GODOT" "$@"; elif [ "$kind" = tool ]; then :; elif [ "$kind" = parse ]; then set -- bash -c "$PARSE_BOX" _; else set -- ./game.sh "$@"; fi
 # The job runs under a small bash in the same scope that reports the scope's peak memory and CPU time
 # when it ends (the numbers SUITE_SLOTS/SUITE_MAX_GB are tuned from): a "__GPU_STATS" line for dev02 and
 # a row in ~/gpu/suite/stats.tsv here. timeout's TERM is passed on to the job.
@@ -905,7 +922,11 @@ offer_on() {
 	done < <(linked_siblings "$PROJ_DIR")
 	local sibarg; sibarg=$(IFS=,; echo "${sibs[*]}"); : "${sibarg:=-}"
 	[[ $sibarg == - ]] && sibarg=
-	if [[ ${UW_KIND:-game} == game ]] && list=$(git -C "$PROJ_DIR" ls-files '*.gd' 2>/dev/null); then
+	if [[ ${UW_KIND:-game} == game || ${UW_KIND:-game} == parse ]] && list=$(git -C "$PROJ_DIR" ls-files '*.gd' 2>/dev/null); then
+		{ printf 'go git %s\n%s\n' "${sibarg:-,}" "$list" >&"$lane_in"; } 2>/dev/null || true
+	elif [[ ${UW_KIND:-game} == tool ]] && list=$(cd "$PROJ_DIR" && git ls-files -co --exclude-standard 2>/dev/null | while IFS= read -r f; do [ -f "$f" ] && printf '%s\n' "$f"; done) && [[ -n $list ]]; then
+		# Tool jobs get every non-ignored file (tracked or not), as `git ls-files -co --exclude-standard` lists them; the box
+		# turns it into a throwaway repository so a script's own `git ls-files` works there.
 		{ printf 'go git %s\n%s\n' "${sibarg:-,}" "$list" >&"$lane_in"; } 2>/dev/null || true
 	else
 		{ printf 'go none %s\n' "${sibarg:-,}" >&"$lane_in"; } 2>/dev/null || true
@@ -1206,11 +1227,14 @@ route_cmd() {
 			[[ $want == 1 ]] || exit 75
 			publish_cmd --route "$@" ;;
 		tools/screenshot*.sh|./tools/screenshot*.sh|tools/shot*.sh|./tools/shot*.sh|tools/camera_check*.sh|./tools/camera_check*.sh|tools/render*.sh|./tools/render*.sh|tools/filmstrip*.sh|./tools/filmstrip*.sh|tools/*_shot.sh|./tools/*_shot.sh|tools/*_shots.sh|./tools/*_shots.sh|tools/*_screenshot.sh|./tools/*_screenshot.sh|tools/*_preview.sh|./tools/*_preview.sh|tools/*killview*.sh|./tools/*killview*.sh|tools/verify_ui*.sh|./tools/verify_ui*.sh|./game.sh|game.sh)
-			[[ ${UW_REST[0]} != *game.sh || ${UW_REST[1]:-} == shot ]] || exit 75
-			local pre=() cmd=("${UW_REST[@]}")
-			[[ -z $UW_LIMIT ]] || pre=(--timeout "$UW_LIMIT")
-			[[ ${#UW_ENV[@]} == 0 ]] || cmd=(env "${UW_ENV[@]}" "${cmd[@]}")
-			shot_cmd --route "${pre[@]}" "$project" "${cmd[@]}" ;;
+			# `game.sh test` is not a shot: fall through to the offload-first rule below (it used to `exit 75` here, so a
+			# suite took a dev02 slot before any box was asked; the offer only ran once it had had to wait).
+			if [[ ${UW_REST[0]} != *game.sh || ${UW_REST[1]:-} == shot ]]; then
+				local pre=() cmd=("${UW_REST[@]}")
+				[[ -z $UW_LIMIT ]] || pre=(--timeout "$UW_LIMIT")
+				[[ ${#UW_ENV[@]} == 0 ]] || cmd=(env "${UW_ENV[@]}" "${cmd[@]}")
+				shot_cmd --route "${pre[@]}" "$project" "${cmd[@]}"
+			fi ;;
 	esac
 	local sentinel="${HEAVY_DIR:-/var/tmp/heavy}/prefer-offload"
 	# Offload first by default (2026-11-04): the staging boxes sit idle while dev02 queues. HEAVY_PREFER_OFFLOAD=0 keeps a job here.
@@ -1351,12 +1375,29 @@ publish_cmd() {
 # tools/bsp still import it: the mirror of that directory is staged always and put on
 # PYTHONPATH. Dependencies (numpy, matplotlib, pillow) live in a venv on the box, made on
 # first use. Results come back by rsync without --delete, over the same directories.
+# mirror_units SCRIPT: the directories a scratch script names by absolute path that py --mirror would stage, one per line.
+# A unit is the first directory under /tmp, /var/tmp, $WT_ROOT or $ROOT, or under another /home/<user>/ (so ~/mapsrc is a unit and
+# is far over the size cap). Only existing directories count; a path that does not exist yet is an output the script makes.
+mirror_units() {
+	local t u base
+	grep -oE '/(tmp|var/tmp|home/[A-Za-z0-9_-]+)(/[A-Za-z0-9_.+-]+){1,4}' "$1" 2>/dev/null | sort -u | while read -r t; do
+		base=
+		for u in "$WT_ROOT" "$ROOT" /tmp /var/tmp "$HOME"; do
+			[[ $t == "$u"/* ]] && { base=$u; break; }
+		done
+		[[ -n $base ]] || base=$(cut -d/ -f1-3 <<<"$t")
+		u=$base/$(cut -d/ -f1 <<<"${t#"$base"/}")
+		[[ -d $u ]] && echo "$u"
+	done | sort -u
+}
+
 py_cmd() {
-	local stage=() pull=() d
+	local stage=() pull=() d mirror=0
 	while [[ $# -gt 0 ]]; do
 		case $1 in
 			--stage) stage+=("$(realpath "${2:?--stage needs a directory}")"); shift 2 ;;
 			--pull) pull+=("$(realpath "${2:?--pull needs a directory}")"); shift 2 ;;
+			--mirror) mirror=1; shift ;;
 			--) shift; break ;;
 			*) break ;;
 		esac
@@ -1367,6 +1408,24 @@ py_cmd() {
 	[[ ${#stage[@]} -gt 0 ]] || stage=("$top")
 	[[ ${#pull[@]} -gt 0 ]] || pull=("$top")
 	stage+=("$ROOT/dot-map-convert")
+	# --mirror (2026-11-11): a scratch script that hard-codes absolute paths (/tmp/x/regen.sh reading /home/gamedev/wt/y). Every
+	# directory it names (mirror_units) is staged under $PY_ROOT, the script runs from a rewritten copy whose paths point at the
+	# mirror, and the directories come back with --update. A unit over GPU_MIRROR_MAX_MB (default 2048) makes the whole job run
+	# here under heavy: not partial staging. Only the named script is rewritten, not other scripts it calls. Not automatic.
+	local units=() mscript= mi=-1 i u sz oversize=0
+	if [[ $mirror == 1 ]]; then
+		i=0
+		for u in "$@"; do
+			if [[ $i -gt 0 && $u =~ \.(sh|py)$ && -f $u && $mscript == "" ]]; then mscript=$(realpath "$u"); mi=$i; fi
+			i=$((i+1))
+		done
+		[[ -n $mscript ]] || die "py --mirror: no .sh or .py script among the arguments"
+		mapfile -t units < <(mirror_units "$mscript")
+		for u in "${units[@]}"; do
+			sz=$(du -sm "$u" 2>/dev/null | cut -f1)
+			if [[ ${sz:-0} -gt ${GPU_MIRROR_MAX_MB:-2048} ]]; then echo "gpu.sh py --mirror: $u is ${sz} MB (cap ${GPU_MIRROR_MAX_MB:-2048}); running here" >&2; oversize=1; fi
+		done
+	fi
 
 	local box=
 	if [[ ${GPU_OFFLOAD:-1} != 0 ]]; then
@@ -1375,8 +1434,8 @@ py_cmd() {
 			if "${SSHQ[@]}" true 2>/dev/null; then box=$b; break; fi
 		done
 	fi
-	if [[ -z $box ]]; then
-		echo "gpu.sh py: no box answers; running here under heavy" >&2
+	if [[ -z $box || $oversize == 1 ]]; then
+		[[ $oversize == 1 ]] && echo "gpu.sh py: a mirrored directory is over the cap; running here under heavy" >&2 || echo "gpu.sh py: no box answers; running here under heavy" >&2
 		exec heavy -- "$@"
 	fi
 	local PY_ROOT="$REMOTE_HOME/gpu/py/root" PY_VENV="$REMOTE_HOME/gpu/py/venv"
@@ -1391,8 +1450,34 @@ py_cmd() {
 			die "py: copying $d to $BOX failed"
 	done
 	local args=() a
+	if [[ $mirror == 1 ]]; then
+		for u in "${units[@]}"; do
+			[[ -d $u ]] || continue
+			"${SSHQ[@]}" "mkdir -p $(printf '%q' "$PY_ROOT$u")"
+			rsync -az --delete --copy-links --exclude '.git/' --exclude '.godot/' "${rs[@]}" "$u/" "$HOST:$PY_ROOT$u/" ||
+				die "py: copying $u to $BOX failed"
+		done
+		pull+=("${units[@]}")
+		# The rewritten copy: every unit prefix (not preceded or followed by a path character) points at the mirror.
+		local rw
+		rw=$(mktemp) || die "py: mktemp failed"
+		cp "$mscript" "$rw"
+		for u in "${units[@]}"; do
+			sed -E -i "s#(^|[^A-Za-z0-9_./+-])$(printf '%s' "$u" | sed 's/[.+]/\\&/g')(/|[^A-Za-z0-9_.+-]|\$)#\\1$PY_ROOT$u\\2#g" "$rw"
+		done
+		"${SSHQ[@]}" "mkdir -p $(printf '%q' "$PY_ROOT/.mirror")"
+		rsync -az "${rs[@]}" "$rw" "$HOST:$PY_ROOT/.mirror/${mscript##*/}" || die "py: copying the script to $BOX failed"
+		rm -f "$rw"
+	fi
+	i=0
 	for a in "$@"; do
-		[[ $a == "$HOME"/* || $a == "$HOME" ]] && a="$PY_ROOT$a"
+		if [[ $mirror == 1 && $i == "$mi" ]]; then
+			a="$PY_ROOT/.mirror/${mscript##*/}"
+		else
+			for u in "${units[@]:-}"; do [[ -n $u && ( $a == "$u" || $a == "$u"/* ) ]] && a="$PY_ROOT$a"; done
+		fi
+		i=$((i+1))
+		[[ $a == "$PY_ROOT"/* ]] || { [[ $a == "$HOME"/* || $a == "$HOME" ]] && a="$PY_ROOT$a"; }
 		[[ $a == python || $a == python3 ]] && a="$PY_VENV/bin/python3"
 		args+=("$a")
 	done
@@ -1661,7 +1746,7 @@ case "${1:-}" in
 			down="${HEAVY_DIR:-/var/tmp/heavy}/gpu-down.$b"
 			[[ -e $down && $(( $(date +%s) - $(stat -c %Y "$down") )) -lt 300 ]] && continue
 			set +e
-			( set -e; set_box "$b"; if [[ ${UW_KIND:-} == tool ]]; then offer_on "$down" tool "${UW_ENV[@]}" "${UW_REST[@]}"; else offer_on "$down" "${UW_REST[0]}" "${UW_ENV[@]}" "${UW_REST[@]:1}"; fi )
+			( set -e; set_box "$b"; if [[ ${UW_KIND:-} == tool || ${UW_KIND:-} == parse ]]; then offer_on "$down" "$UW_KIND" "${UW_ENV[@]}" "${UW_REST[@]}"; else offer_on "$down" "${UW_REST[0]}" "${UW_ENV[@]}" "${UW_REST[@]:1}"; fi )
 			rc=$?
 			set -e
 			[[ $rc == 75 ]] || exit "$rc"
