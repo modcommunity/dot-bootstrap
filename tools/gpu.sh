@@ -191,7 +191,7 @@ rsync() {
 	if (( slots <= 0 )); then command rsync --bwlimit="$bw" "$@"; return; fi
 	while :; do
 		for ((i = 1; i <= slots; i++)); do
-			exec {fd}>"/tmp/gpu-rsync-slot.$i" 2>/dev/null || continue
+			{ exec {fd}>"/tmp/gpu-rsync-slot.$i"; } 2>/dev/null || continue
 			if flock -n "$fd"; then
 				command rsync --bwlimit="$bw" "$@"; rc=$?
 				exec {fd}>&-
@@ -385,7 +385,9 @@ offer_eligible() {
 	PROJ_DIR=$PWD
 	if [[ "$PWD" == "$WT_ROOT"/* && "${PWD#"$WT_ROOT"/}" != */* ]]; then project="${PWD#"$WT_ROOT"/}"
 	else [[ "$PWD" == "$ROOT/$project" && "$project" != */* ]] || return 1; fi
-	[[ -f "$PWD/project.godot" ]] || return 1
+	# A tool job (UW_KIND=tool) also runs in a repo with no project.godot (dot-map-convert); suites and godot runs need one.
+	local has_godot=0; [[ -f "$PWD/project.godot" ]] && has_godot=1
+	[[ $has_godot == 1 || -e "$PWD/.git" ]] || return 1
 	unwrap "$@"
 	set -- "${UW_REST[@]}"
 	local kv name
@@ -395,6 +397,11 @@ offer_eligible() {
 		[[ $name =~ ^(GPU_|HEAVY_|PATH$|HOME$|LD_|XDG_|GODOT$|SSH_|DISPLAY$) || $name =~ (TOKEN|KEY|SECRET|PASS|CRED) ]] && return 1
 		[[ $kv =~ ^[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_./:,+=@%-]*$ ]] || return 1
 	done
+	if [[ "${1:-}" != godot && "${1:-}" != ./game.sh && "${1:-}" != game.sh ]]; then
+		tool_job "$@" && return 0
+		return 1
+	fi
+	[[ $has_godot == 1 ]] || return 1
 	if [[ "${1:-}" == godot ]]; then
 		shift
 		local headless=0 path=0 scene=0 tail=0 a
@@ -450,6 +457,47 @@ offer_eligible() {
 	UW_KIND=game
 }
 
+# tool_job <command...> (2026-11-11): a repo tool script a box can run from a copy of the tree: [bash|sh|python3] tools/X.sh|.py
+# (or scripts/) with plain relative arguments. Sets UW_KIND=tool. Only scripts that are checks, self-tests, regen/import/convert
+# or lint by NAME (TOOL_ALLOW), never a shot/publish/perf/bench/deploy tool (TOOL_DENY: those have their own routes or need
+# a GPU, a person or this box's state). A script may say `# gpu-offload: ok` (opt in) or `# gpu-offload: local` (opt out)
+# on a line of its own; without `ok`, one that names /home, $HOME, ~/ or uses git stays local (the copy has no .git and
+# no dev02 paths). Arguments must be plain relative words: an absolute path means this box's files.
+TOOL_ALLOW='check* *_check *_check_* *selftest* *self_test* *_selftest profile_check* regen* *import* *convert* lint* validate* verify_* *_test *_tests'
+TOOL_DENY='screenshot* shot* camera_check* render* filmstrip* *_shot *_shots *_screenshot *_preview *killview* verify_ui* visual_check* publish* *publish* perf* *perf* *bench* deploy* *deploy* release* push* upload* link_* bootstrap* rename*'
+tool_job() {
+	local w=("$@") interp= script file name stem marker pat ok=0 a
+	case ${w[0]} in
+		bash|sh) interp=${w[0]}; w=("${w[@]:1}"); while [[ ${w[0]:-} == -e || ${w[0]:-} == -u || ${w[0]:-} == -eu ]]; do w=("${w[@]:1}"); done ;;
+		python3|python) interp=${w[0]}; w=("${w[@]:1}"); while [[ ${w[0]:-} == -P || ${w[0]:-} == -I || ${w[0]:-} == -u ]]; do w=("${w[@]:1}"); done ;;
+	esac
+	script=${w[0]:-}
+	[[ $script =~ ^(\./)?(tools|scripts)/[A-Za-z0-9_.-]+\.(sh|py)$ && $script != *..* ]] || return 1
+	file=$PWD/$script
+	[[ -f $file && ( -n $interp || -x $file ) ]] || return 1
+	name=${script##*/}; stem=${name%.*}
+	for pat in $TOOL_DENY; do
+		# shellcheck disable=SC2053
+		[[ $stem == $pat ]] && return 1
+	done
+	marker=$(grep -m1 -oE '^# gpu-offload: (ok|local)' "$file" 2>/dev/null | awk '{print $3}')
+	[[ $marker == local ]] && return 1
+	[[ $marker == ok ]] && ok=1
+	if [[ $ok == 0 ]]; then
+		for pat in $TOOL_ALLOW; do
+			# shellcheck disable=SC2053
+			[[ $stem == $pat ]] && ok=1
+		done
+		[[ $ok == 1 ]] || return 1
+		grep -qE '/home/|\$HOME|\$\{HOME|~/|(^|[ ;&|(])git +(ls-files|diff|status|log|rev-parse|add|commit|worktree|show|grep|stash)' "$file" 2>/dev/null && return 1
+	fi
+	for a in "${w[@]:1}"; do
+		[[ $a =~ ^[A-Za-z0-9_./=:,+@%-]+$ && $a != *..* && ! $a =~ (^|=)/ ]] || return 1
+	done
+	UW_KIND=tool UW_REST=("$@")
+	return 0
+}
+
 # Real-time suites: THE one list. These measure the netcode against wall time (ENet and the relay keep wall
 # time while the game ticks), so a box that cannot hold the tick rate on one thread gives a false failure, not a
 # result. ph runs one thread about 4x slower than dev02 (2026-11-09: game-arena headless_lossy paced 43-88% of real
@@ -485,7 +533,8 @@ realtime_job() {
 }
 # The boxes a suite job is offered to, in order (after offer_eligible).
 suite_boxes() {
-	if realtime_job; then echo "${GPU_REALTIME_BOXES:-staging02}"; else echo "${GPU_SUITE_BOXES:-ph staging02 staging}"; fi
+	if [[ ${UW_KIND:-} == tool ]]; then echo "${GPU_TOOL_BOXES:-ph}"
+	elif realtime_job; then echo "${GPU_REALTIME_BOXES:-staging02}"; else echo "${GPU_SUITE_BOXES:-ph staging02 staging}"; fi
 }
 
 # The sibling repositories a project reads by a path outside itself (res://../dot-server-deploy/...,
@@ -654,6 +703,8 @@ done
 cd "$ws/$project" || exit 3
 # Logs of an earlier run in this workspace would be copied back as if they were this run's.
 rm -rf .godot/test-logs
+# kind=tool (2026-11-11): a repo tool script, not a suite. Stamp now; what the job changed comes back afterwards.
+[ "$kind" = tool ] && : > "$ws/.tool-stamp"
 export XDG_RUNTIME_DIR=/run/user/$(id -u) GODOT=$HOME/gpu/bin/godot GPU_LS_FILES=$list
 export PATH=$HOME/gpu/suite/.shim:$PATH
 # All suites on a box share gpu-suites.slice; its MemoryMax is what they use now plus what the box has
@@ -666,6 +717,7 @@ systemctl --user set-property --runtime gpu-suites.slice MemoryMax="${cap}M" 2>/
 # in_slice <command...>: runs it in its own scope in that slice, capped at max_gb, without swap.
 in_slice() { systemd-run --user --scope --quiet --collect --slice=gpu-suites.slice -p MemoryMax="${max_gb}G" -p MemorySwapMax=0 -- "$@"; }
 # The class cache stays here between runs; a stale one reads as "Identifier not declared".
+if [ "$kind" != tool ]; then
 ilog=$HOME/gpu/suite/$wsid.import.log
 in_slice nice -n 5 timeout 1800 "$GODOT" --headless --path . --import >"$ilog" 2>&1 </dev/null 7>&- 9>&- {f}>&-
 # A stale class cache (a script gained a class_name or a member since the last run here) reads as
@@ -680,8 +732,10 @@ if grep -qE 'SCRIPT ERROR|Parse error|Could not resolve' "$ilog"; then
 	grep -E -A2 'SCRIPT ERROR|Parse error|Could not resolve class' "$ilog" | head -15
 	echo "__GPU_SUITE_RC=1"; exit 0
 fi
+fi
+[ "$kind" = tool ] && export PATH=$HOME/gpu/bin:$PATH
 while [[ ${1:-} =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; do export "$1"; shift; done
-if [ "$kind" = godot ]; then set -- "$GODOT" "$@"; else set -- ./game.sh "$@"; fi
+if [ "$kind" = godot ]; then set -- "$GODOT" "$@"; elif [ "$kind" = tool ]; then :; else set -- ./game.sh "$@"; fi
 # The job runs under a small bash in the same scope that reports the scope's peak memory and CPU time
 # when it ends (the numbers SUITE_SLOTS/SUITE_MAX_GB are tuned from): a "__GPU_STATS" line for dev02 and
 # a row in ~/gpu/suite/stats.tsv here. timeout's TERM is passed on to the job.
@@ -702,6 +756,10 @@ in_slice nice -n 5 timeout "$limit" bash -c '
 		printf '%s\n' "$line"
 	done
 rc=${PIPESTATUS[0]}
+# kind=tool: the files the job wrote (newer than the stamp), for dev02 to copy back. Not addons, .godot, .git.
+if [ "$kind" = tool ]; then
+	find . -type f -newer "$ws/.tool-stamp" -not -path './.godot/*' -not -path './.git/*' -not -path './addons/*' -not -path './.stores/*' -printf '%P\n' 2>/dev/null | head -n 20001 > "$HOME/gpu/suite/$wsid.changed"
+fi
 # A hung or failed suite often has only the engine's real message in its log.
 if [ "$rc" -ne 0 ]; then
 	grep -hE -A2 'SCRIPT ERROR|Parse error|Could not resolve class' .godot/test-logs/*.log 2>/dev/null | head -15
@@ -821,6 +879,17 @@ offer_on() {
 	timeout -k 5 300 "${SSH[@]}" "bash -c $(printf '%q' "$SEED_WS") _ $(printf '%q ' "$project" "$repo" "$wsid")" </dev/null ||
 		back_to_queue "cannot make the workspace on $BOX"
 	local ex=() lk lt
+	# A tool job is copied with links resolved, so a link into ANOTHER worktree would ship that worktree's files
+	# (the 2026-11 stale-addon bug). Such a tree runs here instead.
+	if [[ ${UW_KIND:-game} == tool ]]; then
+		local fl ft
+		while IFS= read -r fl; do
+			ft=$(readlink -f "$fl" 2>/dev/null) || continue
+			if [[ $ft == "$WT_ROOT"/* && $ft != "$PROJ_DIR"/* ]]; then
+				back_to_queue "$fl points into another worktree ($ft); not copying it to $BOX"
+			fi
+		done < <(find "$PROJ_DIR" -maxdepth 2 -type l -not -path '*/.godot/*' 2>/dev/null)
+	fi
 	while IFS=$'\t' read -r _ lk lt; do ex+=(--exclude "/$lk"); done < <(linked_siblings "$PROJ_DIR")
 	rsync -az --delete --copy-links --exclude '.godot/' --exclude '.git/' --exclude 'screenshots/' "${ex[@]}" \
 		-e "$RSH" \
@@ -865,6 +934,20 @@ offer_on() {
 		else
 			echo "gpu.sh: no suite logs on $BOX: the run stopped before any suite started (see the output above, e.g. missing addons/.stores links: run hv, which links them first)" >&2
 		fi
+	fi
+	if [[ ${UW_KIND:-game} == tool ]]; then
+		# Copy back what the job wrote. --update: never overwrite a file edited here meanwhile; no links, no deletes.
+		local cl; cl=$(mktemp)
+		if "${SSHQ[@]}" "cat gpu/suite/$wsid.changed" </dev/null 2>/dev/null | grep -vE '^(addons|\.stores|\.godot|\.git)(/|$)' > "$cl"; then
+			local nfile; nfile=$(wc -l < "$cl")
+			if (( nfile >= 20000 )); then echo "gpu.sh: tool wrote $nfile+ files; not copying them back from $BOX (see ~/gpu/ws/$wsid/$project there)" >&2
+			elif (( nfile > 0 )); then
+				rsync -a --update --no-links --files-from="$cl" -e "$RSH" "$HOST:gpu/ws/$wsid/$project/" "$PROJ_DIR/" ||
+					echo "gpu.sh: could not copy the tool's $nfile written file(s) back from $BOX" >&2
+				echo "gpu.sh: copied $nfile file(s) written by the job back from $BOX" >&2
+			fi
+		fi
+		rm -f "$cl"
 	fi
 	exit "$rc"
 }
@@ -1109,8 +1192,8 @@ route_cmd() {
 	# A builder worktree (~/wt/<name>) goes straight to the offer-first rule below, as offer_eligible
 	# already accepts it; before 2026-11-08 this check sent every worktree suite to dev02's own slot
 	# first, so prefer-offload never applied to builders (PH sat 11/12 idle while dev02 swapped).
-	if [[ "$PWD" == "$WT_ROOT"/* && "${PWD#"$WT_ROOT"/}" != */* && -f "$PWD/project.godot" ]]; then in_wt=1
-	else [[ "$PWD" == "$ROOT/$project" && "$project" != */* && -f "$PWD/project.godot" ]] || exit 75; fi
+	if [[ "$PWD" == "$WT_ROOT"/* && "${PWD#"$WT_ROOT"/}" != */* && ( -f "$PWD/project.godot" || -e "$PWD/.git" ) ]]; then in_wt=1
+	else [[ "$PWD" == "$ROOT/$project" && "$project" != */* && ( -f "$PWD/project.godot" || -e "$PWD/.git" ) ]] || exit 75; fi
 	unwrap "$@"
 	# A worktree's screenshot tools go to a GPU box too (SHOT_DIR, 2026-11-08); a publish only runs from ~/godot.
 	if [[ $in_wt == 1 ]]; then project=${PWD#"$WT_ROOT"/}; export SHOT_DIR=$PWD; fi
@@ -1578,7 +1661,7 @@ case "${1:-}" in
 			down="${HEAVY_DIR:-/var/tmp/heavy}/gpu-down.$b"
 			[[ -e $down && $(( $(date +%s) - $(stat -c %Y "$down") )) -lt 300 ]] && continue
 			set +e
-			( set -e; set_box "$b"; offer_on "$down" "${UW_REST[0]}" "${UW_ENV[@]}" "${UW_REST[@]:1}" )
+			( set -e; set_box "$b"; if [[ ${UW_KIND:-} == tool ]]; then offer_on "$down" tool "${UW_ENV[@]}" "${UW_REST[@]}"; else offer_on "$down" "${UW_REST[0]}" "${UW_ENV[@]}" "${UW_REST[@]:1}"; fi )
 			rc=$?
 			set -e
 			[[ $rc == 75 ]] || exit "$rc"
