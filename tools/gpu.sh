@@ -809,6 +809,14 @@ fi
 if [ "$rc" -ne 0 ]; then
 	grep -hE -A2 'SCRIPT ERROR|Parse error|Could not resolve class' .godot/test-logs/*.log 2>/dev/null | head -15
 fi
+# Snapshot the logs while this job still holds the workspace lock: once the lock is gone, the next job
+# of the same worktree takes the workspace and wipes .godot/test-logs before dev02 has copied them back
+# (2026-11-11: hv shard merge jobs failed with "every shard's log is there" missing).
+if [ "${kind:-game}" = game ] && [ -d .godot/test-logs ]; then
+	find "$HOME/gpu/logs" -mindepth 1 -maxdepth 1 -mtime +1 -exec rm -rf {} + 2>/dev/null
+	snap="$HOME/gpu/logs/$wsid.$$"
+	mkdir -p "$snap" && cp -a .godot/test-logs/. "$snap/" && echo "__GPU_LOGS=$snap"
+fi
 echo "__GPU_SUITE_RC=$rc"
 EOF
 
@@ -960,9 +968,10 @@ offer_on() {
 		{ printf 'go none %s\n' "${sibarg:-,}" >&"$lane_in"; } 2>/dev/null || true
 	fi
 	exec {lane_in}>&-
-	rc=
+	rc= logsnap=
 	while IFS= read -r line <&"$lane_out"; do
 		if [[ $line == __GPU_SUITE_RC=* ]]; then rc=${line#*=}
+		elif [[ $line == __GPU_LOGS=* ]]; then logsnap=${line#*=}
 		elif [[ $line == __GPU_STATS* ]]; then
 			# Per-job peak memory / CPU / wall time, for tuning the slots (hv shard reads it too).
 			mkdir -p "$HOME/.fleet" 2>/dev/null
@@ -976,10 +985,13 @@ offer_on() {
 	[[ -n $rc ]] || { lane_pid=; back_to_queue "lost $BOX mid-run"; }
 	if [[ ${UW_KIND:-game} == game ]]; then
 		mkdir -p "$PROJ_DIR/.godot/test-logs"
-		if "${SSHQ[@]}" "[ -d gpu/ws/$wsid/$project/.godot/test-logs ]"; then
-			rsync -az -e "$RSH" \
-				"$HOST:gpu/ws/$wsid/$project/.godot/test-logs/" "$PROJ_DIR/.godot/test-logs/" ||
+		# The snapshot the box took under the workspace lock (see __GPU_LOGS above); the workspace's own
+		# test-logs may already belong to the next job. A box without it: the workspace dir.
+		local logsrc=${logsnap:-gpu/ws/$wsid/$project/.godot/test-logs}
+		if "${SSHQ[@]}" "[ -d '$logsrc' ]"; then
+			rsync -az -e "$RSH" "$HOST:$logsrc/" "$PROJ_DIR/.godot/test-logs/" ||
 				echo "gpu.sh: could not copy the suite logs back from $BOX" >&2
+			[[ -z $logsnap ]] || "${SSHQ[@]}" "rm -rf '$logsnap'" </dev/null >/dev/null 2>&1 || true
 		else
 			echo "gpu.sh: no suite logs on $BOX: the run stopped before any suite started (see the output above, e.g. missing addons/.stores links: run hv, which links them first)" >&2
 		fi
