@@ -36,5 +36,15 @@ run no ./game.sh --no-parse test headless_maps -- --map=a extra
 run no ./game.sh --no-parse test a b -- --map=x
 run no ./game.sh --no-parse test -- --map=x
 run no ./game.sh shot
+# suite_shards: hv shard runs each shard (SUITE.SHARD) as its own job; the merge reads local logs, so it stays here.
+run yes timeout 1800 ./game.sh --no-parse test headless_bots.hard
+run yes ./game.sh --no-parse test headless_bots.easy_2 headless_a
+run yes ./game.sh --no-parse test headless_bots.hard.tscn
+run no ./game.sh --no-parse test headless_bots.merge
+run no ./game.sh --no-parse test headless_bots.merge.tscn
+run no ./game.sh --no-parse test headless_bots.a.b
+run no ./game.sh --no-parse test headless_bots.
+run no ./game.sh --no-parse test .hard
+run no './game.sh' --no-parse test 'headless_bots.a;b'
 rm -rf "$proj"
 [[ $fail == 0 ]] && echo "all passed" || { echo "$fail failed"; exit 1; }

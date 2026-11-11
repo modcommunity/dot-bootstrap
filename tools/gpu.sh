@@ -439,7 +439,13 @@ offer_eligible() {
 		fi
 		suites+=("$1"); shift
 	done
-	for s in "${suites[@]}"; do [[ $s =~ ^[A-Za-z0-9_]+(\.tscn)?$ ]] || return 1; done
+	# A suite name, or one shard of a suite_shards suite (SUITE.SHARD, as `hv shard` runs them; game.sh plays
+	# examples/SUITE.tscn -- --shard SHARD and its log comes back with the others). Before 2026-11-10 the dot was
+	# refused, so every shard of a split suite waited for a dev02 slot while ph and staging02 sat idle.
+	# SUITE.merge stays local: it reads the shards' logs, which only dev02 has once they are all back.
+	for s in "${suites[@]}"; do
+		[[ $s =~ ^[A-Za-z0-9_]+(\.[A-Za-z0-9_-]+)?(\.tscn)?$ && $s != *.merge && $s != *.merge.tscn ]] || return 1
+	done
 	UW_REST=(./game.sh "${UW_REST[@]:1}")
 	UW_KIND=game
 }
@@ -468,6 +474,8 @@ realtime_job() {
 		done
 	fi
 	for s in "${names[@]}"; do
+		# A shard (SUITE.SHARD) is real-time when its suite is.
+		s=${s%%.*}
 		for p in $REALTIME_SUITES; do
 			# shellcheck disable=SC2053
 			[[ $s == $p ]] && return 0

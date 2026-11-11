@@ -23,6 +23,9 @@ run staging02 ./game.sh --no-parse test headless_net headless_lossy
 run staging02 ./game.sh --no-parse test headless_lossy.tscn
 run staging02 timeout 600 godot --headless --path . res://examples/headless_lossy.tscn
 run staging02 godot --headless --path . res://examples/headless_lossy_22.tscn -- --rounds=2
+run staging02 ./game.sh --no-parse test headless_lossy.a
+run staging02 ./game.sh --no-parse test headless_lossy_22.b
+run "$all" ./game.sh --no-parse test headless_bots.hard
 run "$all" ./game.sh --no-parse test headless_net
 run "$all" ./game.sh --no-parse test headless_latency
 run "$all" ./game.sh --no-parse test headless_lossyish
