@@ -6,6 +6,7 @@
 param([Parameter(Mandatory)][string]$Lock, [string]$Root, [string]$From, [string]$Cdn, [string]$Cfg, [string]$Packs,
       [Alias('Skip')][string[]]$Except = @(), [string[]]$Only = @(), [switch]$List)
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'  # PowerShell 5.1 draws a progress bar per Invoke-WebRequest and slows every download to a crawl
 if (-not (Test-Path $Lock)) { Write-Host "fetch_lock: no $Lock, nothing pinned"; exit 0 }
 $Lock = (Resolve-Path $Lock).Path
 $lockDir = Split-Path -Parent $Lock
