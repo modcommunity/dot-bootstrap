@@ -6,7 +6,8 @@
 param([Parameter(Mandatory)][string]$Lock, [string]$Root, [string]$From, [string]$Cdn, [string]$Cfg, [string]$Packs,
       [Alias('Skip')][string[]]$Except = @(), [string[]]$Only = @(), [switch]$List)
 $ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'  # PowerShell 5.1 draws a progress bar per Invoke-WebRequest and slows every download to a crawl
+$ProgressPreference = 'SilentlyContinue'  # never PowerShell's progress bar (it slows 5.1 to a crawl); dot_download.ps1 prints our own
+. (Join-Path $PSScriptRoot 'dot_download.ps1')
 if (-not (Test-Path $Lock)) { Write-Host "fetch_lock: no $Lock, nothing pinned"; exit 0 }
 $Lock = (Resolve-Path $Lock).Path
 $lockDir = Split-Path -Parent $Lock
@@ -47,21 +48,32 @@ function Pin($p, [string]$b) {
     $p.manifest_sha256
 }
 
-function Fetch([string]$rel, [string]$dest, [string]$sha, $entry = $null) {
+# One object to $dest through $dest.part, hash-checked; 4 tries over the bases. A part a broken connection left is
+# resumed (Range), one that fails its hash is dropped. $prog: the pack's progress line (bytes and file i/n).
+function Fetch([string]$rel, [string]$dest, [string]$sha, $entry = $null, $prog = $null) {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
     $part = "$dest.part"
     for ($i = 0; $i -lt 4; $i++) {
         $b = $bases[$i % $bases.Count]
         $sha = if ($entry) { Pin $entry $b } else { $sha }
+        $before = if ($prog) { $prog.Done } else { 0 }
         try {
-            if ($b -match '^[a-z]+://') { Invoke-WebRequest -Uri "$b/$rel" -OutFile $part -UseBasicParsing }
-            else { Copy-Item -LiteralPath (Join-Path $b $rel) $part -Force }
+            if ($b -match '^[a-z]+://') { Invoke-DotDownload "$b/$rel" $part -Progress $prog -Resume }
+            else {
+                Copy-Item -LiteralPath (Join-Path $b $rel) $part -Force
+                if ($prog) { $prog.Done += (Get-Item -LiteralPath $part).Length; Write-DotProgress $prog }
+            }
             # The site stores some objects gzip-encoded and a CDN may send them as-is; the sha256 names the decoded bytes.
             if ((Get-Sha $part) -ne $sha -and (Test-Gzip $part)) { Expand-Gzip $part }
             if ((Get-Sha $part) -eq $sha) { Move-Item -Force $part $dest; return }
             Remove-Item -Force $part
             throw "hash mismatch for $b/$rel"
-        } catch { if ($i -eq 3) { throw }; Start-Sleep -Seconds ([math]::Pow(2, $i)) }
+        } catch {
+            if ($prog) { $prog.Done = $before }
+            if ($i -eq 3) { throw }
+            Write-Host "retry $b/$rel ($($_.Exception.Message))" -ForegroundColor DarkYellow
+            Start-Sleep -Seconds ([math]::Pow(2, $i))
+        }
     }
 }
 
@@ -123,13 +135,22 @@ foreach ($p in $doc.packs) {
         $pad = (Get-Content -Raw $man | ConvertFrom-Json).payload.Replace('-', '+').Replace('_', '/')
         $pad += '=' * ((4 - $pad.Length % 4) % 4)
         $files = ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($pad)) | ConvertFrom-Json).files
-        foreach ($f in $files) {
+        $todo = @(foreach ($f in $files) {
             if ($f.path.StartsWith('/') -or ($f.path -split '/') -contains '..') { throw "unsafe path $($f.path)" }
             $obj = "$pre/objects/$($f.sha256.Substring(0,2))/$($f.sha256)"
             if ($kind -eq 'pack') { $dest = Join-Path $out "objects/$($f.sha256.Substring(0,2))/$($f.sha256)"; if (Test-Path $dest) { continue } }
             else { $dest = Join-Path $out $f.path; if ((Test-Path $dest) -and ((Get-Item $dest).Length -eq $f.size)) { continue } }
-            Fetch $obj $dest $f.sha256
+            [pscustomobject]@{ Obj = $obj; Dest = $dest; Sha = $f.sha256; Size = [long]$f.size }
+        })
+        $bytes = [long]0; foreach ($t in $todo) { $bytes += $t.Size }
+        if ($todo.Count) {
+            $already = if ($todo.Count -lt $files.Count) { ", $($files.Count - $todo.Count) already here" } else { '' }
+            Write-Host ("fetching {0} {1}: {2} files, {3} MB{4}" -f $p.id, $p.version, $todo.Count, (Format-DotSize $bytes), $already)
         }
+        $prog = New-DotProgress $p.id $bytes $todo.Count
+        $k = 0
+        foreach ($t in $todo) { $k++; $prog.File = $k; Fetch $t.Obj $t.Dest $t.Sha $null $prog }
+        Write-DotProgress $prog -Final
         Set-Content -NoNewline -Path $stamp -Value "$want`n"
         if ($kind -eq 'store') { Remove-Item -Force $man }
         Write-Host "fetched $($p.id) $($p.version) $($files.Count) files"

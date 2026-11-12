@@ -122,10 +122,14 @@ param(
     [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
     [string[]]$Names = @()
 )
-$ProgressPreference = 'SilentlyContinue'  # PowerShell 5.1 progress bar slows Invoke-WebRequest downloads to a crawl (looks like a hang)
+# Never PowerShell's progress bar: on 5.1 it slows Invoke-WebRequest (and Expand-Archive) to a crawl. Downloads go through
+# tools\dot_download.ps1 (Invoke-DotDownload), which prints our own progress line: MB done / total, MB/s, ETA.
+$ProgressPreference = 'SilentlyContinue'
 
 $ErrorActionPreference = 'Continue'
 $repoDir = $PSScriptRoot
+$dotDownload = Join-Path $repoDir 'tools\dot_download.ps1'
+. $dotDownload
 $script:failed = $false
 $script:junctionFailures = 0
 $script:linksMade = 0
@@ -987,7 +991,7 @@ function Fetch-Natives ($proj) {
             Say $proj "natives: keeps the $($n.Addon) library built here ($plat)" 'DarkGray'; continue
         }
         $base = "$root/$($n.Repo)/releases/download/$($n.Tag)"
-        try { $sums = (Invoke-WebRequest -UseBasicParsing -Uri "$base/SHA256SUMS.natives").Content }
+        try { $sums = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 60 -Uri "$base/SHA256SUMS.natives").Content }
         catch { Warn $proj "natives: no $($n.Repo) $($n.Tag) release to fetch (GDScript runs, slower)"; continue }
         if ($sums -is [byte[]]) { $sums = [System.Text.Encoding]::UTF8.GetString($sums) }
         $hit = $null
@@ -997,8 +1001,9 @@ function Fetch-Natives ($proj) {
         }
         if (-not $hit) { Warn $proj "natives: $($n.Repo) $($n.Tag) has no $plat library (GDScript runs, slower)"; continue }
         $zip = Join-Path ([System.IO.Path]::GetTempPath()) $hit[1]
-        try { Invoke-WebRequest -UseBasicParsing -Uri "$base/$($hit[1])" -OutFile $zip }
-        catch { Warn $proj "natives: could not download $($hit[1]) (GDScript runs, slower)"; continue }
+        Say $proj "natives: downloading $($hit[1])" 'DarkGray'
+        try { Invoke-DotDownload "$base/$($hit[1])" $zip -Name $proj }
+        catch { Warn $proj "natives: could not download $($hit[1]): $($_.Exception.Message) (GDScript runs, slower)"; continue }
         if ((Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower() -ne $hit[0].ToLower()) {
             Remove-Item -Force $zip; Err $proj "natives: $($hit[1]) checksum mismatch, not installed"; continue
         }
@@ -1028,14 +1033,17 @@ function Link-Content ($proj) {
             $path   = $Matches[1] -replace '/', '\'
             $target = Join-Path $projectsDir ($src -replace '/', '\')
             $link   = Join-Path $dir $path
-            # The raw art stores (a maps repo's .stores) are in no repository. They are fetched once, from
-            # $env:DOT_STORES_FROM (a folder or the URL of a .tar) or else the published CC0 set, and kept; -NoStores
-            # or DOT_STORES_FROM=none skips them and the maps draw low-detail art.
-            $from = if ($env:DOT_STORES_FROM) { $env:DOT_STORES_FROM } else { 'https://dev.dotgames.org/stores/zombie-zone-maps/zz-stores-cc0.tar' }
+            # The raw art stores (a maps repo's .stores) are in no repository. They are fetched once and kept, from the
+            # maps repo's content.lock.json (tools/fetch_lock.ps1), or from $env:DOT_STORES_FROM (a folder or the URL of
+            # a .tar) when that is set; -NoStores or DOT_STORES_FROM=none skips them and the maps draw low-detail art.
+            # (The old published tar, dev.dotgames.org/stores/zombie-zone-maps/zz-stores-cc0.tar, is gone: 404.)
+            $from = if ($env:DOT_STORES_FROM) { $env:DOT_STORES_FROM } else { 'none' }
             $lockFile = Join-Path $projectsDir (($src -split '/')[0] + '\content.lock.json')
             $fetcher = Join-Path $repoDir 'tools\fetch_lock.ps1'
+            # A store the fetcher has finished has .dot-pack; one it was stopped in still has its .manifest.json and is
+            # resumed (present files are skipped), not linked half-empty for good.
             if ((($src -split '/')[-1] -eq '.stores') -and -not $NoStores -and -not $env:DOT_STORES_FROM -and (Test-Path $lockFile) -and ((Get-Content $lockFile -Raw) -match '"into"\s*:\s*"\.stores"') -and (Test-Path $fetcher) `
-                    -and (-not (Test-Path $target) -or (Test-Path (Join-Path $target '.dot-pack')))) {
+                    -and (-not (Test-Path $target) -or (Test-Path (Join-Path $target '.dot-pack')) -or (Test-Path (Join-Path $target '.manifest.json')))) {
                 & $fetcher $lockFile -Only '.stores'
                 if ($LASTEXITCODE -ne 0) { Warn $proj "fetching $src from content.lock.json failed" }
                 elseif (Test-Path $target) { New-Item -ItemType File -Force -Path (Join-Path $target '.gdignore') | Out-Null }
@@ -1044,13 +1052,10 @@ function Link-Content ($proj) {
                 New-Item -ItemType Directory -Force -Path $target | Out-Null
                 if ($from -match '^https?://') {
                     $tar = Join-Path ([IO.Path]::GetTempPath()) 'dot-stores.tar'
-                    Write-Host "downloading the art stores (about 1.6 GB, once) from $from"
-                    Invoke-WebRequest -UseBasicParsing -Uri $from -OutFile $tar
-                    $want = if ($from -eq 'https://dev.dotgames.org/stores/zombie-zone-maps/zz-stores-cc0.tar') { '9438f142a53aff4bf52f63dcb7973168210a991e77b0fd4944ee26d39022d62f' } else { $null }
-                    if ($want -and (Get-FileHash $tar -Algorithm SHA256).Hash.ToLower() -ne $want) {
-                        Warn $proj 'the downloaded art stores do not match their checksum; not used'
-                    } else { tar -xf $tar -C $target }
-                    Remove-Item $tar -Force
+                    Say $proj "downloading the art stores (a .tar, once) from $from"
+                    try { Invoke-DotDownload $from $tar -Name $proj; tar -xf $tar -C $target }
+                    catch { Warn $proj "could not download the art stores from ${from}: $($_.Exception.Message)" }
+                    Remove-Item $tar -Force -ErrorAction SilentlyContinue
                 } elseif (Test-Path $from) {
                     Copy-Item -Path (Join-Path $from '*') -Destination $target -Recurse -Force -Exclude 'project', 'slices'
                 }
@@ -1118,7 +1123,7 @@ function Link-Many ($targets) {
     $iss = [initialsessionstate]::CreateDefault()
     $me = $PSCommandPath
     foreach ($f in Get-ChildItem function:) {
-        if ($f.ScriptBlock.File -eq $me -and $f.Name -notin @('Say', 'Warn', 'Err', 'Ok')) {
+        if (($f.ScriptBlock.File -eq $me -or $f.ScriptBlock.File -eq $dotDownload) -and $f.Name -notin @('Say', 'Warn', 'Err', 'Ok')) {
             $iss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry($f.Name, $f.Definition)))
         }
     }
@@ -1279,9 +1284,9 @@ function Get-GodotLatest {
         $asset = "Godot_v$tag`_win64.exe.zip"
         $base = "https://github.com/godotengine/godot-builds/releases/download/$tag"
         $zip = Join-Path $tmp $asset
-        Write-Host "downloading $asset (about 80 MB)..."
-        Invoke-WebRequest -UseBasicParsing -Uri "$base/$asset" -OutFile $zip
-        $sums = (Invoke-WebRequest -UseBasicParsing -Uri "$base/SHA512-SUMS.txt").Content
+        Say 'godot' "downloading $asset (about 80 MB)..."
+        Invoke-DotDownload "$base/$asset" $zip -Name 'godot'
+        $sums = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 60 -Uri "$base/SHA512-SUMS.txt").Content
         # Served as application/octet-stream, so PowerShell hands back bytes, not text.
         if ($sums -is [byte[]]) { $sums = [Text.Encoding]::UTF8.GetString($sums) }
         $want = ($sums -split "`n" | Where-Object { $_ -match [regex]::Escape($asset) + '\s*$' } | Select-Object -First 1) -split '\s+' | Select-Object -First 1
@@ -1403,14 +1408,11 @@ function Get-ExportTemplates ($tag) {
     # Beside the destination, not in %TEMP%: the archive is 1.2 GB and %TEMP% is often the small drive.
     $tpz = Join-Path $dest "$asset.part"
     $zip = $null
-    $oldProgress = $ProgressPreference
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        # The progress bar makes a download this size several times slower on PowerShell 5.1.
-        $ProgressPreference = 'SilentlyContinue'
-        Write-Host "downloading $asset (about 1.2 GB, once)..."
-        Invoke-WebRequest -UseBasicParsing -Uri "$base/$asset" -OutFile $tpz
-        $sums = (Invoke-WebRequest -UseBasicParsing -Uri "$base/SHA512-SUMS.txt").Content
+        Say 'templates' "downloading $asset (about 1.2 GB, once)..."
+        Invoke-DotDownload "$base/$asset" $tpz -Name 'templates'
+        $sums = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 60 -Uri "$base/SHA512-SUMS.txt").Content
         if ($sums -is [byte[]]) { $sums = [Text.Encoding]::UTF8.GetString($sums) }
         $want = ($sums -split "`n" | Where-Object { $_ -match [regex]::Escape($asset) + '\s*$' } | Select-Object -First 1) -split '\s+' | Select-Object -First 1
         if (-not $want) { Err 'templates' "no checksum listed for $asset; nothing installed"; return $null }
@@ -1428,7 +1430,6 @@ function Get-ExportTemplates ($tag) {
         return $mainPath
     } catch { Err 'templates' $_.Exception.Message; return $null }
     finally {
-        $ProgressPreference = $oldProgress
         if ($zip) { $zip.Dispose() }
         Remove-Item -Force $tpz -ErrorAction SilentlyContinue
     }
@@ -1653,7 +1654,10 @@ function Install-Tools {
     $zip = Join-Path $tmp 'fastgmad_windows.zip'
     try {
         if ($env:DOT_FASTGMAD_ZIP) { Copy-Item $env:DOT_FASTGMAD_ZIP $zip }
-        else { Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/WilliamVenner/fastgmad/releases/download/v$ver/fastgmad_windows.zip" -OutFile $zip }
+        else {
+            Say 'fastgmad' "downloading fastgmad $ver..."
+            Invoke-DotDownload "https://github.com/WilliamVenner/fastgmad/releases/download/v$ver/fastgmad_windows.zip" $zip -Name 'fastgmad'
+        }
         $got = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
         if ($got -ne $sum) { Err 'fastgmad' "checksum mismatch (got $got); nothing installed"; return $false }
         New-Item -ItemType Directory -Force -Path $dest | Out-Null

@@ -39,7 +39,7 @@ done
 [ "${DOT_PACKS_FROM:-}" = none ] || [ "$FROM" = none ] && { echo "fetch_lock: DOT_PACKS_FROM=none, nothing fetched"; exit 0; }
 command -v python3 >/dev/null || { echo "fetch_lock: python3 is needed" >&2; exit 2; }
 exec python3 -I - "$LOCK" "$ROOT" "$FROM" "$SKIP" "$ONLY" "$PACKS" "$HERE" "$CFG" "$CDN" "$LIST" <<'PY'
-import base64, fnmatch, hashlib, json, os, sys, time, urllib.request, urllib.error, zlib
+import base64, fnmatch, hashlib, json, math, os, sys, time, urllib.request, urllib.error, zlib
 lock, root, base, skip, only, packs, here, cfg, cdn, listing = sys.argv[1:11]
 skip = {s for s in skip.split(",") if s}; only = {s for s in only.split(",") if s}
 doc = json.load(open(lock))
@@ -134,13 +134,35 @@ def get(url, start=0):
     if start: h["Range"] = "bytes=%d-" % start
     return urllib.request.urlopen(urllib.request.Request(url, headers=h), timeout=60)
 
-def fetch(rel, dest, sha, retries=4):
+# The pack's progress line, as tools/dot_download.ps1 prints it: name, file i/n, MB done / total, MB/s, ETA, at most
+# every $DOT_PROGRESS_SECONDS (2) s, and a done line if any was shown.
+try: EVERY = max(0.0, float(os.environ.get("DOT_PROGRESS_SECONDS", "2")))
+except ValueError: EVERY = 2.0
+def eta(s):
+    s = int(math.ceil(s))
+    return "%dh%02dm" % (s // 3600, s % 3600 // 60) if s >= 3600 else "%dm%02ds" % (s // 60, s % 60) if s >= 60 else "%ds" % s
+def show(pg, final=False):
+    sec = time.monotonic() - pg["t0"]
+    if final:
+        if not pg["shown"]: return
+        msg = "done %.1f MB in %s" % (pg["done"] / 1048576, eta(sec))
+    else:
+        if sec < pg["next"]: return
+        pg["next"] = sec + EVERY
+        rate = pg["done"] / sec if sec > 0 else 0
+        msg = "file %d/%d  %.1f / %.1f MB  %.1f MB/s  ETA %s" % (pg["file"], pg["files"], pg["done"] / 1048576,
+            pg["total"] / 1048576, rate / 1048576, eta((pg["total"] - pg["done"]) / rate) if rate > 0 else "?")
+    pg["shown"] = True
+    print("%-22s %s" % (pg["name"], msg), flush=True)
+
+def fetch(rel, dest, sha, retries=4, pg=None):
     part = dest + ".part"
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     for attempt in range(retries):
+        before = pg["done"] if pg else 0
+        url = bases[attempt % len(bases)] + "/" + rel
         try:
             have = os.path.getsize(part) if os.path.exists(part) else 0
-            url = bases[attempt % len(bases)] + "/" + rel
             want = sha(bases[attempt % len(bases)]) if callable(sha) else sha
             r = get(url, have)
             # The site stores some objects gzip-encoded and the CDN sends them so whatever was asked;
@@ -148,12 +170,14 @@ def fetch(rel, dest, sha, retries=4):
             gz = r.headers.get("Content-Encoding", "").lower() == "gzip"
             if gz and have: r.close(); r = get(url); have = 0
             if have and getattr(r, "status", 200) != 206: have = 0
+            if pg: pg["done"] += have
             z = zlib.decompressobj(31) if gz else None
             with open(part, "ab" if have else "wb") as f:
                 while True:
                     b = r.read(1 << 20)
                     if not b: break
                     f.write(z.decompress(b) if z else b)
+                    if pg: pg["done"] += len(b); show(pg)
                 if z: f.write(z.flush())
             h = hashlib.sha256()
             with open(part, "rb") as f:
@@ -163,7 +187,9 @@ def fetch(rel, dest, sha, retries=4):
             os.remove(part)
             raise IOError("hash mismatch for " + url)
         except (urllib.error.URLError, IOError, OSError) as e:
+            if pg: pg["done"] = before
             if attempt == retries - 1: raise
+            print("retry %s (%s)" % (url, e), flush=True)
             time.sleep(2 ** attempt)
 
 def pinned(p):
@@ -205,13 +231,21 @@ for p in doc["packs"]:
         fetch(pre + "/manifest.json", man, mh)
         pad = json.load(open(man))["payload"]; pad += "=" * (-len(pad) % 4)
         files = json.loads(base64.urlsafe_b64decode(pad))["files"]
-        n = 0
+        todo = []
         for f in files:
             rel = f["path"]
             if rel.startswith("/") or ".." in rel.split("/"): raise IOError("unsafe path " + rel)
-            dest = os.path.join(out, rel); sha = f["sha256"]
-            if os.path.exists(dest) and os.path.getsize(dest) == f["size"]: n += 1; continue
-            fetch("%s/objects/%s/%s" % (pre, sha[:2], sha), dest, sha); n += 1
+            dest = os.path.join(out, rel)
+            if not (os.path.exists(dest) and os.path.getsize(dest) == f["size"]): todo.append((dest, f))
+        total = sum(f["size"] for _, f in todo); n = len(files)
+        if todo:
+            print("fetching %s %s: %d files, %.1f MB%s" % (pid, ver, len(todo), total / 1048576,
+                ", %d already here" % (n - len(todo)) if len(todo) < n else ""), flush=True)
+        pg = {"name": pid, "files": len(todo), "file": 0, "total": total, "done": 0, "t0": time.monotonic(), "next": EVERY, "shown": False}
+        for dest, f in todo:
+            pg["file"] += 1; sha = f["sha256"]
+            fetch("%s/objects/%s/%s" % (pre, sha[:2], sha), dest, sha, pg=pg)
+        show(pg, final=True)
         open(stamp, "w").write(want + "\n")
         os.remove(man)
         print("fetched", pid, ver, n, "files")
