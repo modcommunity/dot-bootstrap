@@ -638,7 +638,7 @@ linked_siblings() {
 		n=${t#../}; rel=${n#*/}; n=${n%%/*}
 		[[ $n =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ && $n != "$own" && -e $ROOT/$n/.git && $rel != "${t#../}" ]] || continue
 		printf '%s\t%s\t%s\n' "$n" "$(basename "$l")" "$t"
-	done < <(find "$1" -maxdepth 1 -type l)
+	done < <(find "${1%/}/" -maxdepth 1 -type l)
 	# A link one level down (games/zombie-zone-maps -> ../../zombie-zone-maps, a whole sibling repo) must not
 	# be expanded by --copy-links either: it is excluded from the copy and relinked to the staged sibling.
 	# Prints the link's path relative to the project and its target as the link reads from its own directory.
@@ -653,7 +653,7 @@ linked_siblings() {
 		n=${t#../../}; n=${n%/}
 		[[ $n =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ && $n != "$own" && -e $ROOT/$n/.git ]] || continue
 		printf '%s\t%s\t%s\n' "$n" "${l#"${1%/}"/}" "$t"
-	done < <(find "$1" -mindepth 2 -maxdepth 2 -type l -not -path '*/.godot/*' -not -path '*/.git/*' 2>/dev/null)
+	done < <(find "${1%/}/" -mindepth 2 -maxdepth 2 -type l -not -path '*/.godot/*' -not -path '*/.git/*' 2>/dev/null)
 }
 
 # Stages one sibling into the box's content-addressed store, ~/gpu/sib/<name>/<fingerprint>/,
@@ -969,7 +969,7 @@ offer_on() {
 			if [[ $ft == "$WT_ROOT"/* && $ft != "$PROJ_DIR"/* ]]; then
 				back_to_queue "$fl points into another worktree ($ft); not copying it to $BOX"
 			fi
-		done < <(find "$PROJ_DIR" -maxdepth 2 -type l -not -path '*/.godot/*' 2>/dev/null)
+		done < <(find "${PROJ_DIR%/}/" -maxdepth 2 -type l -not -path '*/.godot/*' 2>/dev/null)
 	fi
 	while IFS=$'\t' read -r _ lk lt; do ex+=(--exclude "/$lk"); done < <(linked_siblings "$PROJ_DIR")
 	rsync -az --delete --copy-links --exclude '.godot/' --exclude '.git/' --exclude 'screenshots/' "${ex[@]}" \

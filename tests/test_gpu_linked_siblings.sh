@@ -33,4 +33,10 @@ for l in maps/imported_dm addons/dot_x; do
 	if grep -q "	$l	" <<<"$got"; then echo "FAIL $l would be relinked (its git-ignored content never reaches the box)"; fail=1
 	else echo "ok   $l stays a --copy-links copy"; fi
 done
+# A project reached through a symlink (hv's ~/wt/<name> -> real dir) must give the same answer: find on a bare
+# symlink path does not descend, so every games/* link was copied whole (9.1 GB, 2026-11-12).
+ln -s "$p" "$root/game-x-link"
+got2=$(ROOT=$root bash -c 'eval "$(sed -n "/^linked_siblings() {/,/^}/p" "$0")"; linked_siblings "$1"' "$src" "$root/game-x-link" | sort)
+if [[ $got2 == "$want" ]]; then echo "ok   linked_siblings through a symlinked project dir"
+else echo "FAIL linked_siblings through a symlinked project dir"; fail=1; fi
 [[ $fail == 0 ]] && echo "all passed" || { echo "failed"; exit 1; }
