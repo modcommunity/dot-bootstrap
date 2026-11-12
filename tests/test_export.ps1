@@ -19,6 +19,8 @@ foreach ($w in $wanted) {
     if ($f) { Invoke-Expression $f.Extent.Text }
 }
 $script:said = @()
+. "$env:H/tools/dot_download.ps1"  # Invoke-DotDownload, as bootstrap.ps1 loads it
+function Say ($n, $m, $c) { }
 function Ok ($n, $m) { }
 function Warn ($n, $m) { $script:warned += $m }
 function Err ($n, $m) { $script:said += $m }

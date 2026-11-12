@@ -929,7 +929,8 @@ link_content() {
         path="${path#/}"; path="${path%/}"
         # The raw art stores (a maps repo's .stores) are in no repository: $DOT_STORES_FROM (an
         # rsync source, a folder or the URL of a .tar) is where a checkout gets them.
-        if { [ ! -d "$PROJECTS_DIR/$src" ] || [ -f "$PROJECTS_DIR/$src/.dot-pack" ]; } && [ "${src##*/}" = ".stores" ] && [ -z "$STORES_USER_SET" ] && [ "$DOT_STORES_FROM" != none ] \
+        # A store the fetcher finished has .dot-pack; one it was stopped in still has .manifest.json and is resumed.
+        if { [ ! -d "$PROJECTS_DIR/$src" ] || [ -f "$PROJECTS_DIR/$src/.dot-pack" ] || [ -f "$PROJECTS_DIR/$src/.manifest.json" ]; } && [ "${src##*/}" = ".stores" ] && [ -z "$STORES_USER_SET" ] && [ "$DOT_STORES_FROM" != none ] \
                 && lock_lists_stores "$PROJECTS_DIR/${src%%/*}/content.lock.json" && [ -x "$REPO_DIR/tools/fetch_lock.sh" ]; then
             "$REPO_DIR/tools/fetch_lock.sh" "$PROJECTS_DIR/${src%%/*}/content.lock.json" --only .stores \
                 && touch "$PROJECTS_DIR/$src/.gdignore" || warn "$proj" "fetching $src from content.lock.json failed"
@@ -1373,11 +1374,11 @@ ARGS=()
 GET_GODOT=0; DO_IMPORT=0
 only_raw="${DOT_ONLY:-}"
 games_raw=""; addons_raw=""; positional=""
-# The raw art stores are fetched once from the published CC0 set unless DOT_STORES_FROM says otherwise
-# (a folder, rsync source or .tar URL) or it is "none" (--no-stores); a present .stores is never refetched.
-# A maps repo with a content.lock.json gets them from the lock instead (tools/fetch_lock.sh), unless DOT_STORES_FROM is set.
+# The raw art stores are fetched once from the maps repo's content.lock.json (tools/fetch_lock.sh) unless DOT_STORES_FROM
+# says otherwise (a folder, rsync source or .tar URL) or it is "none" (--no-stores); a finished .stores is never refetched.
+# (The old published tar, dev.dotgames.org/stores/zombie-zone-maps/zz-stores-cc0.tar, is gone: 404.)
 STORES_USER_SET="${DOT_STORES_FROM+set}"
-DOT_STORES_FROM="${DOT_STORES_FROM-https://dev.dotgames.org/stores/zombie-zone-maps/zz-stores-cc0.tar}"
+DOT_STORES_FROM="${DOT_STORES_FROM-}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --copy)    COPY_ADDONS=1 ;;
