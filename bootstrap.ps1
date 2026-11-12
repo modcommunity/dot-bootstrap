@@ -122,6 +122,7 @@ param(
     [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
     [string[]]$Names = @()
 )
+$ProgressPreference = 'SilentlyContinue'  # PowerShell 5.1 progress bar slows Invoke-WebRequest downloads to a crawl (looks like a hang)
 
 $ErrorActionPreference = 'Continue'
 $repoDir = $PSScriptRoot
