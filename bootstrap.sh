@@ -1036,6 +1036,19 @@ check_list() {
             && err "$p" "LOCAL: no remote, so a clone elsewhere cannot get it"
     done <<< "$(projects)"
 
+    # An addon a project links must come from a project the list names, or a sync
+    # prints "source missing" and ends with errors (dot-mobile was copied into two
+    # games but never listed, so it was never cloned).
+    local gp ad src
+    while read -r gp; do
+        [ -n "$gp" ] && [ -f "$(gi_path "$gp")" ] || continue
+        while read -r ad; do
+            [ -n "$ad" ] || continue
+            src="$(addon_source "$ad")"
+            listed "$(canon "$src")" || err "$gp" "addon $ad comes from $src, which projects.tsv does not list"
+        done <<< "$(links_for "$gp")"
+    done <<< "$(projects)"
+
     # Directories that are not repositories: work in progress, or a clone that
     # failed halfway. Either way nothing else can obtain them.
     local d
