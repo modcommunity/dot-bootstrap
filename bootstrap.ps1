@@ -242,6 +242,14 @@ function Say  ($n, $m, $c = 'Gray') { Write-Host ("{0,-22} " -f $n) -NoNewline; 
 function Ok   ($n, $m)              { Say $n $m 'Green' }
 function Warn ($n, $m)              { Say $n $m 'Yellow' }
 function Err  ($n, $m)              { Say $n $m 'Red'; $script:failed = $true }
+# Every repository a sync could not bring up to date, with the reason or the fix it
+# applied, listed again at the very end, so one line in 24 parallel jobs' output is not
+# the only trace. Sync-Many's runspaces hand theirs back with their lines.
+$script:stale = New-Object System.Collections.ArrayList
+function Note-Stale ($n, $m)        { [void]$script:stale.Add(("{0,-22} {1}" -f $n, $m)) }
+# A credential prompt in one of 24 parallel jobs is a hang nobody sees: a private or
+# missing repository fails at once instead (Git Credential Manager still answers).
+if (-not $env:GIT_TERMINAL_PROMPT) { $env:GIT_TERMINAL_PROMPT = '0' }
 
 # --- The list --------------------------------------------------------------
 
@@ -450,26 +458,33 @@ function Sync-Many ($items) {
         Block = ${function:Resolve-BlockedPull}.ToString()
         Conv = ${function:ConvertTo-HttpsUrl}.ToString()
         Args = ${function:Get-HttpsArgs}.ToString()
+        NetErr = ${function:Test-NetError}.ToString()
+        Pull = ${function:Invoke-PullRetry}.ToString()
+        Repair = ${function:Repair-Checkout}.ToString()
     }
     $shared = [hashtable]::Synchronized(@{ https = $script:useHttps })
     $ctx = @{ dir = $projectsDir; hub = $Hub; discard = [bool]$DiscardGenerated }
     $worker = {
         param($d, $c, $sh, $name, $url)
         $buf = New-Object 'System.Collections.Generic.List[object]'
-        $state = @{ failed = $false }
+        $state = @{ failed = $false; stale = New-Object 'System.Collections.Generic.List[string]' }
         function Say  ($n, $m, $col = 'Gray') { $buf.Add(@($n, $m, $col)) }
         function Warn ($n, $m)                { Say $n $m 'Yellow' }
         function Err  ($n, $m)                { Say $n $m 'Red'; $state.failed = $true }
         function Note-Https                   { $buf.Add(@('NOTE')) }
+        function Note-Stale ($n, $m)          { $state.stale.Add(("{0,-22} {1}" -f $n, $m)) }
         ${function:ConvertTo-HttpsUrl} = [scriptblock]::Create($d.Conv)
         ${function:Get-HttpsArgs}      = [scriptblock]::Create($d.Args)
         ${function:Sync-Repo}          = [scriptblock]::Create($d.Sync)
         ${function:Resolve-BlockedPull} = [scriptblock]::Create($d.Block)
+        ${function:Test-NetError}      = [scriptblock]::Create($d.NetErr)
+        ${function:Invoke-PullRetry}   = [scriptblock]::Create($d.Pull)
+        ${function:Repair-Checkout}    = [scriptblock]::Create($d.Repair)
         $projectsDir = $c.dir; $Hub = $c.hub; $DiscardGenerated = $c.discard
         $script:useHttps = $sh.https
         Sync-Repo $name $url
         if ($script:useHttps) { $sh.https = $true }
-        [pscustomobject]@{ Lines = $buf.ToArray(); Failed = $state.failed }
+        [pscustomobject]@{ Lines = $buf.ToArray(); Failed = $state.failed; Stale = $state.stale.ToArray() }
     }
     $pool = [runspacefactory]::CreateRunspacePool(1, $Jobs)
     $pool.Open()
@@ -485,12 +500,13 @@ function Sync-Many ($items) {
             if (-not $j.Handle.IsCompleted) { continue }
             $pending.Remove($j)
             $res = @($j.Ps.EndInvoke($j.Handle))
-            if ($j.Ps.HadErrors -and $res.Count -eq 0) { Err $j.Name 'sync job crashed'; }
+            if ($j.Ps.HadErrors -and $res.Count -eq 0) { Err $j.Name 'sync job crashed'; Note-Stale $j.Name 'sync job crashed; run again' }
             foreach ($r in $res) {
                 foreach ($l in $r.Lines) {
                     if ($l[0] -eq 'NOTE') { Note-Https } else { Say $l[0] $l[1] $l[2] }
                 }
                 if ($r.Failed) { $script:failed = $true }
+                foreach ($s in @($r.Stale)) { if ($s) { [void]$script:stale.Add($s) } }
             }
             $j.Ps.Dispose()
         }
@@ -539,6 +555,122 @@ function Resolve-BlockedPull ($proj, $dir, $net, $pullErr) {
     git -C $dir reset -q --merge 2>&1 | Out-Null
     Warn $proj "local edits to $($real -join ' ') conflict with the update and are kept in the stash 'bootstrap-autostash' (inspect: git -C `"$dir`" stash show -p)"
     return $pulled
+}
+
+# True when git's output says the network failed (no route, DNS, a connect timeout,
+# a dropped connection), not the repository: a missing, private or refused one is
+# never retried as if it were the network.
+function Test-NetError ($text) {
+    if ("$text" -match '(?i)repository not found|does not exist|returned error: 40\d|authentication failed|could not read username|permission denied') { return $false }
+    return ("$text" -match '(?i)could not resolve (host|hostname)|failed to connect|couldn''t connect|connection (timed out|reset|refused|closed)|operation timed out|timed out after|network is unreachable|no route to host|name or service not known|temporary failure in name resolution|early eof|rpc failed|remote end hung up|unexpected disconnect|ssl_(read|connect|error)|schannel|gnutls|connect to host .* port \d+')
+}
+
+# `git pull --ff-only`, tried up to 3 times when it fails on the network (backoff 3 s,
+# then 8 s), with a short SSH connect timeout and a stall limit on HTTPS so one dead
+# route costs seconds, not minutes. Ok, Err (git's lines), Tries, Network.
+function Invoke-PullRetry ($dir, $net) {
+    $fast = @('-c', 'http.lowSpeedLimit=1000', '-c', 'http.lowSpeedTime=20')
+    # Only when nobody chose an SSH command: GIT_SSH_COMMAND, core.sshCommand and
+    # GIT_SSH (plink) all win over this.
+    if (-not $env:GIT_SSH_COMMAND -and -not $env:GIT_SSH -and -not (git -C $dir config --get core.sshCommand 2>$null)) {
+        $fast += @('-c', 'core.sshCommand=ssh -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3')
+    }
+    $out = @(); $code = 1; $tries = 0
+    foreach ($wait in @(0, 3, 8)) {
+        if ($wait) { Start-Sleep -Seconds $wait }
+        $tries++
+        $out = @(git @net @fast -C $dir pull -q --no-rebase --ff-only 2>&1 | ForEach-Object { "$_" })
+        $code = $LASTEXITCODE
+        if ($code -eq 0 -or -not (Test-NetError ($out -join "`n"))) { break }
+    }
+    [pscustomobject]@{ Ok = ($code -eq 0); Err = $out; Tries = $tries; Network = ($code -ne 0 -and (Test-NetError ($out -join "`n"))) }
+}
+
+# A pull that failed for a reason other than the network or local edits: diverged from
+# its upstream, no upstream, an upstream branch deleted on origin, or a detached HEAD.
+# Moves the checkout onto origin without losing anything: commits found on no origin
+# branch go to a bootstrap-backup/<time> branch first, uncommitted edits to tracked files
+# into a stash named bootstrap-backup-<time> (re-applied after; kept there on a conflict),
+# untracked files are never overwritten (reset --keep and checkout refuse). A branch with
+# no upstream that exists on origin gets that upstream; any other is left as it is and the
+# checkout goes to origin's default branch. Returns $true when the checkout is on origin.
+function Repair-Checkout ($proj, $dir, $net) {
+    git @net -C $dir fetch -q --prune origin 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { return $false }
+    $def = "$(git -C $dir symbolic-ref --short -q refs/remotes/origin/HEAD 2>$null)".Trim()
+    if (-not $def) {
+        git @net -C $dir remote set-head origin -a 2>&1 | Out-Null
+        $def = "$(git -C $dir symbolic-ref --short -q refs/remotes/origin/HEAD 2>$null)".Trim()
+    }
+    if (-not $def) {
+        foreach ($b in 'main', 'master') {
+            git -C $dir rev-parse -q --verify "refs/remotes/origin/$b" 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) { $def = "origin/$b"; break }
+        }
+    }
+    if (-not $def) { return $false }
+    $defName = $def -replace '^origin/', ''
+    $branch = "$(git -C $dir symbolic-ref --short -q HEAD 2>$null)".Trim()
+    $up = "$(git -C $dir rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>$null)".Trim()
+    if ($up) { git -C $dir rev-parse -q --verify "$up" 2>$null | Out-Null; if ($LASTEXITCODE -ne 0) { $up = '' } }
+    $onOrigin = $false
+    if ($branch) { git -C $dir rev-parse -q --verify "refs/remotes/origin/$branch" 2>$null | Out-Null; $onOrigin = ($LASTEXITCODE -eq 0) }
+
+    if (-not $branch)  { $why = 'detached HEAD'; $target = $def; $switch = $true }
+    elseif ($up)       { $why = "diverged from $up"; $target = $up; $switch = $false }
+    elseif ($onOrigin) { $why = 'no upstream'; $target = "origin/$branch"; $switch = $false }
+    else               { $why = "local branch $branch has no upstream"; $target = $def; $switch = $true }
+
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $notes = @()
+    # Commits on no origin branch: on a branch that is about to move, or a detached HEAD
+    # about to be left, they would only be in the reflog. Keep them on a branch.
+    $keep = @('HEAD')
+    if ($switch) {
+        git -C $dir rev-parse -q --verify "refs/heads/$defName" 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) { $keep += "refs/heads/$defName" }
+        if ($branch) { $keep = @($keep | Where-Object { $_ -ne 'HEAD' }) }   # the branch itself keeps them
+    }
+    $backups = @()
+    foreach ($ref in $keep) {
+        $n = [int]"$(git -C $dir rev-list --count $ref --not --remotes=origin 2>$null)".Trim()
+        if ($n -le 0) { continue }
+        $name = if ($ref -eq 'HEAD') { "bootstrap-backup/$stamp" } else { "bootstrap-backup/$stamp-$defName" }
+        git -C $dir branch -q $name $ref 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { return $false }
+        $backups += $name
+        $notes += "$n local commit(s) kept on branch $name"
+    }
+    $stash = ''
+    if (@(git -C $dir status --porcelain --untracked-files=no 2>$null).Count -gt 0) {
+        $stash = "bootstrap-backup-$stamp"
+        git -C $dir stash push -q -m $stash 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { foreach ($b in $backups) { git -C $dir branch -q -D $b 2>&1 | Out-Null }; return $false }
+    }
+    if ($switch) {
+        git -C $dir checkout -q -B $defName $def 2>&1 | Out-Null
+        $moved = ($LASTEXITCODE -eq 0)
+        if ($moved) { git -C $dir branch -q "--set-upstream-to=$def" $defName 2>&1 | Out-Null }
+        if ($moved -and $branch) { $notes += "branch $branch left as it was" }
+    } else {
+        git -C $dir reset -q --keep $target 2>&1 | Out-Null
+        $moved = ($LASTEXITCODE -eq 0)
+        if ($moved -and -not $up) { git -C $dir branch -q "--set-upstream-to=$target" 2>&1 | Out-Null }
+    }
+    if ($stash) {
+        git -C $dir stash pop -q 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            git -C $dir reset -q --merge 2>&1 | Out-Null
+            $notes += "uncommitted edits conflict with it, kept in stash '$stash'"
+        } elseif ($moved) { $notes += 'uncommitted edits re-applied' }
+    }
+    if (-not $moved) {
+        foreach ($b in $backups) { git -C $dir branch -q -D $b 2>&1 | Out-Null }
+        return $false
+    }
+    $tail = if ($notes) { "; $($notes -join '; ')" } else { '' }
+    Warn $proj "${why}: moved to $target$tail"
+    return $true
 }
 
 # --- Renamed checkouts -----------------------------------------------------
@@ -641,8 +773,12 @@ function Sync-Repo ($proj, $url) {
             # A repository GitHub does not have is a renamed or deleted one, never
             # a passing network fault: say so, and name the line to fix.
             Err $proj "REPOSITORY MISSING: $effective does not exist (renamed or deleted?). Fix its line in projects.tsv."
+            Note-Stale $proj "not cloned: $effective missing (fix projects.tsv)"
         } else {
-            Err $proj "clone failed from $effective"
+            $why = @($cloneErr | Where-Object { $_ -match '(?i)^fatal:' } | Select-Object -First 1) -join ''
+            Err $proj "clone failed from $effective $why"
+            $kind = if (Test-NetError ($cloneErr -join "`n")) { 'network' } else { 'error' }
+            Note-Stale $proj "not cloned ($kind): $why"
         }
         return
     }
@@ -685,9 +821,10 @@ function Sync-Repo ($proj, $url) {
         if (-not $heads) { Warn $proj 'empty -- nothing pushed to it yet'; return }
     }
 
-    $pullErr = @(git @net -C $dir pull -q --no-rebase --ff-only 2>&1 | ForEach-Object { "$_" })
-    $pullOk = ($LASTEXITCODE -eq 0)
-    if (-not $pullOk) {
+    $first   = Invoke-PullRetry $dir $net
+    $pullErr = @($first.Err)
+    $pullOk  = $first.Ok
+    if (-not $pullOk -and -not $first.Network) {
         $errText = $pullErr -join "`n"
         # Editor-regenerated files (.uid, .import) block an update whenever the
         # editor rewrote them. They are rebuilt on open, so restore them and retry.
@@ -722,7 +859,7 @@ function Sync-Repo ($proj, $url) {
                 if ($LASTEXITCODE -eq 0) {
                     $pullOk = $true
                     $n = @(git -C $dir rev-list "$up..$backup").Count
-                    if ($n -gt 0) { Warn $proj "history was rewritten upstream; $n local commit(s) kept on branch $backup" }
+                    if ($n -gt 0) { Warn $proj "diverged from upstream (local commits, or history rewritten there): moved to it; $n local commit(s) kept on branch $backup" }
                 } else {
                     git -C $dir branch -D $backup 2>$null | Out-Null
                 }
@@ -749,10 +886,28 @@ function Sync-Repo ($proj, $url) {
             $dirty = @(git -C $dir status --porcelain 2>$null).Count
         }
     }
+    # Diverged, no upstream, upstream deleted, detached HEAD: never "resolve by hand".
+    # Not for the network (nothing to repair) nor a missing repository.
+    $errText = $pullErr -join "`n"
+    if (-not $pullOk -and -not $first.Network -and -not (Test-NetError $errText) -and
+        $errText -notmatch '(?i)repository not found|does not exist|does not appear to be a git repository|could not read username|would be overwritten|commit your changes or stash') {
+        if (Repair-Checkout $proj $dir $net) {
+            $pullOk = $true
+            $dirty = @(git -C $dir status --porcelain 2>$null).Count
+        }
+    }
     if (-not $pullOk) {
         $alt = ConvertTo-HttpsUrl $origin
-        if (($pullErr -join "`n") -match '(?i)repository not found|does not exist') {
-            Err $proj "REPOSITORY MISSING: $origin does not exist (renamed or deleted?). Fix its line in projects.tsv."
+        $why = @($pullErr | Where-Object { $_ -match '(?i)^(fatal|error):' } | Select-Object -First 1)
+        $why = if ($why) { "$($why[0])".Trim() } else { @($pullErr | Where-Object { $_ } | Select-Object -First 1) -join '' }
+        if ($first.Network -or (Test-NetError $errText)) {
+            # The checkout is whole, just behind: the next run catches up. Not an error.
+            Warn $proj "network, retried $($first.Tries)x, not updated: $why"
+            Note-Stale $proj "network failure after $($first.Tries) tries (checkout kept as it was; the next run catches up)"
+        } elseif ($errText -match '(?i)repository not found|does not exist|does not appear to be a git repository|could not read username') {
+            # Renamed, deleted or private: the checkout on disk still works, so one line, no failure.
+            Warn $proj "skipped: $origin is missing or private on GitHub; the checkout here is kept as it is. Fix its line in projects.tsv."
+            Note-Stale $proj "repository missing or private ($origin); fix projects.tsv"
         } elseif ($dirty -gt 0 -and ($pullErr -join "`n") -match 'would be overwritten|commit your changes or stash') {
             # The update touches files changed here. Name them, so the choice
             # between committing and discarding is made by somebody looking.
@@ -761,15 +916,15 @@ function Sync-Repo ($proj, $url) {
             if (-not $files) { $files = 'see git status' }
             Warn $proj "dirty, not updated: the update changes files modified here ($files)"
             Say  ''    '  commit or discard them, then run this again (generated .import/.uid files: add -DiscardGenerated)'
-        } elseif ($alt -eq $origin) {
-            Err $proj 'pull refused - diverged, or no upstream. Resolve by hand.'
-            $why = @($pullErr | Where-Object { $_ } | Select-Object -First 4) -join ' | '
-            if ($why) { Say '' "  git said: $why" }
-        } elseif ($script:useHttps) {
-            Err $proj 'pull failed over HTTPS too - diverged, no upstream, or not reachable. Resolve by hand.'
+            Note-Stale $proj "local edits block the update ($files)"
+        } elseif ($alt -eq $origin -or $script:useHttps) {
+            # Repair-Checkout could not move it either (its fetch failed, or git refused).
+            Err $proj "pull failed and could not be repaired: $why"
+            Note-Stale $proj "pull failed: $why"
         } else {
             Err  $proj 'pull failed. origin is SSH; if you have no key here, drop -Ssh, or run:'
             Say  ''    "  git -C `"$dir`" remote set-url origin $alt"
+            Note-Stale $proj "SSH pull failed: $why"
         }
         return
     }
@@ -1864,6 +2019,12 @@ if ($script:junctionFailures -gt 0) {
     }
     Write-Host "Until they exist Godot cannot resolve any addon class_name, and every" -ForegroundColor Yellow
     Write-Host "script that mentions one fails to parse -- which looks like broken code." -ForegroundColor Yellow
+    Write-Host ''
+}
+
+if ($script:stale.Count -gt 0) {
+    Write-Host "not updated ($($script:stale.Count)):" -ForegroundColor Yellow
+    foreach ($s in $script:stale) { Write-Host "  $s" -ForegroundColor Yellow }
     Write-Host ''
 }
 
