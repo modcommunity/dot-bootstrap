@@ -21,6 +21,8 @@
 #                                            laptop, or to the desktop when it has the shorter wait (GPU_BOX pins one,
 #                                            GPU_EXCL_BOXES sets the order); pull then reads from the box run used
 #                                            GPU_XORG=1 run: present through a headless Xorg on the NVIDIA card (:90) instead of Xvfb; see ensure_xorg
+#                                            Vulkan on the NVIDIA card unless the args ask for gl_compatibility or opengl3 (the
+#                                            browser shell's renderer); that needs GPU_XORG=1, as Xvfb's GL is Mesa's software one
 #   ./gpu.sh exec <command...>               any shell command there, under the lock
 #   ./gpu.sh pull <project> <path> [dir]     copy a file or folder back into dir (default: its folder here)
 #   ./gpu.sh browser-shot <url> <out.png>    load a page in the laptop's Chrome (WebGL2 on the 1660 Ti), save a frame
@@ -1668,9 +1670,18 @@ case "${1:-}" in
 			ensure_xorg || return
 			xrun=(env DISPLAY=:90)
 		fi
+		# Same rule as the shot shim: a run that asks for the compatibility renderer gets OpenGL, not a forced Vulkan driver.
+		local drv=(--rendering-driver vulkan --gpu-index "${idx:-0}") a gl=0
+		for a in "$@"; do
+			case $a in
+				gl_compatibility|--rendering-method=gl_compatibility) gl=1; drv=() ;;
+				opengl3|opengl3_es|--rendering-driver=opengl3*) gl=1; drv=(); [[ " $* " == *" --rendering-method"* ]] || drv=(--rendering-method gl_compatibility) ;;
+			esac
+		done
+		[[ $gl == 0 || ${GPU_XORG:-0} == 1 ]] || echo "gpu.sh: WARN gl_compatibility under Xvfb is Mesa's software GL, not the card; set GPU_XORG=1" >&2
 		remote_locked timeout -k 15 "${GPU_TIMEOUT:-1800}" "${xrun[@]}" \
 			"$REMOTE_HOME/gpu/bin/godot" --path "$REMOTE_HOME/$REMOTE_ROOT/$project" \
-			--rendering-driver vulkan --gpu-index "${idx:-0}" "$@"
+			"${drv[@]}" "$@"
 		}
 		excl run_on_box "$@"
 		;;
