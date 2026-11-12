@@ -206,6 +206,15 @@ say()  { printf '%-22s %s\n' "$1" "$2"; }
 ok()   { printf '%-22s %s\n' "$1" "${GRN}$2${OFF}"; }
 warn() { printf '%-22s %s\n' "$1" "${YLW}$2${OFF}"; }
 err()  { printf '%-22s %s\n' "$1" "${RED}$2${OFF}"; fail=1; }
+# Every repository a sync could not bring up to date, listed again at the very end, so one
+# line among dozens of parallel jobs' output is not the only trace. Jobs run in subshells,
+# so they append to a file.
+STALE_FILE="$(mktemp 2>/dev/null || echo /tmp/dot-stale.$$)"; : > "$STALE_FILE"
+trap 'rm -f "$STALE_FILE"' EXIT
+note_stale() { printf '%-22s %s\n' "$1" "$2" >> "$STALE_FILE"; }
+# A credential prompt in one of many parallel jobs is a hang nobody sees: a private or
+# missing repository fails at once instead.
+export GIT_TERMINAL_PROMPT="${GIT_TERMINAL_PROMPT:-0}"
 
 [ -f "$LIST" ] || { echo "${RED}missing projects.tsv beside $REAL_SELF${OFF}" >&2; exit 2; }
 
@@ -437,6 +446,115 @@ sync_selected() {
 
 # --- Repositories ----------------------------------------------------------
 
+# True when git's output says the network failed (no route, DNS, a connect timeout, a
+# dropped connection), not the repository: a missing, private or refused one is never
+# retried as if it were the network.
+net_error() {
+    printf '%s' "$1" | grep -qiE 'repository not found|does not exist|returned error: 40[0-9]|authentication failed|could not read username|permission denied' && return 1
+    printf '%s' "$1" | grep -qiE 'could not resolve (host|hostname)|failed to connect|couldn.t connect|connection (timed out|reset|refused|closed)|operation timed out|timed out after|network is unreachable|no route to host|name or service not known|temporary failure in name resolution|early eof|rpc failed|remote end hung up|unexpected disconnect|ssl_(read|connect|error)|gnutls|connect to host .* port [0-9]+'
+}
+
+# `git pull --ff-only`, tried up to 3 times while it fails on the network (backoff 3 s,
+# then 8 s), with a short SSH connect timeout and a stall limit on HTTPS so one dead route
+# costs seconds, not minutes. Sets pull_err, pull_rc, pull_tries, pull_net (1 = network).
+pull_retry() {
+    local dir="$1"; shift
+    local fast=(-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20)
+    if [ -z "${GIT_SSH_COMMAND:-}" ] && [ -z "${GIT_SSH:-}" ] && [ -z "$(git -C "$dir" config --get core.sshCommand 2>/dev/null)" ]; then
+        fast+=(-c "core.sshCommand=ssh -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3")
+    fi
+    local wait_s
+    pull_tries=0; pull_net=0
+    for wait_s in 0 3 8; do
+        [ "$wait_s" -gt 0 ] && sleep "${DOT_RETRY_SLEEP:-$wait_s}"
+        pull_tries=$((pull_tries+1))
+        pull_err="$(git "$@" "${fast[@]}" -C "$dir" pull -q --no-rebase --ff-only 2>&1 >/dev/null)"; pull_rc=$?
+        [ $pull_rc -eq 0 ] && break
+        net_error "$pull_err" || break
+    done
+    [ $pull_rc -ne 0 ] && net_error "$pull_err" && pull_net=1
+    return 0
+}
+
+# A pull that failed for a reason other than the network or local edits: diverged from its
+# upstream, no upstream, an upstream branch deleted on origin, or a detached HEAD. Moves
+# the checkout onto origin without losing anything: commits found on no origin branch go
+# to a bootstrap-backup/<time> branch first, uncommitted edits to tracked files into a
+# stash named bootstrap-backup-<time> (re-applied after; kept there on a conflict),
+# untracked files are never overwritten (reset --keep and checkout refuse). A branch with
+# no upstream that exists on origin gets that upstream; any other is left as it is and the
+# checkout goes to origin's default branch. Returns 0 when the checkout is on origin.
+repair_checkout() {
+    local proj="$1" dir="$2"; shift 2
+    git "$@" -C "$dir" fetch -q --prune origin >/dev/null 2>&1 || return 1
+    local def; def="$(git -C "$dir" symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null)"
+    if [ -z "$def" ]; then
+        git "$@" -C "$dir" remote set-head origin -a >/dev/null 2>&1
+        def="$(git -C "$dir" symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null)"
+    fi
+    if [ -z "$def" ]; then
+        local b; for b in main master; do
+            git -C "$dir" rev-parse -q --verify "refs/remotes/origin/$b" >/dev/null 2>&1 && { def="origin/$b"; break; }
+        done
+    fi
+    [ -n "$def" ] || return 1
+    local def_name="${def#origin/}"
+    local branch; branch="$(git -C "$dir" symbolic-ref --short -q HEAD 2>/dev/null)"
+    local up; up="$(git -C "$dir" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)"
+    [ -n "$up" ] && ! git -C "$dir" rev-parse -q --verify "$up" >/dev/null 2>&1 && up=""
+    local on_origin=0
+    [ -n "$branch" ] && git -C "$dir" rev-parse -q --verify "refs/remotes/origin/$branch" >/dev/null 2>&1 && on_origin=1
+
+    local why target switch=0
+    if [ -z "$branch" ];     then why="detached HEAD"; target="$def"; switch=1
+    elif [ -n "$up" ];       then why="diverged from $up"; target="$up"
+    elif [ $on_origin = 1 ]; then why="no upstream"; target="origin/$branch"
+    else why="local branch $branch has no upstream"; target="$def"; switch=1; fi
+
+    local stamp; stamp="$(date +%Y%m%d-%H%M%S)"
+    local notes=() keep=(HEAD)
+    if [ $switch = 1 ]; then
+        git -C "$dir" rev-parse -q --verify "refs/heads/$def_name" >/dev/null 2>&1 && keep+=("refs/heads/$def_name")
+        [ -n "$branch" ] && keep=("${keep[@]:1}")   # the branch itself keeps them
+    fi
+    local backups=() ref n name
+    for ref in "${keep[@]}"; do
+        n="$(git -C "$dir" rev-list --count "$ref" --not --remotes=origin 2>/dev/null)"
+        [ "${n:-0}" -gt 0 ] || continue
+        if [ "$ref" = HEAD ]; then name="bootstrap-backup/$stamp"; else name="bootstrap-backup/$stamp-$def_name"; fi
+        git -C "$dir" branch -q "$name" "$ref" >/dev/null 2>&1 || return 1
+        backups+=("$name"); notes+=("$n local commit(s) kept on branch $name")
+    done
+    local stash=""
+    if [ -n "$(git -C "$dir" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+        stash="bootstrap-backup-$stamp"
+        git -C "$dir" stash push -q -m "$stash" >/dev/null 2>&1 || { for n in "${backups[@]}"; do git -C "$dir" branch -q -D "$n" >/dev/null 2>&1; done; return 1; }
+    fi
+    local moved=0
+    if [ $switch = 1 ]; then
+        if git -C "$dir" checkout -q -B "$def_name" "$def" >/dev/null 2>&1; then
+            moved=1; git -C "$dir" branch -q "--set-upstream-to=$def" "$def_name" >/dev/null 2>&1
+            [ -n "$branch" ] && notes+=("branch $branch left as it was")
+        fi
+    elif git -C "$dir" reset -q --keep "$target" >/dev/null 2>&1; then
+        moved=1; [ -z "$up" ] && git -C "$dir" branch -q "--set-upstream-to=$target" >/dev/null 2>&1
+    fi
+    if [ -n "$stash" ]; then
+        if ! git -C "$dir" stash pop -q >/dev/null 2>&1; then
+            git -C "$dir" reset -q --merge >/dev/null 2>&1
+            notes+=("uncommitted edits conflict with it, kept in stash '$stash'")
+        elif [ $moved = 1 ]; then notes+=("uncommitted edits re-applied"); fi
+    fi
+    if [ $moved = 0 ]; then
+        for n in "${backups[@]}"; do git -C "$dir" branch -q -D "$n" >/dev/null 2>&1; done
+        return 1
+    fi
+    local tail="" i
+    for i in "${!notes[@]}"; do tail+="; ${notes[$i]}"; done
+    warn "$proj" "${why}: moved to $target$tail"
+    return 0
+}
+
 # The pull was refused because tracked files are modified here. Line-ending-only changes are
 # discarded; real edits are stashed, the pull retried, the stash re-applied (it stays saved
 # when that conflicts). Returns 0 when the pull went through.
@@ -655,8 +773,8 @@ sync_repo() {
         return
     fi
 
-    local pull_err; pull_err="$(git "${net[@]}" -C "$dir" pull -q --no-rebase --ff-only 2>&1 >/dev/null)"
-    local pull_rc=$?
+    local pull_err pull_rc pull_tries pull_net
+    pull_retry "$dir" "${net[@]}"
     # Editor-regenerated files (.uid, .import) block an update whenever the editor
     # rewrote them. They are rebuilt on open, so restore them and retry.
     if [ $pull_rc -ne 0 ] && printf '%s' "$pull_err" | grep -q 'would be overwritten'; then
@@ -682,7 +800,7 @@ sync_repo() {
             if git -C "$dir" reset -q --keep "$up" 2>/dev/null; then
                 pull_rc=0
                 local n; n=$(git -C "$dir" rev-list --count "$up..$backup")
-                [ "$n" -gt 0 ] && warn "$proj" "history was rewritten upstream; $n local commit(s) kept on branch $backup"
+                [ "$n" -gt 0 ] && warn "$proj" "diverged from upstream (local commits, or history rewritten there): moved to it; $n local commit(s) kept on branch $backup"
             else
                 git -C "$dir" branch -D "$backup" >/dev/null 2>&1
             fi
@@ -702,32 +820,52 @@ sync_repo() {
             pull_rc=0; dirty=$(git -C "$dir" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
         fi
     fi
+    # Diverged, no upstream, upstream deleted, detached HEAD: never "resolve by hand".
+    # Not for the network (nothing to repair) nor a missing repository.
+    if [ $pull_rc -ne 0 ] && [ "$pull_net" = 0 ] && ! net_error "$pull_err" \
+       && ! printf '%s' "$pull_err" | grep -qiE 'repository not found|does not exist|does not appear to be a git repository|could not read username|would be overwritten|commit your changes or stash'; then
+        if repair_checkout "$proj" "$dir" "${net[@]}"; then
+            pull_rc=0; dirty=$(git -C "$dir" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+        fi
+    fi
     if [ $pull_rc -eq 0 ]; then
         local after; after=$(git -C "$dir" rev-parse --short HEAD)
         local kept=""; [ "$dirty" -gt 0 ] && kept=" ${YLW}(kept $dirty uncommitted file(s))${OFF}"
         if [ -z "$before" ]; then say "$proj" "${GRN}first commits${OFF} $after$kept"
         elif [ "$before" = "$after" ]; then say "$proj" "${DIM}up to date${OFF} $after$kept"
         else say "$proj" "${GRN}updated${OFF} $before -> $after$kept"; fi
-    elif printf '%s' "$pull_err" | grep -qiE 'repository not found|does not exist'; then
-        missing_repo "$proj" "$origin"
+        return
+    fi
+    local why; why="$(printf '%s\n' "$pull_err" | grep -iE '^(fatal|error):' | head -1)"
+    [ -n "$why" ] || why="$(printf '%s\n' "$pull_err" | grep . | head -1)"
+    if [ "$pull_net" = 1 ] || net_error "$pull_err"; then
+        # The checkout is whole, just behind: the next run catches up. Not an error.
+        warn "$proj" "network, retried ${pull_tries}x, not updated: $why"
+        note_stale "$proj" "network failure after $pull_tries tries (checkout kept as it was; the next run catches up)"
+    elif printf '%s' "$pull_err" | grep -qiE 'repository not found|does not exist|does not appear to be a git repository|could not read username'; then
+        # Renamed, deleted or private: the checkout on disk still works, so one line, no failure.
+        warn "$proj" "skipped: $origin is missing or private on GitHub; the checkout here is kept as it is. Fix its line in projects.tsv."
+        note_stale "$proj" "repository missing or private ($origin); fix projects.tsv"
     elif [ "$dirty" -gt 0 ] && printf '%s' "$pull_err" | grep -qE 'would be overwritten|commit your changes or stash'; then
         # The update touches files changed here. Name them, so the choice
         # between committing and discarding is made by somebody looking.
         local files; files="$(printf '%s\n' "$pull_err" | sed -n 's/^[[:space:]]\{1,\}\([^[:space:]].*\)$/\1/p' | grep -v '^Please\|^Aborting' | head -5 | paste -sd' ' -)"
         warn "$proj" "dirty, not updated: the update changes files modified here (${files:-see git status})"
         say  ""      "  commit or discard them, then run this again (generated .import/.uid files: add --discard-generated)"
+        note_stale "$proj" "local edits block the update (${files:-see git status})"
     else
         case "$origin" in
             *@*:*|ssh://*)
-                if [ "$USE_HTTPS" = "1" ]; then
-                    err "$proj" "pull failed over HTTPS too - diverged, no upstream, or not reachable. Resolve by hand."
-                else
+                if [ "$USE_HTTPS" != "1" ]; then
                     err "$proj" "pull failed. origin is SSH; if you have no key here, drop --ssh, or run:"
                     say ""       "  git -C '$dir' remote set-url origin $(to_https "$origin")"
+                    note_stale "$proj" "SSH pull failed: $why"
+                    return
                 fi ;;
-            *)  err "$proj" "pull refused - diverged, or no upstream. Resolve by hand."
-                say "" "  git said: $(printf '%s' "$pull_err" | head -4 | paste -sd'|' -)" ;;
         esac
+        # repair_checkout could not move it either (its fetch failed, or git refused).
+        err "$proj" "pull failed and could not be repaired: $why"
+        note_stale "$proj" "pull failed: $why"
     fi
 }
 
@@ -1667,6 +1805,11 @@ case "$mode" in
 esac
 
 echo
+if [ -s "$STALE_FILE" ]; then
+    echo "${YLW}not updated ($(wc -l < "$STALE_FILE" | tr -d ' ')):${OFF}"
+    sed "s/^/  /" "$STALE_FILE"
+    echo
+fi
 [ "$LINKED_PROJECTS" -gt 0 ] && echo "$LINKS_MADE addon(s) $([ "$COPY_ADDONS" = "1" ] && echo copied || echo linked) across $LINKED_PROJECTS project(s)."
 [ "$fail" -eq 0 ] && echo "${GRN}ok${OFF}" || echo "${RED}finished with errors${OFF}"
 exit "$fail"
