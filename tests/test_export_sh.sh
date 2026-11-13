@@ -9,7 +9,7 @@ RED=''; YLW=''; CYN=''; DIM=''; GRN=''; OFF=''
 SELF_DIR="$T/shboot"; PROJECTS_DIR="$T/proj"; mkdir -p "$SELF_DIR" "$PROJECTS_DIR"
 games() { printf '%s\n' game-arena mg-pong game-arena-maps; }
 ok() { :; }
-alias_target() { [ "$1" = fatal-contact ] && echo game-arena; }
+alias_target() { case "$1" in fatal-contact) echo game-arena ;; game-arena) echo game-fatal-contact ;; esac; }
 block="$(sed -n '/^# --- Release export /,/^# --- Modes /p' "$H/bootstrap.sh")"
 check 'the export block is found' '[ -n "$block" ]'
 eval "$block"
@@ -66,7 +66,35 @@ set_export_preset "$g" "Linux x86_64" "/t"
 check 'preset: a missing key is added' '[ "$(tail -n1 "$cfg")" = "custom_template/release=\"/t\"" ]'
 check 'preset: an unknown preset is refused' '! set_export_preset "$g" macOS /t 2>/dev/null'
 mkdir -p "$T/empty"
-check 'preset: no file at all is refused' '! set_export_preset "$T/empty" "Linux x86_64" /t 2>/dev/null'
+check 'preset: no file and an unknown preset is refused' '! set_export_preset "$T/empty" macOS /t 2>/dev/null && [ ! -f "$T/empty/export_presets.cfg" ]'
+
+# A game with no presets at all (every game but FC) gets the default one, kept out of git.
+d="$T/mg-plain"; mkdir -p "$d"; git -C "$d" init -q
+cfg="$d/export_presets.cfg"
+check 'default: written for a game with no presets' 'set_export_preset "$d" "Linux x86_64" "/t/lin" >/dev/null && [ -f "$cfg" ]'
+check 'default: one preset, the one asked for, at index 0' '[ "$(grep -c "^\[preset\.[0-9]*\]$" "$cfg")" = 1 ] && [ "$(sed -n 1,3p "$cfg" | tr "\n" "|")" = "[preset.0]||name=\"Linux x86_64\"|" ]'
+check 'default: export path names the game' 'grep -qx "export_path=\"build/linux/mg-plain.x86_64\"" "$cfg"'
+check 'default: the template is set once' '[ "$(grep -c "^custom_template/release=\"/t/lin\"$" "$cfg")" = 1 ] && [ "$(grep -c "^custom_template/release=" "$cfg")" = 1 ]'
+check 'default: pck beside the binary, all resources' 'grep -qx "binary_format/embed_pck=false" "$cfg" && grep -qx "export_filter=\"all_resources\"" "$cfg"'
+check 'default: kept out of git by info/exclude' 'git -C "$d" check-ignore -q export_presets.cfg && [ -z "$(git -C "$d" status --porcelain)" ]'
+set_export_preset "$d" "Linux x86_64" "/t/lin2" >/dev/null
+check 'default: a second export updates it, adds nothing' '[ "$(grep -c "^\[preset\." "$cfg")" = 2 ] && grep -qx "custom_template/release=\"/t/lin2\"" "$cfg" && [ "$(grep -c "^export_presets.cfg$" "$d/.git/info/exclude")" = 1 ]'
+d2="$T/mg-ignores"; mkdir -p "$d2"; git -C "$d2" init -q; echo export_presets.cfg > "$d2/.gitignore"
+set_export_preset "$d2" "Linux x86_64" /t >/dev/null
+check 'default: a game that ignores it already keeps info/exclude as it was' '! grep -q export_presets "$d2/.git/info/exclude" 2>/dev/null'
+# An editor-written file with only another preset (Hungario's Web) gains the default as the next index.
+d3="$T/game-web"; mkdir -p "$d3"
+printf '[preset.0]\n\nname="Web"\nplatform="Web"\n\n[preset.0.options]\n\ncustom_template/release=""\nhtml/export_icon=true' > "$d3/export_presets.cfg"
+set_export_preset "$d3" "Linux x86_64" /t >/dev/null
+check 'default: appended after another preset as preset.1' 'grep -qx "\[preset.1\]" "$d3/export_presets.cfg" && grep -qx "html/export_icon=true" "$d3/export_presets.cfg" && [ "$(grep -c "^custom_template/release=\"/t\"$" "$d3/export_presets.cfg")" = 1 ] && [ "$(grep -A30 "^\[preset.1\]" "$d3/export_presets.cfg" | grep -c "^custom_template/release=\"/t\"$")" = 1 ]'
+check 'default: the other preset is untouched' '[ "$(sed -n 1,8p "$d3/export_presets.cfg" | grep -c "^custom_template/release=\"\"$")" = 1 ]'
+check 'default: the Windows preset names the exe' '[ "$(default_export_preset g "Windows x86_64" 0 | grep -c "^export_path=\"build/windows/g.exe\"$\|^platform=\"Windows Desktop\"$\|^application/product_name=\"g\"$")" = 3 ]'
+check 'default: an unknown preset fails' '! default_export_preset g macOS 0 >/dev/null'
+default_export_preset game-x "Windows x86_64" 0 > "$T/default_windows.cfg"
+
+check 'play args: FC gets its bots and profiler' '[ "$(export_play_args game-fatal-contact | tr "\n" " ")" = "--offline +bot_quota 8 +profiler_overlay 1 +profiler_record_seconds 60 " ]'
+check 'play args: FC under its old name too' '[ "$(export_play_args game-arena | wc -l)" = 7 ]'
+check 'play args: any other game only --offline' '[ "$(export_play_args mg-pong | tr "\n" " ")" = "--offline " ]'
 
 n="$T/shn"; mkdir -p "$n/addons/a" "$n/addons/b" "$n/addons/c"
 printf '[libraries]\n; linux.x86_64 = "res://no.so"\nwindows.x86_64 = "res://addons/a/a.dll"\nlinux.x86_64 = "res://addons/a/bin/linux-x86_64/liba.so"\n' > "$n/addons/a/a.gdextension"
@@ -104,6 +132,9 @@ chmod +x "$PROJECTS_DIR/game-arena/build/linux/game-arena.x86_64"
 (play_export arena +bot_quota 16 --map dm_atrium) >"$T/playout" 2>&1
 check 'play: the build ran with the defaults, then the caller'"'"'s' '[ "$(tr "\n" " " < "$T/ran")" = "-- --offline +bot_quota 8 +profiler_overlay 1 +profiler_record_seconds 60 +bot_quota 16 --map dm_atrium " ]'
 check 'play: says where the reports land' 'grep -q "app_userdata/game-arena/profiles" "$T/playout"'
+mkdir -p "$PROJECTS_DIR/mg-pong/build/linux"; cp "$PROJECTS_DIR/game-arena/build/linux/game-arena.x86_64" "$PROJECTS_DIR/mg-pong/build/linux/mg-pong.x86_64"
+(play_export mg-pong --map x) >/dev/null 2>&1
+check 'play: any other game gets no FC arguments' '[ "$(tr "\n" " " < "$T/ran")" = "-- --offline --map x " ]'
 (play_export nothing) >/dev/null 2>&1
 check 'play: an unknown game exits 2' "[ $? = 2 ]"
 (list_games() { :; }; find_godot() { return 1; }; export_game arena) >/dev/null 2>"$T/err"
