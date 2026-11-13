@@ -234,6 +234,14 @@ They also failed about 2 runs in 7 when their runner stalled 90-165 ms on a load
 - On dev02 (`heavy`), a real-time job needs `HEAVY_RT_MIN_MB` (5632) free and gets at least that ceiling (every dev02 run with 5.5 GB passed), at most `HEAVY_RT_MAX` (2) run at once, it runs at normal CPU/IO weight instead of the other jobs' 20 and nice 10, and while one runs every other job needs `HEAVY_RT_GUARD_MB` (2048) more free than its own need to start. A real-time job at the head of the queue that waits for the cap lets the others backfill past it. `tests/test_heavy_realtime.sh` checks it.
 - `heavy` also runs one `godot --import` per project directory at a time (`import.<hash>.lock`): five imports of one worktree once held five check slots for an hour.
 
+Imports go where the job runs (2026-11-13). `hv` used to queue a local `heavy -- godot --import` before every scene in a fresh worktree, even when a box took the scene and imported there itself, and `hv import` was local-only: imports were 10 of 21 waiters in dev02's queue. Now:
+
+- A headless `godot` job that runs on dev02 in a project with no `.godot/global_script_class_cache.cfg` imports first in its own slot and cgroup (`HEAVY_NO_PREIMPORT=1` skips that). A box imports before every job (`gpu.sh`), and `game.sh` imports itself.
+- `hv <worktree> scene` no longer imports first. `hv <worktree> import` does nothing while an offload script is configured. `HV_IMPORT_LOCAL=1` imports on dev02 for a local tool that reads `.godot`.
+- A waiter whose directory was removed while it queued (its worktree was pruned) exits 66 and runs nothing.
+
+`tests/test_heavy_preimport.sh` checks this.
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE).

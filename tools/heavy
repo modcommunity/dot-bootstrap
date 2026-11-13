@@ -245,6 +245,12 @@ fi
 tval="$need_mb"; [ "$rt" = 1 ] && tval="$need_mb rt"
 ticket="$DIR/queue.$qlane.$(date +%s%N).$$"; echo "$tval" > "$ticket"; trap 'rm -f "$ticket"' EXIT
 while :; do
+  # A waiter whose directory was removed (its worktree pruned while it queued) would run against nothing and
+  # hold a slot for it; 4 such .merge waiters sat in the check queue on 2026-11-13.
+  if [ ! -d "$PWD" ] || [[ $(readlink /proc/$$/cwd 2>/dev/null) == *" (deleted)" ]]; then
+    echo "heavy: $PWD was removed while this job waited; not running it." >&2
+    exit 66
+  fi
   head=
   for t in "$DIR"/queue.$qlane.*; do
     [ -e "$t" ] || continue
@@ -389,7 +395,22 @@ if [ "$lane" = build ] && [ "$gpu_lock" != none ] && [ -f "$gpu_lock" ]; then
   flock -w "${HEAVY_GPU_GATE_WAIT:-1200}" "$gate" true 2>/dev/null
   exec {gfd}>&-; exec {gfd}>>"$gpu_lock" && flock -s "$gfd"
 fi
-HEAVY_HELD=$lane "${cap[@]}" "${scope[@]}" "$@" {fd}>&- {lfd}>&- {gfd}>&- {rfd}>&- {ifd}>&- &
+# A headless godot run here in a project that was never imported (a fresh worktree: no class cache) cannot resolve
+# class_name scripts and idles until its watchdog. hv used to queue a separate local `godot --import` before every such
+# scene, even when the box that took the scene imports there itself (gpu.sh), so imports filled dev02's check lane
+# (10 of 21 waiters, 2026-11-13). Now the job that really runs here imports first, in its own slot and cgroup.
+pre=()
+if [ "${HEAVY_NO_PREIMPORT:-0}" != 1 ] && [ -f project.godot ] && [ ! -f .godot/global_script_class_cache.cfg ]; then
+  gbin=; hl=0
+  for a in "$@"; do
+    case $a in --import) gbin=; break ;; --headless) hl=1 ;; godot|*/godot|godot.*|*/godot.*) [ -z "$gbin" ] && gbin=$a ;; esac
+  done
+  if [ -n "$gbin" ] && [ "$hl" = 1 ]; then
+    echo "heavy: $PWD was never imported (no .godot/global_script_class_cache.cfg): importing in this slot first" >&2
+    pre=(bash -c 'timeout 1800 "$0" --headless --path . --import </dev/null >/dev/null 2>&1 || echo "heavy: the import exited $?; running the job anyway" >&2; exec "$@"' "$gbin")
+  fi
+fi
+HEAVY_HELD=$lane "${cap[@]}" "${scope[@]}" "${pre[@]}" "$@" {fd}>&- {lfd}>&- {gfd}>&- {rfd}>&- {ifd}>&- &
 jpid=$!
 trap 'kill "$jpid" 2>/dev/null' TERM INT HUP
 peak=0
