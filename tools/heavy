@@ -1,0 +1,330 @@
+#!/usr/bin/env bash
+# heavy -- run a memory-hungry command in this VM's queue.
+#
+#   heavy [--lane build|check] [--] <command...>
+#   heavy --status
+#
+# Why: parallel agents each "checked nothing heavy was running" and then all started a
+# `next build` / smoke run / Godot suite at once. The guest filled its RAM, the host ran out
+# and killed the whole VM (x-tmc-dev01, 2026-10-16). A check-then-start rule is a race;
+# this is a lock. The Bash hook (heavy-gate.py) refuses those commands unless they go
+# through here. Smoke-class runs additionally wait for an empty agent board (heavy-smoke.py).
+# See ~/stack/nightly/scripts/heavy/README.md.
+#
+# Each job runs in its own systemd scope capped at HEAVY_JOB_MAX_GB (default 12), or at the
+# memory free when it starts less HEAVY_JOB_HEADROOM_GB if that is lower, with no swap, so a
+# runaway is killed instead of thrashing the VM. It gets HEAVY_JOB_CPUS CPUs at low priority.
+#
+# Waiters queue FIFO (tickets in $DIR); a job over HEAVY_JOB_MAX_MIN (45) minutes is stopped.
+#
+# Lanes: `build` (next build, smoke, verify, Playwright, Godot suites/imports, cargo and
+# docker builds) has HEAVY_SLOTS_BUILD slots, default 1; `check` (tsc, npm run check/lint,
+# godot --check-only) has HEAVY_SLOTS_CHECK, default 2. Before starting, it also waits until
+# MemAvailable >= HEAVY_MIN_AVAIL_GB. A build slot after the first is taken only while
+# MemAvailable >= HEAVY_EXTRA_AVAIL_GB (default the same), and is let go again when it is not,
+# so a second suite runs alongside the first only when the memory for it is free now.
+# Per-VM values live in /etc/heavy.conf.
+#
+# Edit this file by writing a copy and `mv`-ing it over: bash reads a script as it runs, and
+# /usr/local/bin/heavy is a symlink to it, so an in-place edit breaks every queued job.
+#
+# The lock is held by this wrapper only (the command gets the fd closed), so a command that
+# leaves a daemon behind cannot wedge the queue. A nested `heavy` (a script that calls it
+# again) runs straight through instead of deadlocking on its own slot.
+set -u
+
+# /etc/heavy.conf holds this VM's defaults; a HEAVY_* already in the environment wins, so
+# a one-off `HEAVY_JOB_MAX_GB=20 heavy -- …` is not silently reset by the file.
+_heavy_env=
+for _v in ${!HEAVY_@}; do _heavy_env+="$_v=${!_v@Q}"$'\n'; done
+[ -r /etc/heavy.conf ] && . /etc/heavy.conf
+[ -n "$_heavy_env" ] && eval "$_heavy_env"
+case $_heavy_env in *HEAVY_MIN_AVAIL_GB=*) HEAVY_MIN_AVAIL_GB_SET=1 ;; esac
+SLOTS_build=${HEAVY_SLOTS_BUILD:-1}
+SLOTS_check=${HEAVY_SLOTS_CHECK:-2}
+MIN_AVAIL_GB=${HEAVY_MIN_AVAIL_GB:-4}
+# Free memory a build slot beyond the first needs before it is taken. Higher than the first
+# slot's, because the job already running may still be growing: on dev02 (11 GB) Godot suites
+# peak at 0.5 GB median, 2 GB p99 and 3.5 GB worst (1010 jobs, 2026-10-18), with ~4.5 GB free
+# while one runs. Checked at acquisition, not held: a slot it cannot use goes back.
+EXTRA_AVAIL_GB=${HEAVY_EXTRA_AVAIL_GB:-$MIN_AVAIL_GB}
+# Per-job ceiling (GB) and the swap it may use: past it the job is killed, not the VM
+# thrashed. The user slice's MemoryHigh only throttles, so a 17 GB dev server under it
+# swapped dev01 for 15 minutes (2026-10-16) instead of dying.
+JOB_MAX_GB=${HEAVY_JOB_MAX_GB:-12}
+JOB_SWAP_GB=${HEAVY_JOB_SWAP_GB:-0}
+# The ceiling is also held under what is free when the job starts, less this headroom: an
+# 18 GB ceiling on dev01 with 14 GB already in use (ClickHouse, editors, sessions) let a
+# `next build` take the VM to 100% commit and a load of 31 without ever reaching it (2026-10-20).
+JOB_HEADROOM_GB=${HEAVY_JOB_HEADROOM_GB:-3}
+# CPUs a job may use (CPUQuota), default all but two, and it runs at low CPU/IO priority, so
+# the VM still answers while a build has every core busy.
+JOB_CPUS=${HEAVY_JOB_CPUS:-$(( $(nproc) > 3 ? $(nproc) - 2 : 1 ))}
+DIR=${HEAVY_DIR:-/var/tmp/heavy}
+
+# Available memory (kB): the lesser of the VM's MemAvailable and the headroom of the user's
+# cgroup (min of memory.max/memory.high less memory.current, less swap in use, with
+# reclaimable file cache not counted). The cgroup caps at 20-22 GB on dev01 while the VM has
+# more, so MemAvailable alone let a build in at the cap and swap thrashed (2026-10-30).
+# HEAVY_CGROUP overrides the directory (tests); a missing or unlimited cgroup falls back.
+CGROUP=${HEAVY_CGROUP:-/sys/fs/cgroup/user.slice/user-$(id -u).slice}
+avail_kb() {
+  local vm cg lim v cur swp inact
+  vm=$(awk '/MemAvailable/ {print $2}' /proc/meminfo)
+  if [ -r "$CGROUP/memory.current" ]; then
+    lim=
+    for f in memory.max memory.high; do
+      v=$(cat "$CGROUP/$f" 2>/dev/null)
+      case $v in ''|max|*[!0-9]*) continue ;; esac
+      if [ -z "$lim" ] || [ "$v" -lt "$lim" ]; then lim=$v; fi
+    done
+    if [ -n "$lim" ]; then
+      cur=$(cat "$CGROUP/memory.current" 2>/dev/null); cur=${cur:-0}
+      swp=$(cat "$CGROUP/memory.swap.current" 2>/dev/null); swp=${swp:-0}
+      # File cache and reclaimable slab both count: the cgroup sat at memory.max with 3.7 GB cache plus 1 GB dentry/inode slab and idle CPU, which jammed local-only waiters (2026-11-02).
+      inact=$(awk '/^inactive_file / {i=$2} /^active_file / {a=$2} /^slab_reclaimable / {s=$2} END {print i + a + s}' "$CGROUP/memory.stat" 2>/dev/null); inact=${inact:-0}
+      cg=$(( (lim - cur + inact - swp) / 1024 ))
+      [ "$cg" -lt 0 ] && cg=0
+      [ "$cg" -lt "$vm" ] && vm=$cg
+    fi
+  fi
+  echo "$vm"
+}
+# Optional offload hook (see the wait loop); unset on dev01.
+OFFLOAD=${HEAVY_OFFLOAD:-}
+OFFLOAD_EVERY=${HEAVY_OFFLOAD_EVERY:-15}
+# heavy sources /etc/heavy.conf without exporting, and the hook reads this from its environment.
+export HEAVY_PREFER_OFFLOAD
+
+# Seconds a job may wait for a slot and memory before giving up (exit 124); 0 = forever.
+MAX_WAIT=${HEAVY_MAX_WAIT:-0}
+lane=build
+while [ $# -gt 0 ]; do
+  case $1 in
+    --lane) lane=${2:-}; shift 2 ;;
+    --lane=*) lane=${1#*=}; shift ;;
+    --max-wait) MAX_WAIT=${2:-}; shift 2 ;;
+    --max-wait=*) MAX_WAIT=${1#*=}; shift ;;
+    --status)
+      mkdir -p "$DIR"
+      for f in "$DIR"/*.lock; do
+        [ -e "$f" ] || continue
+        if ! flock -n "$f" true 2>/dev/null; then
+          echo "busy  $(basename "$f" .lock): $(cat "${f%.lock}.who" 2>/dev/null)"
+        fi
+      done
+      # The boxes behind the offload hook (dev02: staging, staging02): free suite slots and their jobs.
+      if [ -n "$OFFLOAD" ] && [ -x "$OFFLOAD" ] && [ "${GPU_OFFLOAD:-1}" != 0 ]; then
+        echo "boxes:"; HEAVY_HELD=offload timeout 40 "$OFFLOAD" capacity 2>/dev/null | sed "s/^/  /"
+      fi
+      echo "Available (min of VM MemAvailable, user cgroup headroom less swap): $(awk -v k=$(avail_kb) 'BEGIN {printf "%.1f GB", k/1048576}') (start needs >= ${MIN_AVAIL_GB} GB; build slots 2-${SLOTS_build} need >= ${EXTRA_AVAIL_GB} GB)"
+      exit 0 ;;
+    -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+done
+case $MAX_WAIT in ''|*[!0-9]*) echo "heavy: --max-wait/HEAVY_MAX_WAIT needs whole seconds" >&2; exit 64 ;; esac
+[ $# -gt 0 ] || { echo "heavy: no command given (heavy [--lane build|check] -- <command>)" >&2; exit 64; }
+
+# A parse or import pass is a check, not a build: it must not queue behind 50-minute suites.
+if [ "$lane" = build ]; then
+  case " $* " in *" --check-only "*|*" --import "*) lane=check ;; esac
+fi
+
+case $lane in
+  build) slots=$SLOTS_build ;;
+  check) slots=$SLOTS_check ;;
+  *) echo "heavy: unknown lane '$lane' (build or check)" >&2; exit 64 ;;
+esac
+
+# Smoke-class commands (smoke, verify, Playwright) run only when no other agent is live on the
+# board: see heavy-smoke.py. Checked before the nested-heavy shortcut, and not when nested (HEAVY_HELD): the outer call already passed. HEAVY_SMOKE=final|force and HEAVY_AGENT are read there.
+_hs=$(dirname "$(readlink -f "$0")")/heavy-smoke.py
+if [ -z "${HEAVY_HELD:-}" ] && [ -r "$_hs" ] && python3 "$_hs" is-smoke "$@"; then
+  python3 "$_hs" check || exit $?
+fi
+
+if [ -n "${HEAVY_HELD:-}" ]; then
+  exec "$@"
+fi
+
+# Route hook, before any slot: the offload script (dev02: gpu.sh) may take the job at once.
+# Screenshot tools (tools/screenshot*.sh) always go to a real GPU on a box first, and a game
+# suite goes to the boxes first when HEAVY_PREFER_OFFLOAD=1 (the nightly runner). Exit 75
+# means "not taken": queue it here as before. GPU_OFFLOAD=0 skips the hook.
+if [ -n "$OFFLOAD" ] && [ -x "$OFFLOAD" ] && [ "${GPU_OFFLOAD:-1}" != 0 ]; then
+  HEAVY_HELD=offload "$OFFLOAD" route "$@"
+  rc=$?
+  [ "$rc" != 75 ] && exit "$rc"
+fi
+
+mkdir -p "$DIR" 2>/dev/null; chmod 1777 "$DIR" 2>/dev/null
+# Dynamic gate: the memory this command needs is what it peaked at in recent runs (x1.25), not a
+# fixed number. No history: MIN_AVAIL_GB. A waiter short of memory first asks the kernel to give
+# back page cache (memory.reclaim, then drop_caches) before it keeps waiting.
+KEY=$(printf '%s:%s:%s' "$lane" "$(basename "$PWD")" "$(printf '%s ' "${@:1:3}" | tr -c 'A-Za-z0-9._ -' '_')")
+PEAKS="$DIR/peaks"
+need_mb=$(( MIN_AVAIL_GB * 1024 ))
+if [ -z "${HEAVY_MIN_AVAIL_GB_SET:-}" ] && [ -r "$PEAKS" ]; then
+  hist=$(grep -F -- "$KEY	" "$PEAKS" | tail -5 | awk -F'\t' '$2>m {m=$2} END {print m+0}')
+  [ "${hist:-0}" -gt 0 ] && need_mb=$(( hist * 5 / 4 ))
+  [ "$need_mb" -lt 1024 ] && need_mb=1024
+fi
+reclaim_cache() {
+  sudo -n sh -c "echo 4G > $CGROUP/memory.reclaim; sync; echo 1 > /proc/sys/vm/drop_caches" >/dev/null 2>&1
+}
+start=$(date +%s); last_note=0; last_offer=0; last_reclaim=0; fd=; slot=; lfd=
+# Long jobs (surf-ride planners run up to 45 min) take a build slot like any build but at most
+# HEAVY_LONG_MAX of them at once (default 1), so one build slot stays free for short selftests
+# (2026-11-02). They queue on their own ticket line so a long job waiting for the long lock
+# never sits at the head of the build line and idles the free slot. Same memory gate.
+qlane=$lane; long=0
+if [ "$lane" = build ] && [ "${HEAVY_LONG_MAX:-1}" -gt 0 ]; then
+  case " $* " in *surf_rides.tscn*) long=1; qlane=long ;; esac
+fi
+# FIFO: a waiter only tries for a slot when its ticket is the oldest live one in its lane, so none starves.
+ticket="$DIR/queue.$qlane.$(date +%s%N).$$"; echo "$need_mb" > "$ticket"; trap 'rm -f "$ticket"' EXIT
+while :; do
+  head=
+  for t in "$DIR"/queue.$qlane.*; do
+    [ -e "$t" ] || continue
+    kill -0 "${t##*.}" 2>/dev/null || { rm -f "$t"; continue; }
+    head=$t; break
+  done
+  now=$(date +%s)
+  if [ "$MAX_WAIT" -gt 0 ] && [ $((now - start)) -ge "$MAX_WAIT" ]; then
+    echo "heavy: gave up after $((now - start))s waiting for a $lane slot with ${MIN_AVAIL_GB} GB free (have $(( $(avail_kb) / 1048576 )) GB); nothing was held." >&2
+    exit 124
+  fi
+  at_head=1
+  # Backfill (2026-11-13): the head waiting for more memory than is free (its history says 7.6 GB, 5 GB free,
+  # a slot idle) blocked every smaller job behind it for 50+ min. While the head cannot start for memory, a
+  # waiter whose own need fits may try for the free slot; the head keeps its place.
+  backfill=0
+  if [ -n "$head" ] && [ "$head" != "$ticket" ]; then
+    hneed=$(cat "$head" 2>/dev/null); hneed=${hneed//[!0-9]/}
+    if [ -n "$hneed" ] && [ "$hneed" -gt "$need_mb" ] && [ "$(avail_kb)" -lt $((hneed * 1024)) ]; then backfill=1; fi
+  fi
+  if [ -n "$head" ] && [ "$head" != "$ticket" ] && [ "$backfill" = 0 ]; then
+    at_head=0
+    if [ $((now - last_note)) -ge 60 ]; then
+      echo "heavy: queued for a $lane slot ($((now - start))s), behind $(ls "$DIR"/queue.$qlane.* 2>/dev/null | awk -v me="$ticket" '$0==me{exit} {n++} END{print n+0}') job(s)." >&2
+      last_note=$now
+    fi
+  else
+    for i in $(seq 1 "$slots"); do
+      exec {fd}>>"$DIR/$lane.$i.lock" || exit 70
+      # The slot is kept only if the memory for it is free now: a job that owns a slot while it
+      # waits for memory blocks every other job behind it (dev02, 2026-10-31, 1-2 h).
+      if flock -n "$fd"; then
+        avail=$(avail_kb)
+        if [ "$avail" -ge $((need_mb * 1024)) ] &&
+           { [ "$i" -eq 1 ] || [ "$lane" != build ] || [ "$avail" -ge $(( (need_mb + (EXTRA_AVAIL_GB - MIN_AVAIL_GB) * 1024) * 1024 )) ]; }; then
+          if [ "$long" = 1 ]; then
+            for j in $(seq 1 "${HEAVY_LONG_MAX:-1}"); do
+              exec {lfd}>>"$DIR/long.$j.lock" || exit 70
+              flock -n "$lfd" && { slot=$i; break 3; }
+              exec {lfd}>&-; lfd=
+            done
+          else
+            slot=$i; break 2
+          fi
+        fi
+      fi
+      exec {fd}>&-
+    done
+  fi
+  # Offload: a VM may name a script that runs a waiting build-lane job on another machine
+  # (dev02: ~/godot/gpu.sh). Offered only while waiting, never instead of a free slot here.
+  # Every waiter offers, head or not: a local-only job at the head (import, tool script) would
+  # otherwise keep every suite behind it from the idle boxes (2026-11-02). Exit 75 = not taken.
+  if [ "$lane" = build ] && [ -n "$OFFLOAD" ] && [ -x "$OFFLOAD" ] && [ $((now - last_offer)) -ge "$OFFLOAD_EVERY" ]; then
+    last_offer=$now
+    rm -f "$ticket"   # an offered job runs on the other box for minutes; it must not head the local queue meanwhile
+    HEAVY_HELD=offload "$OFFLOAD" offer "$@"
+    rc=$?
+    [ "$rc" != 75 ] && exit "$rc"
+    echo "$need_mb" > "$ticket"
+    now=$(date +%s)
+  fi
+  if [ "$at_head" = 1 ] && [ $((now - last_note)) -ge 60 ]; then
+    echo "heavy: waiting for a $lane slot and ~$(( (need_mb + 1023) / 1024 )) GB free ($((now - start))s; have $(( $(avail_kb) / 1048576 )) GB). Held by:" >&2
+    for i in $(seq 1 "$slots"); do echo "  $(cat "$DIR/$lane.$i.who" 2>/dev/null)" >&2; done
+    last_note=$now
+  fi
+  if [ "$at_head" = 1 ] && [ "$(avail_kb)" -lt $((need_mb * 1024)) ] && [ $((now - last_reclaim)) -ge 20 ]; then
+    last_reclaim=$now; reclaim_cache
+  fi
+  sleep 3
+done
+rm -f "$ticket"
+printf '%s pid %s since %s: %s\n' "$(whoami)@$(hostname -s)" "$$" "$(date +%H:%M:%S)" "$*" | cut -c1-300 > "$DIR/$lane.$slot.who"
+
+waited=$(( $(date +%s) - start ))
+[ "$waited" -ge 3 ] && echo "heavy: $lane/$slot acquired after ${waited}s" >&2
+# Its own cgroup when the user manager is reachable (the nightly runner and SSH sessions
+# may have no user bus): MemoryMax kills the job, MemorySwapMax keeps it out of swap.
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+# A job with no cap is how a build took a VM down, so a missing user bus is an error, not a
+# silent skip. `loginctl enable-linger` keeps the user manager (and its bus) up for every login.
+if [ "$JOB_MAX_GB" != 0 ] && [ "${HEAVY_ALLOW_UNCAPPED:-0}" != 1 ] && { [ ! -S "$XDG_RUNTIME_DIR/bus" ] || ! command -v systemd-run >/dev/null; }; then
+  echo "heavy: no systemd user bus at $XDG_RUNTIME_DIR/bus, so this job would run with no memory cap; refusing (HEAVY_ALLOW_UNCAPPED=1 overrides)." >&2
+  exit 126
+fi
+scope=(); job_mb=0; unit=
+if [ "$JOB_MAX_GB" != 0 ] && [ -S "$XDG_RUNTIME_DIR/bus" ] && command -v systemd-run >/dev/null; then
+  avail_mb=$(( $(avail_kb) / 1024 ))
+  job_mb=$(( JOB_MAX_GB * 1024 ))
+  fit_mb=$(( avail_mb - JOB_HEADROOM_GB * 1024 ))
+  [ "$fit_mb" -lt "$job_mb" ] && job_mb=$fit_mb
+  # Floor above the p99 Godot suite (2 GB): at 4 GB free the fit rule gave 1 GB and OOM-killed imports/suites (2026-11-02).
+  [ "$job_mb" -lt "${HEAVY_JOB_MIN_MB:-2560}" ] && job_mb=${HEAVY_JOB_MIN_MB:-2560}
+  unit=heavy-$lane-$slot-$$
+  scope=(systemd-run --user --scope --quiet --collect --unit="$unit"
+         -p MemoryMax="${job_mb}M" -p MemorySwapMax="${JOB_SWAP_GB}G"
+         -p CPUQuota="$(( JOB_CPUS * 100 ))%" -p CPUWeight=20 -p IOWeight=20
+         -- nice -n 10 ionice -c2 -n7)
+  echo "heavy: $lane/$slot: ${job_mb} MB, ${JOB_CPUS} CPUs ($((avail_mb / 1024)) GB free at start)" >&2
+fi
+# The scope's OOM kills are counted in the user journal; read them to tell its ceiling
+# from a kill by somebody else.
+oom_before=$(journalctl --user -q -o cat -u "$unit.scope" 2>/dev/null | grep -c 'oom' || true)
+# Wall-clock ceiling: a 7000 s exploration run held both dev02 build slots for over an hour
+# (2026-11-02). Raise per job with HEAVY_JOB_MAX_MIN=N, 0 disables.
+MAX_MIN=${HEAVY_JOB_MAX_MIN:-45}
+cap=(); [ "$MAX_MIN" != 0 ] && cap=(timeout -k 15 "$(( MAX_MIN * 60 ))")
+[ -n "$lfd" ] || exec {lfd}>/dev/null
+# A compiler's default heap is ~2 GB, so a bare run aborts long before the ceiling: unless the
+# caller chose one, give it three quarters of the job ceiling (at most 8 GB).
+if [ "$job_mb" -gt 0 ] && [[ " $* " =~ (node|npm|npx|tsc|next|tsx) ]] && [[ "${NODE_OPTIONS:-}" != *max-old-space-size* ]]; then
+  heap=$(( job_mb * 3 / 4 )); [ "$heap" -gt 8192 ] && heap=8192
+  export NODE_OPTIONS="${NODE_OPTIONS:-} --max-old-space-size=$heap"
+fi
+HEAVY_HELD=$lane "${cap[@]}" "${scope[@]}" "$@" {fd}>&- {lfd}>&- &
+jpid=$!
+trap 'kill "$jpid" 2>/dev/null' TERM INT HUP
+peak=0
+while kill -0 "$jpid" 2>/dev/null; do
+  if [ -n "$unit" ]; then
+    cur=$(systemctl --user show "$unit.scope" -p MemoryCurrent --value 2>/dev/null)
+    case $cur in ''|*[!0-9]*) ;; *) cur=$((cur / 1048576)); [ "$cur" -gt "$peak" ] && peak=$cur ;; esac
+  fi
+  sleep 2
+done
+wait "$jpid"; rc=$?
+if [ "$rc" = 0 ] && [ "$peak" -gt 0 ]; then
+  printf '%s\t%s\n' "$KEY" "$peak" >> "$PEAKS"
+  tail -500 "$PEAKS" > "$PEAKS.t" 2>/dev/null && mv "$PEAKS.t" "$PEAKS"
+fi
+[ "$rc" = 124 ] && echo "heavy: stopped after ${MAX_MIN} min (HEAVY_JOB_MAX_MIN) so it cannot hold a slot for hours." >&2
+if [ "$rc" = 137 ] && [ ${#scope[@]} -gt 0 ]; then
+  oom_after=$(journalctl --user -q -o cat -u "$unit.scope" 2>/dev/null | grep -c 'oom' || true)
+  if [ "${oom_after:-0}" -gt "${oom_before:-0}" ]; then
+    echo "heavy: killed: it hit its ${job_mb} MB ceiling (HEAVY_JOB_MAX_GB, or less free memory at start)." >&2
+  else
+    echo "heavy: killed (SIGKILL), not by its ${job_mb} MB ceiling as far as the journal shows: somebody else killed it." >&2
+  fi
+fi
+: > "$DIR/$lane.$slot.who"
+exit $rc
