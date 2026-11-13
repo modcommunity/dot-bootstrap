@@ -15,7 +15,8 @@
 # --board posts the DRIFT lines with `nightly agent say` (agent SYNC_AGENT, default checkout-sync, joined
 # on demand). It also warns when a checkout lacks the tag a lock pins (addons.lock: "<repo><TAB><tag>"),
 # since a game linked to it then runs older code than the pack it is built against.
-# Cron (gamedev, every 15 min): */15 * * * * <godot>/dot-bootstrap/tools/sync_checkouts.sh --apply --board --quiet
+# Cron: tools/sync_checkouts_cron.sh from christian's crontab (it reads the board, runs this as gamedev, posts drift);
+# gamedev has no nightly command, so on its own it can neither see claims nor post.
 set -uo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 root="${SYNC_ROOT:-$(cd "$here/.." && pwd)}"
@@ -27,7 +28,9 @@ note_drift() { log+=("$*"); drift=$((drift+1)); echo "DRIFT $*"; }
 
 # Repos a live agent holds: board "holds:" lists inside the LIVE AGENTS section.
 held=""
-if command -v nightly >/dev/null 2>&1; then
+if [ -n "${SYNC_HELD_FILE:-}" ]; then
+    held="$(cat "$SYNC_HELD_FILE" 2>/dev/null)"   # written by sync_checkouts_cron.sh: gamedev cannot reach the board
+elif command -v nightly >/dev/null 2>&1; then
     held="$(nightly agent board 2>/dev/null | sed '/^STALE CLAIMS/,$d' | grep -o 'godot/[A-Za-z0-9_.-]*' | sed 's|godot/||' | sort -u)"
 fi
 
