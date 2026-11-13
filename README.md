@@ -211,20 +211,28 @@ A game pushed while an addon it needs is only merged locally parses on every mac
 
 `tools/gpu.sh` (`~/godot/gpu.sh` is a wrapper that execs it, so every game's `tools/*.sh` keeps calling `../gpu.sh`) runs bakes, screenshots, frame timings and whole `game.sh` suites on the always-on GPU boxes (`staging` laptop, `staging02` desktop) over SSH, because dev02 has no GPU. Each box has a `~/gpu/.gate` (one job admitted at a time) and `~/gpu/.lock` (the GPU itself, shared `-s` by read-only users), always taken with `flock -o` so a child that outlives the job cannot inherit and hold them; a busy or unreachable box answers 75/76 and the caller falls back to the next box or to dev02. Shot runs use a shim `xvfb-run` that starts its own Xvfb and stops exactly that pid on exit. A leaked Xvfb that still holds a lock is cleared by the admin on the box (find the holder in `/proc/<pid>/fd`, confirm it is an Xvfb with no job above it, `kill` it): the user runs that kill, never an agent, and the script never kills a process it did not start.
 
-#### Real-time suites never go to ph
+#### Real-time suites: never on ph, never on a full box
 
 Windowed runs (`perf_bench.sh` without `--headless`) draw on a headless Xorg `:90` that `ensure_xorg` starts as the `gpu-xorg` unit from `tools/xorg-headless.conf`. The conf's `BusID` is rewritten on every start to the box's NVIDIA card (`lspci -d 10de:`, hex bus turned into Xorg's decimal `PCI:b:d:f`), because the boxes differ (`staging` 01:00.0, `staging02` 02:00.0) and a BusID naming the other box's card makes Xorg exit with "No devices detected". A unit that failed is `reset-failed` before the start; when it still will not come up, `/tmp/xorg90.log` on the box says why.
 
 Some suites measure the netcode against wall time (ENet and the relay keep wall time while the game ticks), so they only mean something on a box that holds the tick rate. The build VM `ph` runs one thread about 4 times slower than dev02 (game-arena `headless_lossy` paced 43 to 88% of real time there and stops with `NOT A MEASUREMENT`), so `gpu.sh offer` never hands these to `ph`: they go to `staging02`, and when that is busy or down they wait for a dev02 slot.
 
-The list is one line in `tools/gpu.sh`, `REALTIME_SUITES` (shell patterns on the suite or scene name):
+The list is `tools/realtime_suites.conf` (shell patterns on the suite or scene name, one per line), read by both `gpu.sh` and `heavy`:
 
 | pattern | suites |
 |---|---|
-| `headless_lossy` | game-arena `headless_lossy` |
+| `headless_lossy` | game-arena `headless_lossy` (and its shards, `headless_lossy.windows`) |
 | `headless_lossy_*` | game-arena `headless_lossy_22`, `_33`, `_66` |
+| `headless_latency` | game-arena `headless_latency` |
+| `headless_feel` | game-arena `headless_feel` |
 
-Add a suite there (and a row here) when it fails its pace check on `ph`. `GPU_REALTIME_SUITES` replaces the list and `GPU_REALTIME_BOXES` (default `staging02`) the boxes, for one run. A job that names one real-time suite is real-time as a whole. A bare `game.sh test` (no suite names) is not caught, because it is one job for every suite: use `hv <worktree> shard`, which makes one job per suite. `tests/test_gpu_realtime.sh` checks the table.
+Add a suite there (and a row here) when it fails its pace check on `ph` or stalls on a full box. `GPU_REALTIME_SUITES` (gpu.sh) and `HEAVY_REALTIME_SUITES` (heavy) replace the list, `GPU_REALTIME_CONF` / `HEAVY_REALTIME_CONF` the file, and `GPU_REALTIME_BOXES` (default `staging02`) the boxes, for one run. A job that names one real-time suite is real-time as a whole. A bare `game.sh test` (no suite names) is not caught, because it is one job for every suite: use `hv <worktree> shard`, which makes one job per suite. `tests/test_gpu_realtime.sh` checks the table.
+
+They also failed about 2 runs in 7 when their runner stalled 90-165 ms on a loaded machine (2026-11-13): on dev02 under heavy's 2560 MB floor with 2-3 GB free (the gamedev slice past its `MemoryHigh`, so every process in it is throttled), and on `staging02` with all 8 suite slots busy. So:
+
+- On a box (`gpu.sh` `REMOTE_SUITE`), at most `RT_MAX` real-time suites run at once (`~/gpu/rt.N.lock`), one starts only while fewer than `RT_BUSY` other jobs run there, and while one runs the box takes no other job past `RT_BUSY` (staging02 2 and 5, staging 1 and 3, ph 2 and 20; `GPU_RT_MAX` / `GPU_RT_BUSY` override). A box over the cap answers BUSY and the job waits for dev02 as before. GPU benches already never share a box with a suite (`.lock`/`.gate`). `tests/test_gpu_realtime_slots.sh` checks it.
+- On dev02 (`heavy`), a real-time job needs `HEAVY_RT_MIN_MB` (5632) free and gets at least that ceiling (every dev02 run with 5.5 GB passed), at most `HEAVY_RT_MAX` (2) run at once, it runs at normal CPU/IO weight instead of the other jobs' 20 and nice 10, and while one runs every other job needs `HEAVY_RT_GUARD_MB` (2048) more free than its own need to start. A real-time job at the head of the queue that waits for the cap lets the others backfill past it. `tests/test_heavy_realtime.sh` checks it.
+- `heavy` also runs one `godot --import` per project directory at a time (`import.<hash>.lock`): five imports of one worktree once held five check slots for an hour.
 
 ## Licence
 

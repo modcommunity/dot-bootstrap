@@ -158,20 +158,23 @@ die() { echo "gpu.sh: $*" >&2; exit 2; }
 # RSS. So slots are bound by threads (staging02 12, the laptop 16 shared with its owner) and, on the laptop, by
 # memory: with ~6-7 GB available the reserve (4) + SUITE_MIN_GB (2) lets 1-2 suites in at a time and the owner
 # kept >= 4 GB (lowest sample 4 GB, 6 GB during the run). ph's 20 x ~1.1 GB is far inside its ~60 GB free.
+# RT_MAX / RT_BUSY (2026-11-13): real-time suites (REALTIME_SUITES) failed on staging02 only when all 8 slots were busy
+# (runner stalls of 90-165 ms): a box runs at most RT_MAX of them at once, starts one only while fewer than RT_BUSY
+# jobs run there, and while one runs it takes no other job past RT_BUSY. GPU_RT_MAX / GPU_RT_BUSY override.
 set_box() {
 	BOX=$1
 	case $BOX in
 		staging)   HOST=gamedev@staging.deacon.internal;   BOX_DESC="the laptop (staging)"
 		           SUITE_SLOTS=${GPU_SUITE_SLOTS:-7} SUITE_MAX_GB=${GPU_SUITE_MAX_GB:-6} DESKTOP_GUARD=0
-		           SUITE_RESERVE_GB=${GPU_SUITE_RESERVE_GB:-4} SUITE_VARIANTS=${GPU_SUITE_VARIANTS:-2} ;;
+		           SUITE_RESERVE_GB=${GPU_SUITE_RESERVE_GB:-4} SUITE_VARIANTS=${GPU_SUITE_VARIANTS:-2} RT_MAX=${GPU_RT_MAX:-1} RT_BUSY=${GPU_RT_BUSY:-3} ;;
 		staging02) HOST=gamedev@staging02.deacon.internal; BOX_DESC="the desktop (staging02)"
 		           SUITE_SLOTS=${GPU_SUITE_SLOTS:-8} SUITE_MAX_GB=${GPU_SUITE_MAX_GB:-6} DESKTOP_GUARD=1
-		           SUITE_RESERVE_GB=${GPU_SUITE_RESERVE_GB:-3} SUITE_VARIANTS=${GPU_SUITE_VARIANTS:-4} ;;
+		           SUITE_RESERVE_GB=${GPU_SUITE_RESERVE_GB:-3} SUITE_VARIANTS=${GPU_SUITE_VARIANTS:-4} RT_MAX=${GPU_RT_MAX:-2} RT_BUSY=${GPU_RT_BUSY:-5} ;;
 		# ph-tmc-dev (2026-11-07): a build/test VM, no GPU, 40 vCPUs, 112 GB, 320 GB disk. Suites and python jobs only (it is in
 		# no shot or exclusive list); ~/gpu/janitor.sh keeps the disk under budget. Nobody sits at it, so no desktop guard.
 		ph)        HOST=gamedev@ph-tmc-dev.deacon.internal; BOX_DESC="the build VM (ph)"
 		           SUITE_SLOTS=${GPU_SUITE_SLOTS:-30} SUITE_MAX_GB=${GPU_SUITE_MAX_GB:-6} DESKTOP_GUARD=0
-		           SUITE_RESERVE_GB=${GPU_SUITE_RESERVE_GB:-8} SUITE_VARIANTS=${GPU_SUITE_VARIANTS:-8} ;;
+		           SUITE_RESERVE_GB=${GPU_SUITE_RESERVE_GB:-8} SUITE_VARIANTS=${GPU_SUITE_VARIANTS:-8} RT_MAX=${GPU_RT_MAX:-2} RT_BUSY=${GPU_RT_BUSY:-20} ;;
 		*) die "unknown GPU_BOX '$BOX' (staging, staging02 or ph)" ;;
 	esac
 	HOST=${GPU_HOST:-$HOST}
@@ -579,7 +582,9 @@ tool_job() {
 # Shell patterns matched against each suite name (`game.sh test <suite>`) or scene base name (godot res://x/<suite>.tscn).
 # A job that names one such suite is real-time as a whole. `game.sh test` with no names is NOT caught here (it runs
 # every suite in one slot): shard it (`hv <wt> shard`), which makes one job per suite. GPU_REALTIME_SUITES replaces the list.
-REALTIME_SUITES=${GPU_REALTIME_SUITES:-headless_lossy headless_lossy_*}
+# 2026-11-13 (heavy-realtime-mem-floor-1): the list lives in tools/realtime_suites.conf (GPU_REALTIME_CONF), which heavy
+# reads too; a box also runs at most RT_MAX of them at once and only while it has fewer than RT_BUSY jobs (set_box).
+REALTIME_SUITES=${GPU_REALTIME_SUITES:-$(sed 's/#.*//' "${GPU_REALTIME_CONF:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/realtime_suites.conf}" 2>/dev/null | tr '\n' ' ')}; [[ -n ${REALTIME_SUITES// /} ]] || REALTIME_SUITES="headless_lossy headless_lossy_* headless_latency headless_feel"
 # After offer_eligible (UW_KIND, UW_REST): exit 0 when the job runs a real-time suite.
 realtime_job() {
 	local names=() a s p seen=0
@@ -716,7 +721,7 @@ stage_sibling() {
 # running cannot hold a slot.
 read -r -d '' REMOTE_SUITE <<'EOF' || true
 set -u
-project=$1 slots=$2 min_gb=$3 max_gb=$4 who=$5 guard=$6 limit=$7 kind=$8 reserve=$9 variants=${10}; shift 10
+project=$1 slots=$2 min_gb=$3 max_gb=$4 who=$5 guard=$6 limit=$7 kind=$8 reserve=$9 variants=${10} rt=${11} rt_max=${12} rt_busy=${13}; shift 13
 cd ~/gpu || exit 3
 # A person at the machine gets it to themselves (person_here, from GUARD_FN).
 [ "$guard" = 1 ] && person_here && exit 0
@@ -734,6 +739,19 @@ for n in $(seq 1 "$slots"); do
 	exec {f}>&-
 done
 [ -n "$slot" ] || { echo "BUSY all $slots suite slots"; exit 0; }
+# Real-time suites (rt=1, REALTIME_SUITES on dev02): at most rt_max at once (rt.N.lock on fd 6, held like the slot), and
+# only while fewer than rt_busy other jobs run here; while one runs, other jobs stop at rt_busy too (a full box stalled
+# the real-time runner 90-165 ms, 2026-11-13).
+busy=0; for n in $(seq 1 "$slots"); do [ "$n" = "$slot" ] && continue; exec {g}>>"suite.$n.lock"; flock -n "$g" || busy=$((busy+1)); exec {g}>&-; done
+exec 6>/dev/null
+if [ "$rt" = 1 ]; then
+	got=
+	for n in $(seq 1 "$rt_max"); do exec 6>>"rt.$n.lock"; if flock -n 6; then got=$n; break; fi; exec 6>/dev/null; done
+	[ -n "$got" ] || { echo "BUSY $rt_max real-time suites already run here"; exit 0; }
+	[ "$busy" -lt "$rt_busy" ] || { echo "BUSY $busy jobs run here; a real-time suite starts below $rt_busy"; exit 0; }
+elif [ "$busy" -ge "$rt_busy" ]; then
+	for n in $(seq 1 "$rt_max"); do exec {g}>>"rt.$n.lock"; if ! flock -n "$g"; then exec {g}>&-; echo "BUSY a real-time suite runs here; at most $rt_busy jobs beside it"; exit 0; fi; exec {g}>&-; done
+fi
 wsid=
 for v in $(seq 1 "$variants"); do
 	w=$project; [ "$v" -gt 1 ] && w="$project~$v"
@@ -767,7 +785,7 @@ ws=$HOME/gpu/ws/$wsid
 # Stamp the use (the stale-copy prune goes by this mtime) and drop copies nobody used for 2 days, in the
 # background so the suite does not wait for a big rm; their locks are tested, ours is held.
 mkdir -p "$ws"; touch "$ws"
-( prune_stale 2 1 ) </dev/null >/dev/null 2>&1 7>&- 9>&- {f}>&- &
+( prune_stale 2 1 ) </dev/null >/dev/null 2>&1 6>&- 7>&- 9>&- {f}>&- &
 find "$ws" -maxdepth 1 -type l -delete 2>/dev/null
 for kv in ${sibs//,/ }; do
 	[[ $kv == *=* ]] || continue
@@ -805,12 +823,12 @@ in_slice() { systemd-run --user --scope --quiet --collect --slice=gpu-suites.sli
 # The class cache stays here between runs; a stale one reads as "Identifier not declared".
 if [ "$kind" != tool ]; then
 ilog=$HOME/gpu/suite/$wsid.import.log
-in_slice nice -n 5 timeout 1800 "$GODOT" --headless --path . --import >"$ilog" 2>&1 </dev/null 7>&- 9>&- {f}>&-
+in_slice nice -n 5 timeout 1800 "$GODOT" --headless --path . --import >"$ilog" 2>&1 </dev/null 6>&- 7>&- 9>&- {f}>&-
 # A stale class cache (a script gained a class_name or a member since the last run here) reads as
 # "Could not resolve external class member"; one import over a cleared cache fixes it, so retry once.
 if grep -qE 'SCRIPT ERROR|Parse error|Could not resolve' "$ilog"; then
 	rm -f .godot/global_script_class_cache.cfg .godot/uid_cache.bin
-	in_slice nice -n 5 timeout 1800 "$GODOT" --headless --path . --import >"$ilog" 2>&1 </dev/null 7>&- 9>&- {f}>&-
+	in_slice nice -n 5 timeout 1800 "$GODOT" --headless --path . --import >"$ilog" 2>&1 </dev/null 6>&- 7>&- 9>&- {f}>&-
 fi
 # A parse error only shows as a suite hung until its timeout; stop here and say it.
 if grep -qE 'SCRIPT ERROR|Parse error|Could not resolve' "$ilog"; then
@@ -836,7 +854,7 @@ in_slice nice -n 5 timeout "$limit" bash -c '
 	while kill -0 $c 2>/dev/null; do wait $c; rc=$?; done
 	pk=$(cat "$cg/memory.peak" 2>/dev/null || echo 0); us=$(awk "/^usage_usec/ {print \$2}" "$cg/cpu.stat" 2>/dev/null)
 	echo "__GPU_STATS peak_mb=$((pk / 1048576)) cpu_s=$(( ${us:-0} / 1000000 ))"
-	exit $rc' _ "$@" </dev/null 7>&- 9>&- {f}>&- 2>&1 | while IFS= read -r line; do
+	exit $rc' _ "$@" </dev/null 6>&- 7>&- 9>&- {f}>&- 2>&1 | while IFS= read -r line; do
 		if [[ $line == __GPU_STATS* ]]; then
 			line="$line wall_s=$(( $(date +%s) - t0 ))"
 			printf '%s\t%s\t%s\t%s\n' "$(date +%FT%T)" "$wsid" "${line#__GPU_STATS }" "$*" >> "$HOME/gpu/suite/stats.tsv"
@@ -940,7 +958,7 @@ offer_on() {
 	trap '' PIPE  # a box that vanishes mid-handshake is a 75, not a SIGPIPE death
 	coproc LANE { exec "${SSH[@]}" "bash -c $(printf '%q' "$GUARD_FN"$'\n'"$REMOTE_SUITE") _ $(printf '%q ' \
 		"$project" "$SUITE_SLOTS" "$SUITE_MIN_GB" "$SUITE_MAX_GB" "$who" "$DESKTOP_GUARD" "${UW_LIMIT:-5400}" "${UW_KIND:-game}" \
-		"$SUITE_RESERVE_GB" "$SUITE_VARIANTS" "${@:2}")"; }
+		"$SUITE_RESERVE_GB" "$SUITE_VARIANTS" "$(realtime_job && echo 1 || echo 0)" "$RT_MAX" "$RT_BUSY" "${@:2}")"; }
 	lane_out=${LANE[0]} lane_in=${LANE[1]} lane_pid=$LANE_PID
 	# bash closes the coproc fds when it reaps the ssh; a dup survives that, so the last read cannot hit EBADF.
 	exec {lane_out}<&"${LANE[0]}"

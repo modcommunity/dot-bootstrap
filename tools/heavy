@@ -32,6 +32,8 @@
 # leaves a daemon behind cannot wedge the queue. A nested `heavy` (a script that calls it
 # again) runs straight through instead of deadlocking on its own slot.
 set -u
+# sudo -u gamedev heavy ... runs with sudo's secure PATH: godot (~/.local/bin) and cargo were not found (2026-11-13).
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 
 # /etc/heavy.conf holds this VM's defaults; a HEAVY_* already in the environment wins, so
 # a one-off `HEAVY_JOB_MAX_GB=20 heavy -- …` is not silently reset by the file.
@@ -171,10 +173,62 @@ if [ -z "${HEAVY_MIN_AVAIL_GB_SET:-}" ] && [ -r "$PEAKS" ]; then
   [ "${hist:-0}" -gt 0 ] && need_mb=$(( hist * 5 / 4 ))
   [ "$need_mb" -lt 1024 ] && need_mb=1024
 fi
+# Real-time suites (2026-11-13, heavy-realtime-mem-floor-1): suites that measure the netcode against wall time
+# (headless_lossy*, latency, feel) failed ~2 runs in 7 when their runner stalled 90-165 ms: on dev02 with the 2560 MB
+# floor and 2-3 GB free (the user slice past MemoryHigh throttles every process in it), and on staging02 with all 8
+# slots busy. Every dev02 run that had 5.5 GB passed. So a real-time job here needs HEAVY_RT_MIN_MB (5632) free and
+# gets at least that ceiling, at most HEAVY_RT_MAX (2) run at once (rt.N.lock), it runs at normal CPU/IO weight
+# instead of the build jobs' 20, and while one runs every other job needs HEAVY_RT_GUARD_MB (2048) more free than its
+# own need to start. The names: tools/realtime_suites.conf (gpu.sh reads the same file; HEAVY_REALTIME_CONF, or
+# HEAVY_REALTIME_SUITES as the list itself), matched like gpu.sh's realtime_job.
+RT_MIN_MB=${HEAVY_RT_MIN_MB:-5632}
+RT_MAX=${HEAVY_RT_MAX:-2}
+RT_GUARD_MB=${HEAVY_RT_GUARD_MB:-2048}
+rt_list=${HEAVY_REALTIME_SUITES:-}
+if [ -z "$rt_list" ]; then
+  for f in "${HEAVY_REALTIME_CONF:-}" "$(dirname "$(readlink -f "$0")")/realtime_suites.conf" "$HOME/godot/dot-bootstrap/tools/realtime_suites.conf"; do
+    [ -n "$f" ] && [ -r "$f" ] && { rt_list=$(sed 's/#.*//' "$f" | tr '\n' ' '); break; }
+  done
+  [ -n "${rt_list// /}" ] || rt_list="headless_lossy headless_lossy_* headless_latency headless_feel"
+fi
+rt=0
+_names=(); _seen=0; _game=0
+for _a in "$@"; do
+  [ "$_a" = -- ] && break
+  case $_a in
+    *game.sh) _game=1 ;;
+    test) [ "$_game" = 1 ] && { _seen=1; continue; } ;;
+    res://*.tscn) _s=${_a##*/}; _names+=("${_s%.tscn}"); continue ;;
+  esac
+  [ "$_seen" = 1 ] && case $_a in -*) ;; *) _names+=("${_a%.tscn}") ;; esac
+done
+for _s in "${_names[@]}"; do
+  _s=${_s%%.*}
+  for _p in $rt_list; do
+    # shellcheck disable=SC2053
+    [[ $_s == $_p ]] && { rt=1; break 2; }
+  done
+done
+[ "$rt" = 1 ] && [ "$need_mb" -lt "$RT_MIN_MB" ] && need_mb=$RT_MIN_MB
+# Some real-time slot held (any rt.N.lock busy), or all of them held.
+rt_busy() { local j; for j in $(seq 1 "$RT_MAX"); do flock -n "$DIR/rt.$j.lock" true 2>/dev/null || return 0; done; return 1; }
+rt_full() { local j; for j in $(seq 1 "$RT_MAX"); do flock -n "$DIR/rt.$j.lock" true 2>/dev/null && return 1; done; return 0; }
 reclaim_cache() {
   sudo -n sh -c "echo 4G > $CGROUP/memory.reclaim; sync; echo 1 > /proc/sys/vm/drop_caches" >/dev/null 2>&1
 }
-start=$(date +%s); last_note=0; last_offer=0; last_reclaim=0; fd=; slot=; lfd=
+start=$(date +%s); last_note=0; last_offer=0; last_reclaim=0; fd=; slot=; lfd=; rfd=
+# One import per project directory at a time (2026-11-13): five `godot --import` of one worktree ran side by side
+# for an hour in five check slots, each scanning the same tree, while 40 jobs waited. The next one waits here,
+# before it queues, and then finds the tree imported, so it is quick.
+ifd=
+case " $* " in *" --import "*)
+  exec {ifd}>>"$DIR/import.$(printf '%s' "$PWD" | md5sum | cut -c1-12).lock" &&
+  if ! flock -n "$ifd"; then
+    echo "heavy: another import of $PWD is running; waiting for it first" >&2
+    flock "$ifd"
+  fi ;;
+esac
+[ -n "$ifd" ] || exec {ifd}>/dev/null
 # Long jobs (surf-ride planners run up to 45 min) take a build slot like any build but at most
 # HEAVY_LONG_MAX of them at once (default 1), so one build slot stays free for short selftests
 # (2026-11-02). They queue on their own ticket line so a long job waiting for the long lock
@@ -184,7 +238,9 @@ if [ "$lane" = build ] && [ "${HEAVY_LONG_MAX:-1}" -gt 0 ]; then
   case " $* " in *surf_rides.tscn*) long=1; qlane=long ;; esac
 fi
 # FIFO: a waiter only tries for a slot when its ticket is the oldest live one in its lane, so none starves.
-ticket="$DIR/queue.$qlane.$(date +%s%N).$$"; echo "$need_mb" > "$ticket"; trap 'rm -f "$ticket"' EXIT
+# The ticket holds the need (MB) and "rt" for a real-time job.
+tval="$need_mb"; [ "$rt" = 1 ] && tval="$need_mb rt"
+ticket="$DIR/queue.$qlane.$(date +%s%N).$$"; echo "$tval" > "$ticket"; trap 'rm -f "$ticket"' EXIT
 while :; do
   head=
   for t in "$DIR"/queue.$qlane.*; do
@@ -203,8 +259,10 @@ while :; do
   # waiter whose own need fits may try for the free slot; the head keeps its place.
   backfill=0
   if [ -n "$head" ] && [ "$head" != "$ticket" ]; then
-    hneed=$(cat "$head" 2>/dev/null); hneed=${hneed//[!0-9]/}
+    hval=$(cat "$head" 2>/dev/null); hneed=${hval%% *}; hneed=${hneed//[!0-9]/}
     if [ -n "$hneed" ] && [ "$hneed" -gt "$need_mb" ] && [ "$(avail_kb)" -lt $((hneed * 1024)) ]; then backfill=1; fi
+    # A real-time head waiting for one of the HEAVY_RT_MAX real-time slots lets a job that is not real-time past.
+    if [ "$rt" = 0 ] && [[ $hval == *rt* ]] && rt_full; then backfill=1; fi
   fi
   if [ -n "$head" ] && [ "$head" != "$ticket" ] && [ "$backfill" = 0 ]; then
     at_head=0
@@ -219,9 +277,16 @@ while :; do
       # waits for memory blocks every other job behind it (dev02, 2026-10-31, 1-2 h).
       if flock -n "$fd"; then
         avail=$(avail_kb)
-        if [ "$avail" -ge $((need_mb * 1024)) ] &&
+        gneed=$need_mb; [ "$rt" = 0 ] && rt_busy && gneed=$((need_mb + RT_GUARD_MB))
+        if [ "$avail" -ge $((gneed * 1024)) ] &&
            { [ "$i" -eq 1 ] || [ "$lane" != build ] || [ "$avail" -ge $(( (need_mb + (EXTRA_AVAIL_GB - MIN_AVAIL_GB) * 1024) * 1024 )) ]; }; then
-          if [ "$long" = 1 ]; then
+          if [ "$rt" = 1 ]; then
+            for j in $(seq 1 "$RT_MAX"); do
+              exec {rfd}>>"$DIR/rt.$j.lock" || exit 70
+              flock -n "$rfd" && { slot=$i; break 3; }
+              exec {rfd}>&-; rfd=
+            done
+          elif [ "$long" = 1 ]; then
             for j in $(seq 1 "${HEAVY_LONG_MAX:-1}"); do
               exec {lfd}>>"$DIR/long.$j.lock" || exit 70
               flock -n "$lfd" && { slot=$i; break 3; }
@@ -245,7 +310,7 @@ while :; do
     HEAVY_HELD=offload "$OFFLOAD" offer "$@"
     rc=$?
     [ "$rc" != 75 ] && exit "$rc"
-    echo "$need_mb" > "$ticket"
+    echo "$tval" > "$ticket"
     now=$(date +%s)
   fi
   if [ "$at_head" = 1 ] && [ $((now - last_note)) -ge 60 ]; then
@@ -280,12 +345,14 @@ if [ "$JOB_MAX_GB" != 0 ] && [ -S "$XDG_RUNTIME_DIR/bus" ] && command -v systemd
   [ "$fit_mb" -lt "$job_mb" ] && job_mb=$fit_mb
   # Floor above the p99 Godot suite (2 GB): at 4 GB free the fit rule gave 1 GB and OOM-killed imports/suites (2026-11-02).
   [ "$job_mb" -lt "${HEAVY_JOB_MIN_MB:-2560}" ] && job_mb=${HEAVY_JOB_MIN_MB:-2560}
+  [ "$rt" = 1 ] && [ "$job_mb" -lt "$RT_MIN_MB" ] && job_mb=$RT_MIN_MB
   unit=heavy-$lane-$slot-$$
+  # A real-time job runs at the default weights, the other jobs at 20 and nice 10, so a CPU-bound import beside it yields.
+  prio=(-p CPUWeight=20 -p IOWeight=20 -- nice -n 10 ionice -c2 -n7); [ "$rt" = 1 ] && prio=(-p CPUWeight=100 -p IOWeight=100 --)
   scope=(systemd-run --user --scope --quiet --collect --unit="$unit"
          -p MemoryMax="${job_mb}M" -p MemorySwapMax="${JOB_SWAP_GB}G"
-         -p CPUQuota="$(( JOB_CPUS * 100 ))%" -p CPUWeight=20 -p IOWeight=20
-         -- nice -n 10 ionice -c2 -n7)
-  echo "heavy: $lane/$slot: ${job_mb} MB, ${JOB_CPUS} CPUs ($((avail_mb / 1024)) GB free at start)" >&2
+         -p CPUQuota="$(( JOB_CPUS * 100 ))%" "${prio[@]}")
+  echo "heavy: $lane/$slot: ${job_mb} MB, ${JOB_CPUS} CPUs ($((avail_mb / 1024)) GB free at start)$([ "$rt" = 1 ] && echo ", real-time")" >&2
 fi
 # The scope's OOM kills are counted in the user journal; read them to tell its ceiling
 # from a kill by somebody else.
@@ -295,6 +362,7 @@ oom_before=$(journalctl --user -q -o cat -u "$unit.scope" 2>/dev/null | grep -c 
 MAX_MIN=${HEAVY_JOB_MAX_MIN:-45}
 cap=(); [ "$MAX_MIN" != 0 ] && cap=(timeout -k 15 "$(( MAX_MIN * 60 ))")
 [ -n "$lfd" ] || exec {lfd}>/dev/null
+[ -n "$rfd" ] || exec {rfd}>/dev/null
 # A compiler's default heap is ~2 GB, so a bare run aborts long before the ceiling: unless the
 # caller chose one, give it three quarters of the job ceiling (at most 8 GB).
 if [ "$job_mb" -gt 0 ] && [[ " $* " =~ (node|npm|npx|tsc|next|tsx) ]] && [[ "${NODE_OPTIONS:-}" != *max-old-space-size* ]]; then
@@ -317,7 +385,7 @@ if [ "$lane" = build ] && [ "$gpu_lock" != none ] && [ -f "$gpu_lock" ]; then
   flock -w "${HEAVY_GPU_GATE_WAIT:-1200}" "$gate" true 2>/dev/null
   exec {gfd}>&-; exec {gfd}>>"$gpu_lock" && flock -s "$gfd"
 fi
-HEAVY_HELD=$lane "${cap[@]}" "${scope[@]}" "$@" {fd}>&- {lfd}>&- {gfd}>&- &
+HEAVY_HELD=$lane "${cap[@]}" "${scope[@]}" "$@" {fd}>&- {lfd}>&- {gfd}>&- {rfd}>&- {ifd}>&- &
 jpid=$!
 trap 'kill "$jpid" 2>/dev/null' TERM INT HUP
 peak=0
