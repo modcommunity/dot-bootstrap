@@ -55,5 +55,25 @@ run no ./game.sh --no-parse test headless_bots.a.b
 run no ./game.sh --no-parse test headless_bots.
 run no ./game.sh --no-parse test .hard
 run no './game.sh' --no-parse test 'headless_bots.a;b'
+# An addon's native build.sh (2026-11-13): offered when the addon is the project's own directory, never through a link.
+mkdir -p "$proj/game-x/addons/own/native" "$proj/other/native"
+printf '#!/bin/sh\ngit clone x "$HOME/.cache/y"\n' > "$proj/game-x/addons/own/native/build.sh"; cp "$proj/game-x/addons/own/native/build.sh" "$proj/other/native/"
+chmod +x "$proj/game-x/addons/own/native/build.sh" "$proj/other/native/build.sh"; ln -s "$proj/other" "$proj/game-x/addons/linked"
+native() { # expect, command...: offer_eligible's answer and UW_NATIVE
+	local want=$1; shift
+	local got
+	got=$(cd "$proj/game-x" && ROOT=$proj WT_ROOT=$proj/wt bash -c '
+		eval "$(sed -n "/^unwrap() {/,/^}/p;/^offer_eligible() {/,/^}/p;/^TOOL_ALLOW=/p;/^TOOL_DENY=/p;/^tool_job() {/,/^}/p" "$0")"
+		offer_eligible "$@" && echo "yes:${UW_KIND}:${UW_NATIVE:-}" || echo no' "$src" "$@")
+	if [[ $got == "$want" ]]; then echo "ok   $want: $*"; else echo "FAIL want $want got $got: $*"; fail=$((fail+1)); fi
+}
+native yes:tool:own addons/own/native/build.sh release
+native yes:tool:own bash ./addons/own/native/build.sh all -j8 use_lto=yes
+native yes:tool: bash tools/check_ls.sh
+native no addons/linked/native/build.sh release
+native no addons/own/native/build.sh /tmp/x
+native no addons/own/native/build.sh ../x
+native no python3 addons/own/native/build.sh
+native no addons/own/native/other.sh
 rm -rf "$proj"
 [[ $fail == 0 ]] && echo "all passed" || { echo "$fail failed"; exit 1; }

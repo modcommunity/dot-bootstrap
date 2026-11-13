@@ -242,6 +242,8 @@ Imports go where the job runs (2026-11-13). `hv` used to queue a local `heavy --
 
 `tests/test_heavy_preimport.sh` checks this.
 
+Native addon builds go to PH (2026-11-13). `hv <worktree> local addons/<addon>/native/build.sh [debug|release|all] [scons args]` is offered like a tool script, but only when `addons/<addon>` is the worktree's own directory, not a link into another repo. PH builds in its own `~/.cache/dot-net-native` (godot-cpp and objects). Only `addons/<addon>/native/bin/*` comes back, and only with `--update`, so a newer local file is kept. `tests/test_gpu_offer_eligible.sh` checks which commands are offered.
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
