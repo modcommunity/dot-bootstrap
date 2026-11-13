@@ -680,6 +680,13 @@ stage_sibling() {
 	else
 		( cd "$src" && find . -type f -not -path './.godot/*' -not -path './.git/*' -printf '%P\0' ) >"$list"
 	fi
+	# A game sibling's addons/ are git-excluded links into the dot-* repos (game-arena/addons/dot_core ->
+	# ../../dot-core/...): git ls-files omits them, and a tool that runs the game from the staged copy (dsd's
+	# pack_requires derives requires.json with addons/dot_core/tools/dot_requires.gd) found no addon there.
+	# find -L lists what the links point at, rsync --copy-links ships it (hard-linked per version, so one copy per box).
+	if [[ -f $src/project.godot && -d $src/addons && -n $(find "$src/addons" -maxdepth 1 -type l -print -quit 2>/dev/null) ]]; then
+		( cd "$src" && find -L addons -type f -not -path '*/.git/*' -print0 ) >>"$list"
+	fi
 	# Git-ignored data the project reads at runtime (a map repo's regenerated model-library/): listed in the
 	# sibling's .gpu-data (one directory per line), default model-library. Never .godot/ or pbr-library/ (hundreds of MB).
 	local dd data=model-library
