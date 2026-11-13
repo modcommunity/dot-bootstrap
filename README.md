@@ -213,6 +213,8 @@ A game pushed while an addon it needs is only merged locally parses on every mac
 
 #### Real-time suites never go to ph
 
+Windowed runs (`perf_bench.sh` without `--headless`) draw on a headless Xorg `:90` that `ensure_xorg` starts as the `gpu-xorg` unit from `tools/xorg-headless.conf`. The conf's `BusID` is rewritten on every start to the box's NVIDIA card (`lspci -d 10de:`, hex bus turned into Xorg's decimal `PCI:b:d:f`), because the boxes differ (`staging` 01:00.0, `staging02` 02:00.0) and a BusID naming the other box's card makes Xorg exit with "No devices detected". A unit that failed is `reset-failed` before the start; when it still will not come up, `/tmp/xorg90.log` on the box says why.
+
 Some suites measure the netcode against wall time (ENet and the relay keep wall time while the game ticks), so they only mean something on a box that holds the tick rate. The build VM `ph` runs one thread about 4 times slower than dev02 (game-arena `headless_lossy` paced 43 to 88% of real time there and stops with `NOT A MEASUREMENT`), so `gpu.sh offer` never hands these to `ph`: they go to `staging02`, and when that is busy or down they wait for a dev02 slot.
 
 The list is one line in `tools/gpu.sh`, `REALTIME_SUITES` (shell patterns on the suite or scene name):
