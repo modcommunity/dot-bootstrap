@@ -284,11 +284,17 @@ remote_locked() {
 # sched_yield and copy every frame with XPutImage (~10 ms of a perf bench frame, 2026-11-11; __GL_YIELD/__GL_SYNC_TO_VBLANK
 # knobs changed nothing, n=3); Xorg presents on the card (p50 57.4 -> 46.5 ms, n=3). Needs passwordless sudo on the box (gamedev has it); started once, as unit gpu-xorg.
 # Manage it on the box: systemctl status gpu-xorg; sudo systemctl restart gpu-xorg (after editing ~/gpu/xorg-headless.conf); sudo systemctl stop gpu-xorg
-# (the next GPU_XORG=1 run starts it again; if a stop leaves a failed unit, sudo systemctl reset-failed gpu-xorg). Log: /tmp/xorg90.log.
+# (the next GPU_XORG=1 run starts it again, clearing a failed unit first). Log: /tmp/xorg90.log.
 ensure_xorg() {
 	"${SSHQ[@]}" "systemctl is-active -q gpu-xorg" 2>/dev/null && return 0
 	rsync -az -e "$RSH" "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/xorg-headless.conf" "$HOST:gpu/xorg-headless.conf" || return
-	"${SSHQ[@]}" "sudo -n systemd-run -q --unit=gpu-xorg /usr/bin/Xorg :90 -config $REMOTE_HOME/gpu/xorg-headless.conf -noreset -nolisten tcp -ac -novtswitch -sharevts -logfile /tmp/xorg90.log && sleep 4 && systemctl is-active -q gpu-xorg" || { echo "gpu.sh: could not start Xorg :90 on $BOX (see /tmp/xorg90.log there)" >&2; return 1; }
+	# The conf's BusID is staging02's card (02:00.0); a box with its NVIDIA card elsewhere (staging: 01:00.0) reads "No devices detected".
+	local bus b d f
+	bus=$("${SSHQ[@]}" "lspci -d 10de: | awk '/VGA|3D/{print \$1; exit}'")
+	if IFS=':.' read -r b d f <<<"$bus" && [[ $b && $d && $f ]]; then
+		"${SSHQ[@]}" "sed -i 's/^\tBusID .*/\tBusID \"$(printf 'PCI:%d:%d:%d' "0x$b" "0x$d" "0x$f")\"/' $REMOTE_HOME/gpu/xorg-headless.conf" || return
+	fi
+	"${SSHQ[@]}" "sudo -n systemctl reset-failed gpu-xorg 2>/dev/null; sudo -n systemd-run -q --unit=gpu-xorg /usr/bin/Xorg :90 -config $REMOTE_HOME/gpu/xorg-headless.conf -noreset -nolisten tcp -ac -novtswitch -sharevts -logfile /tmp/xorg90.log && sleep 4 && systemctl is-active -q gpu-xorg" || { echo "gpu.sh: could not start Xorg :90 on $BOX (see /tmp/xorg90.log there)" >&2; return 1; }
 }
 
 # excl <function> [args]: pick_box, then run the function (which uses remote_locked). When
