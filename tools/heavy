@@ -301,7 +301,23 @@ if [ "$job_mb" -gt 0 ] && [[ " $* " =~ (node|npm|npx|tsc|next|tsx) ]] && [[ "${N
   heap=$(( job_mb * 3 / 4 )); [ "$heap" -gt 8192 ] && heap=8192
   export NODE_OPTIONS="${NODE_OPTIONS:-} --max-old-space-size=$heap"
 fi
-HEAVY_HELD=$lane "${cap[@]}" "${scope[@]}" "$@" {fd}>&- {lfd}>&- &
+# On a GPU box (gpu.sh's ~/gpu/.lock exists) a build job holds that lock shared, as the box's suites and shots
+# do, so an exclusive frame timing (perf_bench through `gpu.sh run`) waits for it and it waits for the timing:
+# a 31-bot sim server started under heavy on staging02 beside a sim-host bench swung its ms/tick by 0.6
+# (2026-11-13). It first waits out .gate (held by an exclusive job that is waiting) so benches are not
+# starved, at most HEAVY_GPU_GATE_WAIT s: a job started inside one that already holds .lock shared must not
+# wait on the exclusive waiter that waits on it. HEAVY_GPU_LOCK=none skips this.
+gpu_lock=${HEAVY_GPU_LOCK:-$HOME/gpu/.lock}
+exec {gfd}>/dev/null
+if [ "$lane" = build ] && [ "$gpu_lock" != none ] && [ -f "$gpu_lock" ]; then
+  gate=$(dirname "$gpu_lock")/.gate
+  if ! flock -n -s "$gpu_lock" true 2>/dev/null || ! flock -n "$gate" true 2>/dev/null; then
+    echo "heavy: an exclusive GPU job (a bench) holds or waits for $gpu_lock; this job waits for it" >&2
+  fi
+  flock -w "${HEAVY_GPU_GATE_WAIT:-1200}" "$gate" true 2>/dev/null
+  exec {gfd}>&-; exec {gfd}>>"$gpu_lock" && flock -s "$gfd"
+fi
+HEAVY_HELD=$lane "${cap[@]}" "${scope[@]}" "$@" {fd}>&- {lfd}>&- {gfd}>&- &
 jpid=$!
 trap 'kill "$jpid" 2>/dev/null' TERM INT HUP
 peak=0
