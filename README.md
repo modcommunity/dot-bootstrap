@@ -103,6 +103,16 @@ dot-map-convert/tools/stage_stores.sh zombie-zone-maps --from dev02:godot/zombie
 
 It is not part of a plain sync because it is a large download and needs access to a copy of the stores. Details: [dot-map docs/content.md](https://github.com/modcommunity/dot-map/blob/main/docs/content.md#without-the-slices).
 
+### Playing a map you converted yourself
+
+You can play a converted map folder or its `.zip` without publishing it. Name it `<map>_orig` if it keeps its original textures; such packs are never published. To add it, do one of these:
+
+- Put it in the game's user data `maps/` folder: `~/.local/share/godot/app_userdata/<game>/maps` on Linux, `%APPDATA%\Godot\app_userdata\<game>\maps` on Windows.
+- In a source checkout, put it in `res://addons/maps`.
+- Drag it onto the window of a game that calls `DotMapLocalMaps.watch_drops` (Fatal Contact does).
+
+It shows as `<title> (local)` and plays solo only. See [dot-map docs/content.md "Zips and drag-and-drop"](https://github.com/modcommunity/dot-map/blob/main/docs/content.md) (dot-map ec75600).
+
 ## Everything else
 
 | | |
