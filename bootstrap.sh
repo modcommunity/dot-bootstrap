@@ -11,8 +11,8 @@
 #   ./bootstrap.sh --check         verify the list against the disk, change nothing
 #   ./bootstrap.sh --list          what can be played
 #   ./bootstrap.sh --play arena    play one, offline, no server needed
-#   ./bootstrap.sh --export arena  build a RELEASE executable of a game into <game>/build/linux (downloads the matching export template once, checksum-verified)
-#   ./bootstrap.sh --play-export arena [args]  start that build (exporting first when there is none): offline, 8 players, profiler overlay, `profiler_record` in the console records 60 s (F10: 10 s); args after the name go to the game and win (+bot_quota 16 --map dm_atrium)
+#   ./bootstrap.sh --export arena  build a RELEASE executable of any game into <game>/build/linux (a game with no export_presets gets a default preset; downloads the matching export template once, checksum-verified)
+#   ./bootstrap.sh --play-export arena [args]  start that build (exporting first when there is none): offline; FC also 8 players, profiler overlay, `profiler_record` in the console records 60 s (F10: 10 s); args after the name go to the game and win (+bot_quota 16 --map dm_atrium)
 #   ./bootstrap.sh --links --copy  copy the addons instead of linking them
 #   DOT_NATIVES=none ./bootstrap.sh skip the native libraries a game pins (# bootstrap-natives:); GDScript runs
 #   ./bootstrap.sh --ssh           clone over SSH (to push from this machine); HTTPS is the default
@@ -1319,7 +1319,14 @@ EXPORT_PRESET="Linux x86_64"
 # overlay up and a minute per `profiler_record` (F10 stays profiler_capture_seconds). `+name value` is a console line the game
 # runs once it knows the name; whatever follows the game's name on the command line comes
 # after these, and a name given twice keeps its last value.
+# Those console lines are FC's (game-fatal-contact, under any of its names); every other
+# game gets --offline and the arguments given.
 EXPORT_PLAY_ARGS=(--offline +bot_quota 8 +profiler_overlay 1 +profiler_record_seconds 60)
+export_play_args() {
+    if [ "$1" = game-fatal-contact ] || [ "$(alias_target "$1")" = game-fatal-contact ]; then
+        printf '%s\n' "${EXPORT_PLAY_ARGS[@]}"
+    else echo --offline; fi
+}
 
 # game-<x> or mg-<x> for a name or its short form; nothing when there is no such game.
 resolve_game() {
@@ -1375,18 +1382,100 @@ get_export_templates() {
     echo "$dest/$main"
 }
 
+# The preset --export writes for a game that carries none (only FC tracks an
+# export_presets.example.cfg): FC's preset with the game's name, the same lines as
+# bootstrap.ps1's Get-DefaultExportPreset. The pck sits beside the executable
+# (embed_pck=false; a large embedded pck starts slowly), every resource is exported, plus
+# the non-resource files games read with FileAccess (map json and bin, yml, cfg, packs),
+# and the test, tool and document folders are left out. Fails for a preset it does not know.
+default_export_preset() {
+    local proj="$1" preset="$2" idx="$3" platform path
+    case "$preset" in
+        "Windows x86_64") platform="Windows Desktop"; path="build/windows/$proj.exe" ;;
+        "Linux x86_64") platform="Linux"; path="build/linux/$proj.x86_64" ;;
+        *) return 1 ;;
+    esac
+    cat <<CFG
+[preset.$idx]
+
+name="$preset"
+platform="$platform"
+runnable=true
+advanced_options=false
+dedicated_server=false
+custom_features=""
+export_filter="all_resources"
+include_filter="*.json, *.bin, *.yml, *.txt, *.tsv, *.conf, *.cfg, *.dot-pack"
+exclude_filter="examples/*, tests/*, tools/*, ci/*, docs/*, images/*, build/*, screenshots/*, lightbake_work/*, dot_cloud/*, web/build/*, export_presets*.cfg"
+export_path="$path"
+encryption_include_filters=""
+encryption_exclude_filters=""
+seed=0
+encrypt_pck=false
+encrypt_directory=false
+script_export_mode=2
+
+[preset.$idx.options]
+
+custom_template/debug=""
+custom_template/release=""
+debug/export_console_wrapper=0
+binary_format/embed_pck=false
+texture_format/s3tc_bptc=true
+texture_format/etc2_astc=false
+binary_format/architecture="x86_64"
+CFG
+    if [ "$preset" = "Windows x86_64" ]; then
+        printf '%s\n' 'codesign/enable=false' 'application/modify_resources=false' \
+            "application/product_name=\"$proj\"" "application/file_description=\"$proj client (release)\""
+    fi
+}
+
+# A generated export_presets.cfg is the editor's file and never the game's: when the
+# game's .gitignore does not already ignore it, it goes in the clone's .git/info/exclude.
+hide_export_presets() {
+    local dir="$1" ex
+    git -C "$dir" check-ignore -q export_presets.cfg 2>/dev/null && return 0
+    git -C "$dir" ls-files --error-unmatch -- export_presets.cfg >/dev/null 2>&1 && return 0
+    ex="$(git -C "$dir" rev-parse --git-path info/exclude 2>/dev/null)" && [ -n "$ex" ] || return 0
+    case "$ex" in /*) ;; *) ex="$dir/$ex" ;; esac
+    mkdir -p "$(dirname "$ex")" && echo 'export_presets.cfg' >> "$ex"
+}
+
 # export_presets.cfg for <dir> with preset <name> using <template> as its release
 # template. The file is the game's export_presets.example.cfg when there is none yet
-# (the editor rewrites export_presets.cfg, so games track only the example).
+# (the editor rewrites export_presets.cfg, so games track only the example); a game with
+# neither, or whose file has no such preset, gets the default one (default_export_preset).
 set_export_preset() {
-    local dir="$1" preset="$2" template="$3" cfg src idx tmp
+    local dir="$1" preset="$2" template="$3" cfg src idx tmp top gen what made=""
     cfg="$dir/export_presets.cfg"; src="$cfg"
     [ -f "$src" ] || src="$dir/export_presets.example.cfg"
-    [ -f "$src" ] || { echo "${RED}no export_presets.cfg and no export_presets.example.cfg in $dir${OFF}" >&2; return 1; }
-    idx="$(awk -v want="name=\"$preset\"" '
-        /^\[.+\][[:space:]]*$/ { sec=$0; sub(/^\[/,"",sec); sub(/\][[:space:]]*$/,"",sec); next }
-        $0==want && sec ~ /^preset\.[0-9]+$/ { sub(/^preset\./,"",sec); print sec; exit }' "$src")"
-    [ -n "$idx" ] || { echo "${RED}$src has no preset named \"$preset\"${OFF}" >&2; return 1; }
+    [ -f "$src" ] || src=""
+    idx=""; top=-1
+    if [ -n "$src" ]; then
+        idx="$(awk -v want="name=\"$preset\"" '
+            /^\[.+\][[:space:]]*$/ { sec=$0; sub(/^\[/,"",sec); sub(/\][[:space:]]*$/,"",sec); next }
+            $0==want && sec ~ /^preset\.[0-9]+$/ { sub(/^preset\./,"",sec); print sec; exit }' "$src")"
+        top="$(awk '/^\[preset\.[0-9]+\][[:space:]]*$/ { n=$0; gsub(/[^0-9]/,"",n); if (n+0>max) max=n+0; seen=1 }
+            END { print (seen ? max : -1) }' "$src")"
+    fi
+    if [ -z "$idx" ]; then
+        idx=$((top + 1))
+        gen="$(default_export_preset "$(basename "$dir")" "$preset" "$idx")" || {
+            if [ -z "$src" ]; then echo "${RED}no export_presets.cfg and no export_presets.example.cfg in $dir${OFF}" >&2
+            else echo "${RED}$src has no preset named \"$preset\"${OFF}" >&2; fi
+            return 1; }
+        made="$cfg.src.$$"
+        if [ -n "$src" ]; then
+            awk '1' "$src" > "$made"
+            [ -z "$(tail -n1 "$made")" ] || echo >> "$made"
+            what="$(basename "$src") has no \"$preset\" preset"
+        else : > "$made"; what="it carries no export presets"; fi
+        printf '%s\n' "$gen" >> "$made"
+        src="$made"
+        echo "$(basename "$dir"): $what, so the default \"$preset\" release preset is written to export_presets.cfg"
+        hide_export_presets "$dir"
+    fi
     tmp="$cfg.tmp.$$"
     awk -v opts="preset.$idx.options" -v line="custom_template/release=\"$template\"" '
         /^\[.+\][[:space:]]*$/ {
@@ -1398,6 +1487,9 @@ set_export_preset() {
         { print }
         END { if (!done) { if (sec!=opts) { print ""; print "[" opts "]"; print "" } print line } }' "$src" > "$tmp" \
         && mv -f "$tmp" "$cfg"
+    local rc=$?
+    [ -z "$made" ] || rm -f "$made"
+    return $rc
 }
 
 export_path() { echo "$PROJECTS_DIR/$1/build/linux/$1.x86_64"; }
@@ -1512,9 +1604,10 @@ play_export() {
     exe="$(export_path "$proj")"
     if [ ! -x "$exe" ]; then export_game "$want" || exit 1
     else echo "${DIM}using the build of $(date -r "$exe" '+%Y-%m-%d %H:%M'); ./bootstrap.sh --export $want rebuilds it${OFF}"; fi
-    echo "${CYN}$exe -- ${EXPORT_PLAY_ARGS[*]} ${*:2}${OFF}"
+    local args=(); mapfile -t args < <(export_play_args "$proj")
+    echo "${CYN}$exe -- ${args[*]} ${*:2}${OFF}"
     echo "${DIM}F10 records 10 s, profiler_record in the console 60 s; reports: ${XDG_DATA_HOME:-$HOME/.local/share}/godot/app_userdata/$proj/profiles${OFF}"
-    exec "$exe" -- "${EXPORT_PLAY_ARGS[@]}" "${@:2}"
+    exec "$exe" -- "${args[@]}" "${@:2}"
 }
 
 # --- Modes -----------------------------------------------------------------

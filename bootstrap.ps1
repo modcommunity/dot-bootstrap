@@ -11,8 +11,8 @@
         .\bootstrap.ps1 -Check          verify the list against the disk
         .\bootstrap.ps1 -List           what can be played
         .\bootstrap.ps1 -Play arena     play one, offline, no server needed
-        .\bootstrap.ps1 -Export arena   build a RELEASE executable into <game>\build\windows (downloads the matching export template into .godot-bin, checksum-verified)
-        .\bootstrap.ps1 -PlayExport arena [-PlayArgs '+bot_quota 16 --map dm_atrium']   start that build (exporting first when there is none): offline, 8 players, profiler overlay, `profiler_record` in the console records 60 s (F10: 10 s); -PlayArgs go to the game and win; -Export with it rebuilds first
+        .\bootstrap.ps1 -Export arena   build a RELEASE executable of any game into <game>\build\windows (a game with no export_presets gets a default preset; downloads the matching export template into .godot-bin, checksum-verified)
+        .\bootstrap.ps1 -PlayExport arena [-PlayArgs '+bot_quota 16 --map dm_atrium']   start that build (exporting first when there is none): offline; FC also 8 players, profiler overlay, `profiler_record` in the console records 60 s (F10: 10 s); -PlayArgs go to the game and win; -Export with it rebuilds first
         .\bootstrap.ps1 -Links -Copy    copy the addons instead of linking them
         .\bootstrap.ps1 -Ssh            clone over SSH (to push from this machine); HTTPS is the default
         .\bootstrap.ps1 -Only arena,wipeout     only these, plus the addon and map repos they need
@@ -1590,21 +1590,77 @@ function Get-ExportTemplates ($tag) {
     }
 }
 
+# The preset -Export writes for a game that carries none (only FC tracks an
+# export_presets.example.cfg): FC's preset with the game's name. The pck sits beside the
+# executable (embed_pck=false; a large embedded pck starts slowly), every resource is
+# exported, plus the non-resource files games read with FileAccess (map json and bin,
+# yml, cfg, packs), and the test, tool and document folders are left out. Lines of a
+# [preset.<idx>] and its options; nothing for a preset name it does not know.
+function Get-DefaultExportPreset ($proj, $preset, $idx) {
+    switch ($preset) {
+        'Windows x86_64' {
+            $platform = 'Windows Desktop'; $path = "build/windows/$proj.exe"
+            $extra = @('codesign/enable=false', 'application/modify_resources=false',
+                "application/product_name=`"$proj`"", "application/file_description=`"$proj client (release)`"")
+        }
+        'Linux x86_64' { $platform = 'Linux'; $path = "build/linux/$proj.x86_64"; $extra = @() }
+        default { return }
+    }
+    @("[preset.$idx]", '', "name=`"$preset`"", "platform=`"$platform`"", 'runnable=true',
+        'advanced_options=false', 'dedicated_server=false', 'custom_features=""',
+        'export_filter="all_resources"',
+        'include_filter="*.json, *.bin, *.yml, *.txt, *.tsv, *.conf, *.cfg, *.dot-pack"',
+        'exclude_filter="examples/*, tests/*, tools/*, ci/*, docs/*, images/*, build/*, screenshots/*, lightbake_work/*, dot_cloud/*, web/build/*, export_presets*.cfg"',
+        "export_path=`"$path`"", 'encryption_include_filters=""', 'encryption_exclude_filters=""',
+        'seed=0', 'encrypt_pck=false', 'encrypt_directory=false', 'script_export_mode=2', '',
+        "[preset.$idx.options]", '', 'custom_template/debug=""', 'custom_template/release=""',
+        'debug/export_console_wrapper=0', 'binary_format/embed_pck=false', 'texture_format/s3tc_bptc=true',
+        'texture_format/etc2_astc=false', 'binary_format/architecture="x86_64"') + $extra
+}
+
+# A generated export_presets.cfg is the editor's file and never the game's: when the
+# game's .gitignore does not already ignore it, it goes in the clone's .git/info/exclude.
+function Hide-ExportPresets ($dir) {
+    git -C $dir check-ignore -q export_presets.cfg 2>$null
+    if ($LASTEXITCODE -eq 0) { return }
+    git -C $dir ls-files --error-unmatch -- export_presets.cfg 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) { return }
+    $ex = "$(git -C $dir rev-parse --git-path info/exclude 2>$null)".Trim()
+    if (-not $ex) { return }
+    if (-not [IO.Path]::IsPathRooted($ex)) { $ex = Join-Path $dir $ex }
+    New-Item -ItemType Directory -Force -Path (Split-Path $ex -Parent) | Out-Null
+    Add-Content -LiteralPath $ex -Value 'export_presets.cfg'
+}
+
 # export_presets.cfg for $dir with preset $preset using $template as its release
 # template. The file is the game's export_presets.example.cfg when there is none yet
-# (the editor rewrites export_presets.cfg, so games track only the example).
+# (the editor rewrites export_presets.cfg, so games track only the example); a game with
+# neither, or whose file has no such preset, gets the default one (Get-DefaultExportPreset).
 function Set-ExportPreset ($dir, $preset, $template) {
     $cfg = Join-Path $dir 'export_presets.cfg'
     $src = $cfg
     if (-not (Test-Path $src)) { $src = Join-Path $dir 'export_presets.example.cfg' }
-    if (-not (Test-Path $src)) { Err 'export' "no export_presets.cfg and no export_presets.example.cfg in $dir"; return $false }
-    $lines = @(Get-Content -LiteralPath $src)
-    $idx = $null; $sec = ''
+    $lines = if (Test-Path $src) { @(Get-Content -LiteralPath $src) } else { @() }
+    $idx = $null; $sec = ''; $top = -1
     foreach ($l in $lines) {
-        if ($l -match '^\[(.+)\]\s*$') { $sec = $Matches[1] }
+        if ($l -match '^\[(.+)\]\s*$') { $sec = $Matches[1]; if ($sec -match '^preset\.(\d+)$' -and [int]$Matches[1] -gt $top) { $top = [int]$Matches[1] } }
         elseif ($l -eq "name=`"$preset`"" -and $sec -match '^preset\.(\d+)$') { $idx = $Matches[1] }
     }
-    if ($null -eq $idx) { Err 'export' "$src has no preset named `"$preset`""; return $false }
+    if ($null -eq $idx) {
+        $proj = Split-Path $dir -Leaf
+        $add = @(Get-DefaultExportPreset $proj $preset ($top + 1))
+        if ($add.Count -eq 0) {
+            if ($lines.Count -eq 0) { Err 'export' "no export_presets.cfg and no export_presets.example.cfg in $dir" }
+            else { Err 'export' "$src has no preset named `"$preset`"" }
+            return $false
+        }
+        $idx = "$($top + 1)"
+        if ($lines.Count -gt 0 -and $lines[-1] -ne '') { $lines += '' }
+        $lines += $add
+        $what = if ($lines.Count -eq $add.Count) { 'it carries no export presets' } else { "$(Split-Path $src -Leaf) has no `"$preset`" preset" }
+        Say 'export' "$proj`: $what, so the default `"$preset`" release preset is written to export_presets.cfg"
+        Hide-ExportPresets $dir
+    }
     # Godot reads forward slashes on every platform; a backslash would need escaping.
     $line = 'custom_template/release="' + ($template -replace '\\', '/') + '"'
     $out = New-Object System.Collections.Generic.List[string]
@@ -1701,8 +1757,12 @@ function Copy-RuntimeNatives ($dir, $os, $outDir) {
 # overlay up and a minute per `profiler_record` (F10 stays profiler_capture_seconds). `+name value` is a console line the game
 # runs once it knows the name; -PlayArgs comes after these, and a name given twice keeps
 # its last value.
-function Get-ExportPlayArgs ($extra) {
-    @('--', '--offline', '+bot_quota', '8', '+profiler_overlay', '1', '+profiler_record_seconds', '60') + @("$extra" -split '\s+' | Where-Object { $_ })
+# Those console lines are FC's (game-fatal-contact, under any of its names); every other
+# game gets --offline and -PlayArgs only.
+function Get-ExportPlayArgs ($extra, $proj = 'game-fatal-contact') {
+    $fc = $proj -eq 'game-fatal-contact' -or (Get-AliasTarget $proj) -eq 'game-fatal-contact'
+    $base = if ($fc) { @('--', '--offline', '+bot_quota', '8', '+profiler_overlay', '1', '+profiler_record_seconds', '60') } else { @('--', '--offline') }
+    $base + @("$extra" -split '\s+' | Where-Object { $_ })
 }
 
 # Export one game as a release build into <game>\build\windows. Returns $true or $false.
@@ -1771,7 +1831,7 @@ function Play-Export ($want) {
     } else {
         Write-Host "using the build of $((Get-Item $exe).LastWriteTime.ToString('yyyy-MM-dd HH:mm')); .\bootstrap.ps1 -Export $want rebuilds it" -ForegroundColor DarkGray
     }
-    $a = @(Get-ExportPlayArgs $PlayArgs)
+    $a = @(Get-ExportPlayArgs $PlayArgs $proj)
     Write-Host "$exe $($a -join ' ')" -ForegroundColor Cyan
     Write-Host "F10 records 10 s, profiler_record in the console 60 s; reports: $env:APPDATA\Godot\app_userdata\$proj\profiles" -ForegroundColor DarkGray
     & $exe @a

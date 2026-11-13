@@ -11,7 +11,7 @@ foreach ($e in $errors) { Write-Host "  $($e.Extent.StartLineNumber): $($e.Messa
 foreach ($p in 'Export', 'PlayExport', 'PlayArgs') {
     Check "param -$p exists" ([bool]($ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq $p }))
 }
-$wanted = 'Get-GodotTag', 'Get-ExportTemplates', 'Set-ExportPreset', 'Get-ExportNatives', 'Get-RuntimeNatives', 'Copy-RuntimeNatives', 'Get-NativesFor', 'Test-NativeBuiltHere', 'Get-ExportPlayArgs'
+$wanted = 'Get-GodotTag', 'Get-ExportTemplates', 'Set-ExportPreset', 'Get-DefaultExportPreset', 'Hide-ExportPresets', 'Get-ExportNatives', 'Get-RuntimeNatives', 'Copy-RuntimeNatives', 'Get-NativesFor', 'Test-NativeBuiltHere', 'Get-ExportPlayArgs'
 $funcs = $ast.FindAll({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] }, $false)
 foreach ($w in $wanted) {
     $f = $funcs | Where-Object { $_.Name -eq $w } | Select-Object -First 1
@@ -24,6 +24,7 @@ function Say ($n, $m, $c) { }
 function Ok ($n, $m) { }
 function Warn ($n, $m) { $script:warned += $m }
 function Err ($n, $m) { $script:said += $m }
+function Get-AliasTarget ($n) { if ($n -eq 'game-arena') { 'game-fatal-contact' } }
 $repoDir = Join-Path $env:T 'boot'; New-Item -ItemType Directory -Force -Path $repoDir | Out-Null
 $tag = $env:TAG
 
@@ -67,7 +68,29 @@ Set-Content -Path $cfg -Value "[preset.0]`nname=`"Windows x86_64`"`n`n[preset.0.
 Check 'preset: a missing key is added' ((Set-ExportPreset $game 'Windows x86_64' '/t.exe') -and (Get-Content $cfg)[-1] -eq 'custom_template/release="/t.exe"')
 $script:said = @()
 Check 'preset: an unknown preset is refused' (-not (Set-ExportPreset $game 'macOS' '/t.exe') -and $script:said.Count -eq 1)
-Check 'preset: no file at all is refused' (-not (Set-ExportPreset (Join-Path $env:T 'boot') 'Windows x86_64' '/t.exe'))
+Check 'preset: no file and an unknown preset is refused' (-not (Set-ExportPreset (Join-Path $env:T 'boot') 'macOS' '/t.exe') -and -not (Test-Path (Join-Path $env:T 'boot/export_presets.cfg')))
+
+# A game with no presets at all (every game but FC) gets the default one, kept out of git.
+$pg = Join-Path $env:T 'game-plainps'; New-Item -ItemType Directory -Force -Path $pg | Out-Null; git -C $pg init -q
+$cfg = Join-Path $pg 'export_presets.cfg'
+Check 'default: written for a game with no presets' ((Set-ExportPreset $pg 'Windows x86_64' 'C:\t\win.exe') -and (Test-Path $cfg))
+$text = @(Get-Content $cfg)
+Check 'default: one preset, the one asked for, at index 0' (@($text | Where-Object { $_ -match '^\[preset\.\d+\]$' }).Count -eq 1 -and $text[0] -eq '[preset.0]' -and $text[2] -eq 'name="Windows x86_64"')
+Check 'default: export path names the game' ($text -contains 'export_path="build/windows/game-plainps.exe"')
+Check 'default: the template is set once' (@($text | Where-Object { $_ -like 'custom_template/release=*' }).Count -eq 1 -and $text -contains 'custom_template/release="C:/t/win.exe"')
+Check 'default: pck beside the exe, all resources' ($text -contains 'binary_format/embed_pck=false' -and $text -contains 'export_filter="all_resources"')
+git -C $pg check-ignore -q export_presets.cfg
+Check 'default: kept out of git by info/exclude' ($LASTEXITCODE -eq 0 -and -not (git -C $pg status --porcelain))
+$null = Set-ExportPreset $pg 'Windows x86_64' '/t2.exe'
+Check 'default: a second export updates it, adds nothing' (@(Get-Content $cfg | Where-Object { $_ -match '^\[preset\.' }).Count -eq 2 -and @(Get-Content (Join-Path $pg '.git/info/exclude') | Where-Object { $_ -eq 'export_presets.cfg' }).Count -eq 1)
+$wg = Join-Path $env:T 'game-webps'; New-Item -ItemType Directory -Force -Path $wg | Out-Null
+Set-Content -Path (Join-Path $wg 'export_presets.cfg') -Value "[preset.0]`n`nname=`"Web`"`n`n[preset.0.options]`n`ncustom_template/release=`"`"`nhtml/export_icon=true"
+Check 'default: appended after another preset as preset.1' ((Set-ExportPreset $wg 'Windows x86_64' '/t.exe') -and (Get-Content (Join-Path $wg 'export_presets.cfg')) -contains '[preset.1]')
+$text = @(Get-Content (Join-Path $wg 'export_presets.cfg'))
+Check 'default: the other preset is untouched' ($text[6] -eq 'custom_template/release=""' -and $text -contains 'html/export_icon=true' -and $text[-5] -ne '')
+Check 'default: an unknown preset gives nothing' (@(Get-DefaultExportPreset 'g' 'macOS' 0).Count -eq 0)
+$shWin = Join-Path $env:T 'default_windows.cfg'
+if (Test-Path $shWin) { Check 'default: the same lines as bootstrap.sh' ((@(Get-DefaultExportPreset 'game-x' 'Windows x86_64' 0) -join "`n") -eq ((Get-Content $shWin) -join "`n")) }
 
 # Natives: the library each extension loads on this platform, by the keys Godot accepts.
 $ng = Join-Path $env:T 'ngame'
@@ -125,6 +148,8 @@ $d = @(Get-ExportPlayArgs '')
 Check 'play args: the defaults' (($d -join ' ') -eq '-- --offline +bot_quota 8 +profiler_overlay 1 +profiler_record_seconds 60')
 $d = @(Get-ExportPlayArgs '+bot_quota 16  --map dm_atrium')
 Check 'play args: the given ones come last' (($d[-4..-1] -join ' ') -eq '+bot_quota 16 --map dm_atrium' -and $d[0] -eq '--' -and $d.Count -eq 12)
+Check 'play args: FC under its old name' ((@(Get-ExportPlayArgs '' 'game-arena') -join ' ') -eq '-- --offline +bot_quota 8 +profiler_overlay 1 +profiler_record_seconds 60')
+Check 'play args: any other game only --offline and the given ones' ((@(Get-ExportPlayArgs '--map x' 'game-playlot') -join ' ') -eq '-- --offline --map x')
 
 Write-Host "test_export: $pass passed, $fail failed"
 if ($fail -ne 0) { exit 1 }
