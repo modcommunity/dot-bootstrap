@@ -9,7 +9,7 @@ fail=0
 run() { # expected boxes, command...
 	local want=$1; shift
 	local got
-	got=$(cd "$proj/game-x" && ROOT=$proj WT_ROOT=$proj/wt bash -c '
+	got=$(cd "$proj/game-x" && GPU_REALTIME_CONF=${GPU_REALTIME_CONF:-$here/tools/realtime_suites.conf} ROOT=$proj WT_ROOT=$proj/wt bash -c '
 		eval "$(sed -n "/^unwrap() {/,/^}/p;/^offer_eligible() {/,/^}/p;/^REALTIME_SUITES=/p;/^realtime_job() {/,/^}/p;/^suite_boxes() {/,/^}/p" "$0")"
 		offer_eligible "$@" && suite_boxes || echo not-eligible' "$src" "$@")
 	if [[ $got == "$want" ]]; then echo "ok   [$want]: $*"; else echo "FAIL want [$want] got [$got]: $*"; fail=$((fail+1)); fi
@@ -27,7 +27,10 @@ run staging02 ./game.sh --no-parse test headless_lossy.a
 run staging02 ./game.sh --no-parse test headless_lossy_22.b
 run "$all" ./game.sh --no-parse test headless_bots.hard
 run "$all" ./game.sh --no-parse test headless_net
-run "$all" ./game.sh --no-parse test headless_latency
+run staging02 ./game.sh --no-parse test headless_latency
+run staging02 ./game.sh --no-parse test headless_feel
+run "$all" ./game.sh --no-parse test headless_combatfeel
+run "$all" ./game.sh --no-parse test headless_tickrate
 run "$all" ./game.sh --no-parse test headless_lossyish
 run "$all" ./game.sh --no-parse test my_headless_lossy
 run "$all" ./game.sh test
@@ -35,8 +38,13 @@ run "$all" ./game.sh --no-parse test headless_maps -- --map=headless_lossy
 run "$all" godot --headless --path . res://examples/headless_net.tscn -- --x=headless_lossy.tscn
 run "$all" godot --headless --path . --script res://tools/headless_lossy.gd
 GPU_REALTIME_BOXES="staging02 staging" run "staging02 staging" ./game.sh --no-parse test headless_lossy
-GPU_REALTIME_SUITES="headless_latency" run staging02 ./game.sh --no-parse test headless_latency
-GPU_REALTIME_SUITES="headless_latency" run "$all" ./game.sh --no-parse test headless_lossy
+GPU_REALTIME_SUITES="headless_net" run staging02 ./game.sh --no-parse test headless_net
+GPU_REALTIME_SUITES="headless_net" run "$all" ./game.sh --no-parse test headless_lossy
+# The one list is tools/realtime_suites.conf (comments and blank lines ignored); an unreadable file falls back to the built-in list.
+conf=$proj/rt.conf; printf '# c\nheadless_net  # x\n\nheadless_bots*\n' > "$conf"
+GPU_REALTIME_CONF=$conf run staging02 ./game.sh --no-parse test headless_bots.hard
+GPU_REALTIME_CONF=$conf run "$all" ./game.sh --no-parse test headless_lossy
+GPU_REALTIME_CONF=$proj/missing.conf run staging02 ./game.sh --no-parse test headless_feel
 GPU_SUITE_BOXES=ph run staging02 ./game.sh --no-parse test headless_lossy
 GPU_SUITE_BOXES=ph run ph ./game.sh --no-parse test headless_net
 run not-eligible tools/check_pinned_parse.sh headless_lossy
