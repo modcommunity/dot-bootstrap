@@ -548,6 +548,19 @@ tool_job() {
 		python3|python) interp=${w[0]}; w=("${w[@]:1}"); while [[ ${w[0]:-} == -P || ${w[0]:-} == -I || ${w[0]:-} == -u ]]; do w=("${w[@]:1}"); done ;;
 	esac
 	script=${w[0]:-}
+	UW_NATIVE=
+	# An addon's native build (2026-11-13): [bash] addons/<n>/native/build.sh [debug|release|all] [plain scons args], when
+	# addons/<n> is this project's own directory (not a link into another repo). It builds in the box's own cache (godot-cpp,
+	# objects) and only addons/<n>/native/bin comes back.
+	if [[ $script =~ ^(\./)?addons/([A-Za-z0-9_-]+)/native/build\.sh$ && $interp != python* ]]; then
+		local addon=${BASH_REMATCH[2]}
+		[[ -d $PWD/addons/$addon && ! -L $PWD/addons && ! -L $PWD/addons/$addon && ! -L $PWD/addons/$addon/native && -f $PWD/$script && ( -n $interp || -x $PWD/$script ) ]] || return 1
+		for a in "${w[@]:1}"; do
+			[[ $a =~ ^[A-Za-z0-9_./=:,+@%-]+$ && $a != *..* && ! $a =~ (^|=)/ ]] || return 1
+		done
+		UW_NATIVE=$addon UW_KIND=tool UW_REST=("$@")
+		return 0
+	fi
 	[[ $script =~ ^(\./)?(tools|scripts)/[A-Za-z0-9_.-]+\.(sh|py)$ && $script != *..* ]] || return 1
 	file=$PWD/$script
 	[[ -f $file && ( -n $interp || -x $file ) ]] || return 1
@@ -862,9 +875,10 @@ in_slice nice -n 5 timeout "$limit" bash -c '
 		printf '%s\n' "$line"
 	done
 rc=${PIPESTATUS[0]}
-# kind=tool: the files the job wrote (newer than the stamp), for dev02 to copy back. Not addons, .godot, .git.
+# kind=tool: the files the job wrote (newer than the stamp), for dev02 to copy back. Not addons (but an addon's native/bin,
+# which dev02 takes only from its native build.sh job), .godot, .git. find does not follow the links to sibling addons.
 if [ "$kind" = tool ]; then
-	find . -type f -newer "$ws/.tool-stamp" -not -path './.godot/*' -not -path './.git/*' -not -path './addons/*' -not -path './.stores/*' -printf '%P\n' 2>/dev/null | head -n 20001 > "$HOME/gpu/suite/$wsid.changed"
+	find . -type f -newer "$ws/.tool-stamp" -not -path './.godot/*' -not -path './.git/*' -not \( -path './addons/*' -not -path './addons/*/native/bin/*' \) -not -path './.stores/*' -printf '%P\n' 2>/dev/null | head -n 20001 > "$HOME/gpu/suite/$wsid.changed"
 fi
 # A hung or failed suite often has only the engine's real message in its log.
 if [ "$rc" -ne 0 ]; then
@@ -1060,7 +1074,11 @@ offer_on() {
 	if [[ ${UW_KIND:-game} == tool ]]; then
 		# Copy back what the job wrote. --update: never overwrite a file edited here meanwhile; no links, no deletes.
 		local cl; cl=$(mktemp)
-		if "${SSHQ[@]}" "cat gpu/suite/$wsid.changed" </dev/null 2>/dev/null | grep -vE '^(addons|\.stores|\.godot|\.git)(/|$)' > "$cl"; then
+		# An addon's native build.sh job (UW_NATIVE=<addon>, a real directory here) also brings back addons/<addon>/native/bin.
+		local keep=; [[ -n ${UW_NATIVE:-} && -d $PROJ_DIR/addons/$UW_NATIVE && ! -L $PROJ_DIR/addons && ! -L $PROJ_DIR/addons/$UW_NATIVE && ! -L $PROJ_DIR/addons/$UW_NATIVE/native ]] &&
+			mkdir -p "$PROJ_DIR/addons/$UW_NATIVE/native/bin" && [[ ! -L $PROJ_DIR/addons/$UW_NATIVE/native/bin ]] && keep="addons/$UW_NATIVE/native/bin/"
+		if "${SSHQ[@]}" "cat gpu/suite/$wsid.changed" </dev/null 2>/dev/null |
+			awk -v keep="$keep" '(keep != "" && index($0, keep) == 1 && substr($0, length(keep) + 1) ~ /^[A-Za-z0-9_.+-]+$/) || $0 !~ /^(addons|\.stores|\.godot|\.git)(\/|$)/' > "$cl"; then
 			local nfile; nfile=$(wc -l < "$cl")
 			if (( nfile >= 20000 )); then echo "gpu.sh: tool wrote $nfile+ files; not copying them back from $BOX (see ~/gpu/ws/$wsid/$project there)" >&2
 			elif (( nfile > 0 )); then
