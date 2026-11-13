@@ -226,7 +226,10 @@ case " $* " in *" --import "*)
   if ! flock -n "$ifd"; then
     echo "heavy: another import of $PWD is running; waiting for it first" >&2
     flock "$ifd"
-  fi ;;
+  fi
+  # --status shows the held lock as "busy  import.<hash>: <this line>".
+  echo "$(id -un)@$(hostname -s) pid $$ since $(date +%T): import of $PWD (one per directory)" \
+    > "$DIR/import.$(printf '%s' "$PWD" | md5sum | cut -c1-12).who" ;;
 esac
 [ -n "$ifd" ] || exec {ifd}>/dev/null
 # Long jobs (surf-ride planners run up to 45 min) take a build slot like any build but at most
@@ -325,6 +328,7 @@ while :; do
 done
 rm -f "$ticket"
 printf '%s pid %s since %s: %s\n' "$(whoami)@$(hostname -s)" "$$" "$(date +%H:%M:%S)" "$*" | cut -c1-300 > "$DIR/$lane.$slot.who"
+[ -n "$rfd" ] && echo "real-time job in $lane.$slot (pid $$)" > "$DIR/rt.$j.who"
 
 waited=$(( $(date +%s) - start ))
 [ "$waited" -ge 3 ] && echo "heavy: $lane/$slot acquired after ${waited}s" >&2
