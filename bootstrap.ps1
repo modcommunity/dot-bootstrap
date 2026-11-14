@@ -1822,6 +1822,22 @@ function Export-Game ($want) {
 
 # Start the exported build, exporting it first when there is none. The profiler is in
 # release builds too: F10 records, and the files land in the game's user folder.
+# The user folder (user://) Godot gives the game in <projects>\<proj>, from its project.godot: %APPDATA%\<custom_user_dir_name>
+# when use_custom_user_dir is on (FC: %APPDATA%\game-fatal-contact), else %APPDATA%\Godot\app_userdata\<config/name>.
+function Get-UserDataDir ($proj) {
+    $pg = Join-Path (Join-Path $projectsDir $proj) 'project.godot'
+    $name = $proj; $use = $false; $custom = ''
+    if (Test-Path $pg) {
+        foreach ($line in Get-Content $pg) {
+            if ($line -match '^config/name="(.*)"$') { $name = $Matches[1] }
+            elseif ($line -match '^config/use_custom_user_dir=true$') { $use = $true }
+            elseif ($line -match '^config/custom_user_dir_name="(.*)"$') { $custom = $Matches[1] }
+        }
+    }
+    if ($use) { if (-not $custom) { $custom = $name }; return Join-Path $env:APPDATA $custom }
+    Join-Path (Join-Path (Join-Path $env:APPDATA 'Godot') 'app_userdata') $name
+}
+
 function Play-Export ($want) {
     $proj = Resolve-Game $want
     if (-not $proj) { Write-Host "no such game: $want" -ForegroundColor Red; List-Games; exit 2 }
@@ -1833,7 +1849,7 @@ function Play-Export ($want) {
     }
     $a = @(Get-ExportPlayArgs $PlayArgs $proj)
     Write-Host "$exe $($a -join ' ')" -ForegroundColor Cyan
-    Write-Host "F10 records 10 s, profiler_record in the console 60 s; reports: $env:APPDATA\Godot\app_userdata\$proj\profiles" -ForegroundColor DarkGray
+    Write-Host "F10 records 10 s, profiler_record in the console 60 s; reports: $(Join-Path (Get-UserDataDir $proj) profiles)" -ForegroundColor DarkGray
     & $exe @a
 }
 

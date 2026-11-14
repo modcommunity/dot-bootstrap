@@ -1596,6 +1596,17 @@ export_game() {
     ok "export" "$exe ($(du -sm "$out" | cut -f1) MB in $out, log in export.log)"
 }
 
+# The user folder (user://) Godot gives the game in <projects>/<proj>, from its project.godot: <data>/<custom_user_dir_name>
+# when use_custom_user_dir is on (FC: ~/.local/share/game-fatal-contact), else <data>/godot/app_userdata/<config/name>.
+user_data_dir() {
+    local proj="$1" pg="$PROJECTS_DIR/$1/project.godot" data="${XDG_DATA_HOME:-$HOME/.local/share}" name custom use
+    name="$(sed -n 's|^config/name="\(.*\)"|\1|p' "$pg" 2>/dev/null | head -1)"
+    use="$(sed -n 's|^config/use_custom_user_dir=\(.*\)|\1|p' "$pg" 2>/dev/null | head -1)"
+    custom="$(sed -n 's|^config/custom_user_dir_name="\(.*\)"|\1|p' "$pg" 2>/dev/null | head -1)"
+    [ -n "$name" ] || name="$proj"
+    if [ "$use" = true ]; then echo "$data/${custom:-$name}"; else echo "$data/godot/app_userdata/$name"; fi
+}
+
 # Start the exported build, exporting it first when there is none. The profiler is in
 # release builds too: F10 records, and the files land in the game's user folder.
 play_export() {
@@ -1606,7 +1617,7 @@ play_export() {
     else echo "${DIM}using the build of $(date -r "$exe" '+%Y-%m-%d %H:%M'); ./bootstrap.sh --export $want rebuilds it${OFF}"; fi
     local args=(); mapfile -t args < <(export_play_args "$proj")
     echo "${CYN}$exe -- ${args[*]} ${*:2}${OFF}"
-    echo "${DIM}F10 records 10 s, profiler_record in the console 60 s; reports: ${XDG_DATA_HOME:-$HOME/.local/share}/godot/app_userdata/$proj/profiles${OFF}"
+    echo "${DIM}F10 records 10 s, profiler_record in the console 60 s; reports: $(user_data_dir "$proj")/profiles${OFF}"
     exec "$exe" -- "${args[@]}" "${@:2}"
 }
 
