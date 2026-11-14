@@ -282,6 +282,35 @@ remote_locked() {
 	"${SSH[@]}" "flock -o ~/gpu/.gate flock $w-o ~/gpu/.lock bash -lc $(printf '%q' "$cmd")"
 }
 
+# GPU_RELEASE=1 (run): bench a release export instead of the editor binary. Production ships --export-release, and a release build
+# runs the client frame ~27% faster than the editor's debug build (FC, 32 players, 12.7 -> 9.2 ms), so frame times quoted for a
+# shipped game must come from one. tools/gpu-release-export.sh (run on the box) exports the synced project once per content
+# key (cached in ~/gpu/rel, newest 3 kept) behind a dispatcher main scene, because a release template refuses a scene path on
+# its command line: the scene argument (res://*.tscn) is baked into the dispatcher, the sim host's --sim_server child gets the
+# project's own main scene. Engine flags that need the editor (-d) are dropped; the rest (--headless, renderer flags) and the
+# arguments after `--` go to the exported binary. Args: project xrun... -- drv... -- godot-args...
+run_release() {
+	local project=$1; shift
+	local xrun=() drv=() args=() scene="" a
+	while [[ $1 != -- ]]; do xrun+=("$1"); shift; done; shift
+	while [[ $1 != -- ]]; do drv+=("$1"); shift; done; shift
+	for a in "$@"; do
+		case $a in
+			res://*.tscn) [[ -n $scene ]] || scene=$a ;;
+			-d|--debug) echo "gpu.sh: --release ignores $a (editor-only)" >&2 ;;
+			*) args+=("$a") ;;
+		esac
+	done
+	[[ -n $scene ]] || { echo "gpu.sh: GPU_RELEASE=1 needs a res://...tscn scene argument" >&2; return 2; }
+	"${SSHQ[@]}" "mkdir -p ~/gpu/rel-tools"
+	rsync -az -e "$RSH" "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/gpu-release-export.sh" "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/gpu-release-presets.cfg" "$HOST:gpu/rel-tools/" || return
+	local out
+	out=$(remote_locked bash "$REMOTE_HOME/gpu/rel-tools/gpu-release-export.sh" "$project" "$scene" | tail -1) || return
+	[[ -n $out ]] || return 1
+	echo "gpu.sh: release export $out" >&2
+	remote_locked bash -c "cd $(printf '%q' "$out") && exec timeout -k 15 ${GPU_TIMEOUT:-1800} $(printf '%q ' "${xrun[@]}" ./game.x86_64 "${drv[@]}" "${args[@]}")"
+}
+
 # GPU_XORG=1 (run): present through a real headless Xorg on the NVIDIA card (display :90, no monitor,
 # tools/xorg-headless.conf) instead of Xvfb. Xvfb's framebuffer makes the NVIDIA Vulkan driver spin on
 # sched_yield and copy every frame with XPutImage (~10 ms of a perf bench frame, 2026-11-11; __GL_YIELD/__GL_SYNC_TO_VBLANK
@@ -1728,6 +1757,10 @@ case "${1:-}" in
 			esac
 		done
 		[[ $gl == 0 || ${GPU_XORG:-0} == 1 ]] || echo "gpu.sh: WARN gl_compatibility under Xvfb is Mesa's software GL, not the card; set GPU_XORG=1" >&2
+		if [[ ${GPU_RELEASE:-0} == 1 ]]; then
+			run_release "$project" "${xrun[@]}" -- "${drv[@]}" -- "$@"
+			return
+		fi
 		remote_locked timeout -k 15 "${GPU_TIMEOUT:-1800}" "${xrun[@]}" \
 			"$REMOTE_HOME/gpu/bin/godot" --path "$REMOTE_HOME/$REMOTE_ROOT/$project" \
 			"${drv[@]}" "$@"
