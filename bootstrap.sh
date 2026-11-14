@@ -1898,6 +1898,9 @@ case "$mode" in
         targets="$(link_targets)"
         while read -r p; do [ -n "$p" ] && fetch_natives "$p"; done <<< "$targets"
         while read -r p; do [ -n "$p" ] && { link_addons "$p"; link_content "$p"; }; done <<< "$targets"
+        # Valve-origin pre-commit hook in every repository (DOT_CLOUD names the guard checkout).
+        # Loud on failure, never skipped: no dot-cloud clone means no guard, and that is an error.
+        "$SELF_DIR/tools/install-valve-hooks.sh" "$PROJECTS_DIR" || err "valve hooks" "not installed everywhere (see above)"
         [ "$DO_IMPORT" = "1" ] && run_import
         ;;
     -h|--help)

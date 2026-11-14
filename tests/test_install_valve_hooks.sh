@@ -53,5 +53,10 @@ bash "$installer" "$T/nowhere" >/dev/null 2>&1; [ $? -eq 2 ] && pass "missing pr
 rm "$P/dot-cloud/tools/check_valve_files.py"
 bash "$installer" "$P" >/dev/null 2>&1; [ $? -eq 2 ] && pass "missing guard exits 2" || fail "missing guard did not exit 2"
 
+# 6. DOT_CLOUD points at a guard outside the projects directory; a bad one is exit 2.
+mkdir -p "$T/elsewhere/tools"; cp "$guard_src" "$T/elsewhere/tools/check_valve_files.py"
+DOT_CLOUD="$T/elsewhere" bash "$installer" "$P" >/dev/null 2>&1 && grep -qF "$T/elsewhere/tools/check_valve_files.py" "$P/repo-a/.git/hooks/pre-commit" && pass "DOT_CLOUD selects the guard" || fail "DOT_CLOUD ignored"
+DOT_CLOUD="$T/missing" bash "$installer" "$P" >/dev/null 2>&1; [ $? -eq 2 ] && pass "bad DOT_CLOUD exits 2" || fail "bad DOT_CLOUD did not exit 2"
+
 echo "test_install_valve_hooks: $passes passed, $fails failed"
 [ $fails -eq 0 ]
