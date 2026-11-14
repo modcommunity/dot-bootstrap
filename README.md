@@ -107,7 +107,7 @@ It is not part of a plain sync because it is a large download and needs access t
 
 You can play a converted map folder or its `.zip` without publishing it. Name it `<map>_orig` if it keeps its original textures; such packs are never published. To add it, do one of these:
 
-- Put it in the game's user data `maps/` folder: `~/.local/share/godot/app_userdata/<game>/maps` on Linux, `%APPDATA%\Godot\app_userdata\<game>\maps` on Windows.
+- Put it in the game's user data `maps/` folder. Fatal Contact: `~/.local/share/game-fatal-contact/maps` on Linux, `%APPDATA%\game-fatal-contact\maps` on Windows (its first run copies an older `godot/app_userdata/game-arena` folder in). Other games: `~/.local/share/godot/app_userdata/<game>/maps` on Linux, `%APPDATA%\Godot\app_userdata\<game>\maps` on Windows. `--play-export <game>` prints the folder.
 - In a source checkout, put it in `res://addons/maps`.
 - Drag it onto the window of a game that calls `DotMapLocalMaps.watch_drops` (Fatal Contact does).
 

@@ -132,6 +132,12 @@ chmod +x "$PROJECTS_DIR/game-arena/build/linux/game-arena.x86_64"
 (play_export arena +bot_quota 16 --map dm_atrium) >"$T/playout" 2>&1
 check 'play: the build ran with the defaults, then the caller'"'"'s' '[ "$(tr "\n" " " < "$T/ran")" = "-- --offline +bot_quota 8 +profiler_overlay 1 +profiler_record_seconds 60 +bot_quota 16 --map dm_atrium " ]'
 check 'play: says where the reports land' 'grep -q "app_userdata/game-arena/profiles" "$T/playout"'
+printf 'config_version=5\n[application]\nconfig/name="Fatal Contact"\nconfig/use_custom_user_dir=true\nconfig/custom_user_dir_name="game-fatal-contact"\n' > "$PROJECTS_DIR/game-arena/project.godot"
+(play_export arena) >"$T/playout" 2>&1
+check 'play: a custom user folder is the one named' 'grep -q "/game-fatal-contact/profiles" "$T/playout"'
+mkdir -p "$PROJECTS_DIR/mg-pong"
+check 'user dir: config/name names the default folder' '[ "$(printf "[application]\nconfig/name=\"Zed\"\n" > "$PROJECTS_DIR/mg-pong/project.godot"; XDG_DATA_HOME=/d user_data_dir mg-pong)" = /d/godot/app_userdata/Zed ]'
+rm -f "$PROJECTS_DIR/game-arena/project.godot" "$PROJECTS_DIR/mg-pong/project.godot"
 mkdir -p "$PROJECTS_DIR/mg-pong/build/linux"; cp "$PROJECTS_DIR/game-arena/build/linux/game-arena.x86_64" "$PROJECTS_DIR/mg-pong/build/linux/mg-pong.x86_64"
 (play_export mg-pong --map x) >/dev/null 2>&1
 check 'play: any other game gets no FC arguments' '[ "$(tr "\n" " " < "$T/ran")" = "-- --offline --map x " ]'
