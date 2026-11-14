@@ -39,8 +39,12 @@ for d in "$projects"/*/; do
     [ -e "$d/.git" ] || continue
     total=$((total + 1))
     name="$(basename "$d")"
-    hp="$(git -C "$d" rev-parse --git-path hooks/pre-commit 2>/dev/null)"
+    # The repository's own hooks directory, not --git-path hooks: a system core.hooksPath (the
+    # owner-identity guard in /etc/gitconfig) would point that at a shared directory, which
+    # chains to <common dir>/hooks/pre-commit.
+    hp="$(git -C "$d" rev-parse --git-common-dir 2>/dev/null)"
     case "$hp" in ""|/*) ;; *) hp="$d/$hp" ;; esac
+    hp="$hp/hooks/pre-commit"
     if [ "$check" -eq 1 ]; then
         if [ -f "$hp" ] && grep -qF "$guard" "$hp"; then
             have=$((have + 1))
