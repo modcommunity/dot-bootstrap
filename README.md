@@ -45,6 +45,18 @@ It uses a tree's existing `godot/` directory instead, rather than making a secon
 
 Override either way with `DOT_PROJECTS` (`-Projects` on Windows).
 
+## Keeping stock Valve files out of your commits
+
+Stock Valve and Source assets (`.vpk`, `.vtf`, `.vmt`, `.mdl`, `.vvd`, `.vtx`, `.phy`, `.ani`, a `textures/orig` folder) are local-only and never belong in a repository or a published pack. The check that refuses them lives in dot-cloud (`tools/check_valve_files.py`), and CI runs it on every project. To refuse them at commit time too, install its pre-commit hook in every repository you have cloned:
+
+```bash
+tools/install-valve-hooks.sh                 # every repository in ./projects (or DOT_PROJECTS)
+tools/install-valve-hooks.sh /path/to/dir    # any directory of repositories
+tools/install-valve-hooks.sh --check         # list the repositories without it, change nothing
+```
+
+The hook names dot-cloud's checkout by absolute path, so it needs `dot-cloud` cloned alongside the others (`./bootstrap.sh --only dot-cloud --no-deps`), and it must be run again if the directory moves. Worktrees share their repository's hooks, so one install covers them. A commit the hook refuses names every offending file.
+
 ## Getting only some of it
 
 You do not need all seventy-odd repositories to play one game. Name what you want and it brings what that needs (its addons, and any maps or courses it keeps in a repository of its own), and nothing else:
