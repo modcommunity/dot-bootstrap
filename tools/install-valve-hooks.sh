@@ -10,6 +10,8 @@
 # dot-cloud checkout beside the repositories, so updating dot-cloud updates the guard everywhere.
 # That path is absolute, so run this again after moving the projects directory.
 #
+# DOT_CLOUD names the dot-cloud checkout holding the guard (default: dot-cloud inside PROJECTS_DIR).
+#
 # PROJECTS_DIR defaults to DOT_PROJECTS, else ./projects beside this script (bootstrap.sh's own
 # default). Every immediate subdirectory with a .git (directory or worktree file) is a repository.
 # A repository whose hook is already there is left alone; the install is idempotent.
@@ -27,8 +29,9 @@ projects="${1:-${DOT_PROJECTS:-$here/../projects}}"
 
 [ -d "$projects" ] || { echo "install-valve-hooks: no projects directory at $projects (run bootstrap.sh first, or pass one)" >&2; exit 2; }
 projects="$(cd "$projects" && pwd)"
-guard="$projects/dot-cloud/tools/check_valve_files.py"
-[ -f "$guard" ] || { echo "install-valve-hooks: no guard at $guard; clone it with: bootstrap.sh --only dot-cloud --no-deps" >&2; exit 2; }
+cloud="${DOT_CLOUD:-$projects/dot-cloud}"
+guard="$cloud/tools/check_valve_files.py"
+[ -f "$guard" ] || { echo "install-valve-hooks: no guard at $guard (set DOT_CLOUD to a dot-cloud checkout, or clone it with: bootstrap.sh --only dot-cloud --no-deps)" >&2; exit 2; }
 
 rc=0; total=0; have=0
 for d in "$projects"/*/; do

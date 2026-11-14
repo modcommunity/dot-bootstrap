@@ -55,6 +55,8 @@ tools/install-valve-hooks.sh /path/to/dir    # any directory of repositories
 tools/install-valve-hooks.sh --check         # list the repositories without it, change nothing
 ```
 
+bootstrap.sh runs this on every sync. `DOT_CLOUD=/path` names the dot-cloud checkout that holds the guard (default: dot-cloud beside the repositories); a missing guard is an error, not a skip.
+
 The hook names dot-cloud's checkout by absolute path, so it needs `dot-cloud` cloned alongside the others (`./bootstrap.sh --only dot-cloud --no-deps`), and it must be run again if the directory moves. Worktrees share their repository's hooks, so one install covers them. A commit the hook refuses names every offending file.
 
 ## Getting only some of it
