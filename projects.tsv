@@ -1,4 +1,4 @@
-# Every project in the Dot family, and where it is cloned from.
+# Every project in the Gamespice family, and where it is cloned from.
 #
 # THIS IS THE ONLY COPY OF THIS LIST. bootstrap.sh and bootstrap.ps1 both read
 # it, and `bootstrap --check` fails if a repository on disk is missing from it

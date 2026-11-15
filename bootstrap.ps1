@@ -1,5 +1,5 @@
 <#
-    Clone or update every project in the Dot family, wire the local-development
+    Clone or update every project in the Gamespice family, wire the local-development
     addon links, and run any of the games. The Windows counterpart of
     bootstrap.sh.
 
