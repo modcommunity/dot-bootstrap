@@ -49,12 +49,14 @@ for t in clean dang loop; do
 die() { echo "DIED: $*" >&2; exit 2; }
 project_dir() { :; }; proj_name() { echo n; }; proj_src() { echo "$ROOTT"; }
 SSHQ=(true); BOX=b; HOST=h; REMOTE_ROOT=r; RSH=true
-rsync() { echo RSYNC; }
+rsync() { echo "RSYNC $*"; }
 '"$fn"'
+'"$fn2"'
 '"$sp"'
 sync_project x; echo done' 2>&1); rc=$?
 	case $t in
-		clean) [[ $rc == 0 && $out == *RSYNC* ]] && ok "sync_project, clean tree: reaches rsync" || bad "sync_project, clean tree: rc=$rc out=$out" ;;
+		clean) [[ $rc == 0 && $out == *RSYNC* && $out != *"--exclude /"* ]] && ok "sync_project, clean tree: reaches rsync, nothing excluded" || bad "sync_project, clean tree: rc=$rc out=$out" ;;
+		loop) [[ $rc == 0 && $out == *"left out of the copy"* && $out == *"RSYNC "*"--exclude /maps/maps"* && $out == *done* ]] && ok "sync_project, loop tree: loop link excluded with a warning, rsync runs" || bad "sync_project, loop tree: rc=$rc out=$out" ;;
 		*) [[ $rc == 2 && $out == *"DIED: "*"dangle or loop"* ]] && ok "sync_project, $t tree: dies with the link message" || bad "sync_project, $t tree: rc=$rc out=$out" ;;
 	esac
 	out=$(PROJ_DIR=$root/$t bash -c 'set -euo pipefail

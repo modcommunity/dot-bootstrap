@@ -296,13 +296,19 @@ unresolved_except_loops() {
 
 sync_project() {
 	project_dir "$1"
-	local n d bad; n=$(proj_name "$1"); d=$(proj_src "$1")
-	bad=$(unresolved_links "$d" || true)
+	local n d bad loops=() ll xl=(); n=$(proj_name "$1"); d=$(proj_src "$1")
+	# Same loop handling as offer_on: a self-looping link is left out of the copy with a warning, not a die.
+	while IFS= read -r ll; do
+		[[ -n $ll ]] || continue
+		loops+=("$ll"); xl+=(--exclude "/$ll")
+		echo "gpu.sh: WARNING $d/$ll is a link that loops into its own directory; left out of the copy to $BOX. Remove it (a repeated \`ln -s\` into a directory link makes these)." >&2
+	done < <(loop_links "$d")
+	bad=$(unresolved_except_loops "$d" "${loops[@]}")
 	[[ -z $bad ]] || die "$d has links that dangle or loop, so --copy-links cannot copy it to $BOX (rsync would stop with rc 23). Fix or remove them:
 $(sed 's/^/  /' <<<"$bad")"
 	"${SSHQ[@]}" "mkdir -p ~/$REMOTE_ROOT/$n"
 	rsync -az --delete --copy-links \
-		--exclude '.godot/' --exclude '.git/' --exclude 'screenshots/' \
+		--exclude '.godot/' --exclude '.git/' --exclude 'screenshots/' "${xl[@]}" \
 		-e "$RSH" \
 		"$d/" "$HOST:$REMOTE_ROOT/$n/"
 }

@@ -689,7 +689,8 @@ migrate_renamed() {
         fi
         git -C "$dst" worktree repair >/dev/null 2>&1 || true
         relink_moved "$old" "$new"
-        ln -s "$new" "$src" 2>/dev/null || true
+        # -n: if $src is already a link to a directory, replace the link; without it ln makes $dst/<name> -> $new, a loop inside the checkout.
+        ln -sfn "$new" "$src" 2>/dev/null || true
         n=$(git -C "$dst" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
         ok "$new" "renamed from $old$([ "$n" -gt 0 ] && echo " (with its $n uncommitted file(s))"); $old is now a link to it"
     done <<< "$(alias_pairs)"
