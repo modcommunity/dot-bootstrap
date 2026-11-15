@@ -25,7 +25,9 @@ fn=$(sed -n '/^unresolved_links() {/,/^}/p' "$src")
 sp=$(sed -n '/^sync_project() {/,/^}/p' "$src")
 [[ -n $fn && -n $sp ]] || { echo "FAIL could not cut unresolved_links/sync_project out of $src"; exit 1; }
 # The offer_on call site as written: its `local bad; bad=$(unresolved_links ...)` line and the if that reads it.
-offer=$(sed -n '/local bad; bad=\$(unresolved_links/,/^\tfi$/p' "$src")
+offer=$(sed -n '/local loops=() ll$/,/^\tfi$/p' "$src")
+fn2=$(sed -n '/^loop_links() {/,/^}/p;/^unresolved_except_loops() {/,/^}/p' "$src")
+[[ -n $fn2 ]] || { echo "FAIL could not cut loop_links/unresolved_except_loops out of $src"; exit 1; }
 [[ -n $offer ]] || { echo "FAIL could not cut the offer_on call site out of $src"; exit 1; }
 
 # 1. content, plain mode
@@ -59,13 +61,35 @@ sync_project x; echo done' 2>&1); rc=$?
 copyfail_bump() { :; }; copyfail_count() { echo 1; }; back_to_queue() { echo "QUEUED: $*"; exit 75; }
 project=p; BOX=b; set --
 '"$fn"'
+'"$fn2"'
 f() {
+ex=()
 '"$offer"'
 echo past; }
 f' 2>&1); rc=$?
 	case $t in
 		clean) [[ $rc == 0 && $out == *past* ]] && ok "offer_on check, clean tree: runs on" || bad "offer_on check, clean tree: rc=$rc out=$out" ;;
+		loop) [[ $rc == 0 && $out == *past* && $out == *"left out of the copy"* && $out != *QUEUED* ]] && ok "offer_on check, loop tree: the loop link is left out, the job runs on" || bad "offer_on check, loop tree: rc=$rc out=$out" ;;
 		*) [[ $rc == 75 && $out == *QUEUED* ]] && ok "offer_on check, $t tree: sent back to the queue" || bad "offer_on check, $t tree: rc=$rc out=$out" ;;
 	esac
 done
+# 4. the dot-sql case: games/addons/dot_sql -> the dot-sql repo's addons/dot_sql, which holds dot_sql -> itself. The loop
+# lives inside the other link's target, so only find -L reaches it. It is found, excluded, and rsync (--copy-links, the
+# gpu.sh options) then copies the rest and not the loop; a second tree has a loop AND a dangling link, which still queues.
+mkdir -p "$root/dot-sql/addons/dot_sql/core" "$root/game/addons" "$root/game2/addons"
+: > "$root/dot-sql/addons/dot_sql/core/a.gd"
+ln -s "$root/dot-sql/addons/dot_sql" "$root/dot-sql/addons/dot_sql/dot_sql"
+ln -s "$root/dot-sql/addons/dot_sql" "$root/game/addons/dot_sql"
+ln -s "$root/dot-sql/addons/dot_sql" "$root/game2/addons/dot_sql"; ln -s missing "$root/game2/gone"
+got=$(bash -c "$fn"'; '"$fn2"'; loop_links "$1"' _ "$root/game")
+[[ $got == addons/dot_sql/dot_sql ]] && ok "loop_links finds the loop inside a linked addon" || bad "loop_links: [$got]"
+[[ -z $(bash -c "$fn"'; '"$fn2"'; loop_links "$1"' _ "$root/clean") ]] && ok "loop_links on a clean tree: nothing" || bad "loop_links on a clean tree found something"
+rest=$(bash -c 'set -euo pipefail; '"$fn"'; '"$fn2"'; unresolved_except_loops "$1" addons/dot_sql/dot_sql' _ "$root/game")
+[[ -z $rest ]] && ok "the loop is not reported as unresolved once excluded" || bad "still reported: $rest"
+rest2=$(bash -c 'set -euo pipefail; '"$fn"'; '"$fn2"'; unresolved_except_loops "$1" addons/dot_sql/dot_sql' _ "$root/game2")
+[[ $rest2 == "dangling: ./gone" ]] && ok "a dangling link next to a loop is still reported" || bad "dangling not reported: [$rest2]"
+if command -v rsync >/dev/null; then
+	rsync -a --copy-links --exclude /addons/dot_sql/dot_sql "$root/game/" "$root/out/" 2>"$root/rs.err"; rc=$?
+	[[ $rc == 0 && -f $root/out/addons/dot_sql/core/a.gd && ! -e $root/out/addons/dot_sql/dot_sql ]] && ok "rsync --copy-links with the exclude copies the addon and not the loop" || bad "rsync rc=$rc: $(head -3 "$root/rs.err")"
+fi
 [[ $fail == 0 ]] && echo "all passed" || { echo failed; exit 1; }

@@ -270,7 +270,28 @@ project_dir() {
 # made by an `ln -s` into a directory link, 2026-11-13). rsync stops on the first with rc 23 and no hint which
 # link, so list them before the copy. Skips what the copy excludes (.git, .godot, screenshots). One finding per line ("dangling: ./p" or find's own loop message).
 unresolved_links() {
-	( cd "${1%/}/" && { find -L . \( -path ./.git -o -path ./.godot -o -path ./screenshots \) -prune -o -type l -printf 'dangling: %p\n' 2>&1 >&3 | grep -i 'loop' | sed 's/^/loop: /'; } 3>&1 | head -20 ) || true
+	( cd "${1%/}/" && { LC_ALL=C find -L . \( -path ./.git -o -path ./.godot -o -path ./screenshots \) -prune -o -type l -printf 'dangling: %p\n' 2>&1 >&3 | grep -i 'loop' | sed 's/^/loop: /'; } 3>&1 | head -20 ) || true
+}
+
+# Links that loop back into their own directory (addons/dot_sql/dot_sql -> .../addons/dot_sql, made by an `ln -s <dir>
+# addons/dot_x` run twice: the second run puts the link INSIDE the first link's target, i.e. inside the dot-sql repo, so
+# every game linking dot-sql carries it; zombie-zone-maps/maps/maps, 2026-11-13). --copy-links would follow it forever, and
+# nothing can read it as a file, so it is safe to leave out of the copy: one project-relative path per line, no leading "./".
+# Found from find's own "File system loop detected; 'X' is part of ..." notice (C locale, so ASCII quotes); only a real link
+# counts. A loop through two links is not found here and still goes through unresolved_links.
+loop_links() {
+	( cd "${1%/}/" && LC_ALL=C find -L . \( -path ./.git -o -path ./.godot -o -path ./screenshots \) -prune -o -print 2>&1 >/dev/null \
+		| sed -n "s/^find: File system loop detected; '\(.*\)' is part of the same file system loop as .*/\1/p" \
+		| while IFS= read -r p; do [[ -L $p ]] && printf '%s\n' "${p#./}"; done ) || true
+}
+
+# unresolved_links minus the loops loop_links finds (those are excluded from the copy instead). $1 project; the rest of the
+# arguments are the loop paths to leave out of the report.
+unresolved_except_loops() {
+	local d=$1 l out; shift
+	out=$(unresolved_links "$d" || true)
+	for l in "$@"; do out=$(grep -vF -- "'./$l'" <<<"$out" || true); done
+	grep -v '^$' <<<"$out" || true
 }
 
 sync_project() {
@@ -1225,7 +1246,13 @@ offer_on() {
 		done < <(find "${PROJ_DIR%/}/" -maxdepth 2 -type l -not -path '*/.godot/*' 2>/dev/null)
 	fi
 	while IFS=$'\t' read -r _ lk lt; do ex+=(--exclude "/$lk"); done < <(linked_siblings "$PROJ_DIR")
-	local bad; bad=$(unresolved_links "$PROJ_DIR" || true)
+	local loops=() ll
+	while IFS= read -r ll; do
+		[[ -n $ll ]] || continue
+		loops+=("$ll"); ex+=(--exclude "/$ll")
+		echo "gpu.sh: WARNING $PROJ_DIR/$ll is a link that loops into its own directory; left out of the copy to $BOX. Remove it (a repeated \`ln -s\` into a directory link makes these)." >&2
+	done < <(loop_links "$PROJ_DIR")
+	local bad; bad=$(unresolved_except_loops "$PROJ_DIR" "${loops[@]}")
 	if [[ -n $bad ]]; then
 		copyfail_bump "$BOX" "${JOB_ARGS[@]}"
 		echo "gpu.sh: $PROJ_DIR has links that dangle or loop; rsync --copy-links would stop with rc 23. Fix or remove them:" >&2
