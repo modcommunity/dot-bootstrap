@@ -173,8 +173,8 @@ set_box() {
 		# ph-tmc-dev (2026-11-07): a build/test VM, no GPU, 40 vCPUs, 112 GB, 320 GB disk. Suites and python jobs only (it is in
 		# no shot or exclusive list); ~/gpu/janitor.sh keeps the disk under budget. Nobody sits at it, so no desktop guard.
 		ph)        HOST=gamedev@ph-tmc-dev.deacon.internal; BOX_DESC="the build VM (ph)"
-		           SUITE_SLOTS=${GPU_SUITE_SLOTS:-30} SUITE_MAX_GB=${GPU_SUITE_MAX_GB:-6} DESKTOP_GUARD=0
-		           SUITE_RESERVE_GB=${GPU_SUITE_RESERVE_GB:-8} SUITE_VARIANTS=${GPU_SUITE_VARIANTS:-8} RT_MAX=${GPU_RT_MAX:-2} RT_BUSY=${GPU_RT_BUSY:-20} ;;
+		           SUITE_SLOTS=${GPU_SUITE_SLOTS:-44} SUITE_MAX_GB=${GPU_SUITE_MAX_GB:-6} DESKTOP_GUARD=0
+		           SUITE_RESERVE_GB=${GPU_SUITE_RESERVE_GB:-8} SUITE_VARIANTS=${GPU_SUITE_VARIANTS:-8} RT_MAX=${GPU_RT_MAX:-2} RT_BUSY=${GPU_RT_BUSY:-30} ;;
 		*) die "unknown GPU_BOX '$BOX' (staging, staging02 or ph)" ;;
 	esac
 	HOST=${GPU_HOST:-$HOST}
