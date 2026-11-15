@@ -1919,6 +1919,14 @@ case "${1:-}" in
 				opengl3|opengl3_es|--rendering-driver=opengl3*) gl=1; drv=(); [[ " $* " == *" --rendering-method"* ]] || drv=(--rendering-method gl_compatibility) ;;
 			esac
 		done
+		# --import needs no window: a windowed (Vulkan, Xvfb) --import crashes with signal 11 on game-g2gfast and
+		# game-playground on the laptop's 1660 Ti (2026-11-15), the same projects import fine with --headless.
+		local imp=0
+		for a in "$@"; do [[ $a == --import ]] && imp=1; done
+		if [[ $imp == 1 && " $* " != *" --headless "* ]]; then
+			remote_locked timeout -k 15 "${GPU_TIMEOUT:-1800}" "$REMOTE_HOME/gpu/bin/godot" --headless --path "$REMOTE_HOME/$REMOTE_ROOT/$project" "$@"
+			return
+		fi
 		[[ $gl == 0 || ${GPU_XORG:-0} == 1 ]] || echo "gpu.sh: WARN gl_compatibility under Xvfb is Mesa's software GL, not the card; set GPU_XORG=1" >&2
 		if [[ ${GPU_RELEASE:-0} == 1 ]]; then
 			run_release "$project" "${xrun[@]}" -- "${drv[@]}" -- "$@"
