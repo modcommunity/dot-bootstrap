@@ -858,7 +858,14 @@ export PATH=$HOME/gpu/suite/.shim:$PATH
 scg=$(systemctl --user show gpu-suites.slice -p ControlGroup --value 2>/dev/null)
 cur=$(cat "/sys/fs/cgroup$scg/memory.current" 2>/dev/null || echo 0)
 cap=$(( ${cur:-0} / 1048576 + $(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo) - reserve * 1024 ))
-[ "$cap" -ge 1024 ] || cap=1024
+# The owner's own use can grow between the start gate and here. Lowering MemoryMax under what the suites already use makes
+# the kernel OOM-kill them (21 of 39 shard jobs on the laptop, rc=143 with no output, 2026-11-14), and a silent floor of
+# 1 GB did the same. So when the reserve no longer leaves this job its min_gb above current use, say so and give the job
+# back (exit 75 = not taken, heavy queues it elsewhere); the cap is never set below what runs now.
+if [ "$cap" -lt $(( ${cur:-0} / 1048576 + min_gb * 1024 )) ]; then
+	echo "gpu.sh: BUSY memory squeezed on $(hostname): suites use $(( ${cur:-0} / 1048576 )) MB, the box would drop under its ${reserve} GB reserve; job given back" >&2
+	exit 75
+fi
 systemctl --user set-property --runtime gpu-suites.slice MemoryMax="${cap}M" 2>/dev/null
 # in_slice <command...>: runs it in its own scope in that slice, capped at max_gb, without swap.
 in_slice() { systemd-run --user --scope --quiet --collect --slice=gpu-suites.slice -p MemoryMax="${max_gb}G" -p MemorySwapMax=0 -- "$@"; }
