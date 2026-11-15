@@ -2052,6 +2052,11 @@ case "${1:-}" in
 		for pid in "${pids[@]}"; do r=0; wait "$pid" || r=$?; (( r > rc )) && rc=$r; done
 		exit "$rc"
 		;;
+	eligible)
+		# heavy asks before it lets a GPU_BOX-pinned job skip the local slots: exit 0 when `offer` could run this job on a box.
+		shift
+		offer_eligible "$@"
+		;;
 	offer)
 		# Called by heavy while a build-lane job waits. 75 (EX_TEMPFAIL) is "not taken":
 		# heavy keeps waiting here and offers again later. Any other code is the suite's.

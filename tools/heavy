@@ -243,7 +243,19 @@ fi
 # FIFO: a waiter only tries for a slot when its ticket is the oldest live one in its lane, so none starves.
 # The ticket holds the need (MB) and "rt" for a real-time job.
 tval="$need_mb"; [ "$rt" = 1 ] && tval="$need_mb rt"
-ticket="$DIR/queue.$qlane.$(date +%s%N).$$"; echo "$tval" > "$ticket"; trap 'rm -f "$ticket"' EXIT
+ticket="$DIR/queue.$qlane.$(date +%s%N).$$"
+# A job pinned to a box (GPU_BOX) that the box can run waits for THAT box only: taking a free slot here would run it on
+# this VM after all (2026-11-15: a pinned laptop run waited 19 min, then ran whole on dev02 and game.sh's own import
+# aborted in the slot). It holds no local ticket either, so it does not head the local queue. HEAVY_PIN_LOCAL=1 undoes it.
+pinned=0
+if [ "$lane" = build ] && [ -n "${GPU_BOX:-}" ] && [ "${HEAVY_PIN_LOCAL:-0}" != 1 ] && [ "${GPU_OFFLOAD:-1}" != 0 ] &&
+   [ -n "$OFFLOAD" ] && [ -x "$OFFLOAD" ] && HEAVY_HELD=offload "$OFFLOAD" eligible "$@" >/dev/null 2>&1; then
+  pinned=1
+  echo "heavy: GPU_BOX=$GPU_BOX pins this job: waiting for that box, not taking a slot here (HEAVY_PIN_LOCAL=1 runs it here)" >&2
+else
+  echo "$tval" > "$ticket"
+fi
+trap 'rm -f "$ticket"' EXIT
 while :; do
   # A waiter whose directory was removed (its worktree pruned while it queued) would run against nothing and
   # hold a slot for it; 4 such .merge waiters sat in the check queue on 2026-11-13.
@@ -273,7 +285,9 @@ while :; do
     # A real-time head waiting for one of the HEAVY_RT_MAX real-time slots lets a job that is not real-time past.
     if [ "$rt" = 0 ] && [[ $hval == *rt* ]] && rt_full; then backfill=1; fi
   fi
-  if [ -n "$head" ] && [ "$head" != "$ticket" ] && [ "$backfill" = 0 ]; then
+  if [ "$pinned" = 1 ]; then
+    at_head=0
+  elif [ -n "$head" ] && [ "$head" != "$ticket" ] && [ "$backfill" = 0 ]; then
     at_head=0
     if [ $((now - last_note)) -ge 60 ]; then
       echo "heavy: queued for a $lane slot ($((now - start))s), behind $(ls "$DIR"/queue.$qlane.* 2>/dev/null | awk -v me="$ticket" '$0==me{exit} {n++} END{print n+0}') job(s)." >&2
@@ -319,7 +333,7 @@ while :; do
     HEAVY_HELD=offload "$OFFLOAD" offer "$@"
     rc=$?
     [ "$rc" != 75 ] && exit "$rc"
-    echo "$tval" > "$ticket"
+    [ "$pinned" = 1 ] || echo "$tval" > "$ticket"
     now=$(date +%s)
   fi
   if [ "$at_head" = 1 ] && [ $((now - last_note)) -ge 60 ]; then
