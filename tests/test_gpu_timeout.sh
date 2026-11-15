@@ -22,7 +22,9 @@ check() {
 	else echo "FAIL $name: took ${took}s (max $max), rc $rc (want $wantrc), output: $out"; fail=$((fail+1)); fi
 }
 check "offer falls back to local (75) with one WARN" 12 75 'WARN staging02 did not answer' "$src" offer ./game.sh --no-parse test headless_a
-check "offer skips a box that just timed out" 5 75 '^$' "$src" offer ./game.sh --no-parse test headless_a
+# One miss does not mark the box down (a busy box answering late flapped it, 2026-11-14); the second in a row does.
+check "offer tries the box again after one miss" 12 75 'miss 2 in a row' "$src" offer ./game.sh --no-parse test headless_a
+check "offer skips a box that missed twice" 5 75 '^$' "$src" offer ./game.sh --no-parse test headless_a
 check "capacity reports down" 12 0 'staging02 +0/0 .* down' env GPU_SUITE_BOXES=staging02 "$src" capacity
 check "status reports unreachable" 12 0 'unreachable' env GPU_BOX=staging02 "$src" status
 rm -rf "$tmp/heavy"/*

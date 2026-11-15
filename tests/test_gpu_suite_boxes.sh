@@ -27,8 +27,15 @@ if [[ -r $conf ]]; then
 	got=$(env GPU_SUITE_BOXES=ph bash -c 'id() { echo gamedev; }; . "$0" >/dev/null 2>&1; echo "$GPU_SUITE_BOXES"' "$conf")
 	if [[ $got == ph ]]; then echo "ok   heavy.conf keeps the caller's GPU_SUITE_BOXES"; else echo "FAIL heavy.conf overrode GPU_SUITE_BOXES (got [$got])"; fail=$((fail+1)); fi
 fi
-# Pinned box down: offer exits 69, never 75.
-h=$(mktemp -d); touch "$h/gpu-down.ph"; mkdir "$h/game-x"; : > "$h/game-x/project.godot"; printf '#!/bin/sh\n' > "$h/game-x/game.sh"; chmod +x "$h/game-x/game.sh"
-rc=0; out=$(cd "$h/game-x" && GODOT_ROOT=$h WT_ROOT=$h/wt HEAVY_DIR=$h GPU_BOX=ph "$src" offer ./game.sh --no-parse test headless_a 2>&1) || rc=$?
-if [[ $rc == 69 ]]; then echo "ok   pinned-down offer rc=$rc"; else echo "FAIL pinned-down offer rc=$rc: $out"; fail=$((fail+1)); fi
+# Pinned box down: the real `offer`, against a host that cannot answer (.invalid never resolves). Down 600+ s: 69, never
+# 75. Down only a moment (a flapping marker): 75, so heavy keeps the job; it exited 69 on one missed handshake (fc-sim-host-1).
+h=$(mktemp -d); mkdir "$h/game-x"; : > "$h/game-x/project.godot"; printf '#!/bin/sh\n' > "$h/game-x/game.sh"; chmod +x "$h/game-x/game.sh"
+now=$(date +%s)
+for c in "$((now - 10000)) 69" "$now 75"; do
+	set -- $c
+	echo "$1 $now 5" > "$h/gpu-down.ph"
+	rc=0; out=$(cd "$h/game-x" && GODOT_ROOT=$h WT_ROOT=$h/wt HEAVY_DIR=$h GPU_BOX=ph GPU_HOST=nobody@box.invalid timeout 60 "$src" offer ./game.sh --no-parse test headless_a 2>&1) || rc=$?
+	if [[ $rc == "$2" ]]; then echo "ok   pinned-down offer, first miss $((now - $1)) s ago: rc=$rc"; else echo "FAIL pinned-down offer, first miss $((now - $1)) s ago: want $2, rc=$rc: $out"; fail=$((fail+1)); fi
+done
+rm -rf "$h"
 exit $((fail > 0))

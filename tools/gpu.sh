@@ -292,6 +292,19 @@ remote_locked() {
 	"${SSH[@]}" "flock -o ~/gpu/.gate flock $w-o ~/gpu/.lock bash -lc $(printf '%q' "$cmd")"
 }
 
+# remote_shared <key> cmd...: like remote_locked, for CPU-only preparation (a headless --import, a release export). It holds
+# ~/gpu/.lock shared, as a suite does, and never takes ~/gpu/.gate, so the box keeps taking suites meanwhile; a per-key
+# ~/gpu/prep.<key>.lock keeps two preparations of the same thing apart. Taking the gate for these left PH showing 0/30 free
+# with its CPU idle for the length of an import. It still waits for (or, with GATE_WAIT, gives up on with 197) an
+# exclusive holder, which needs the box to itself.
+remote_shared() {
+	local key=$1 cmd w=
+	shift
+	cmd=$(printf '%q ' "$@")
+	(( ${GATE_WAIT:-0} > 0 )) && w="-E 197 -w $GATE_WAIT "
+	"${SSH[@]}" "flock $w-o ~/gpu/prep.$key.lock flock $w-s -o ~/gpu/.lock bash -lc $(printf '%q' "$cmd")"
+}
+
 # GPU_RELEASE=1 (run): bench a release export instead of the editor binary. Production ships --export-release, and a release build
 # runs the client frame ~27% faster than the editor's debug build (FC, 32 players, 12.7 -> 9.2 ms), so frame times quoted for a
 # shipped game must come from one. tools/gpu-release-export.sh (run on the box) exports the synced project once per content
@@ -315,7 +328,8 @@ run_release() {
 	"${SSHQ[@]}" "mkdir -p ~/gpu/rel-tools"
 	rsync -az -e "$RSH" "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/gpu-release-export.sh" "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/gpu-release-presets.cfg" "$HOST:gpu/rel-tools/" || return
 	local out
-	out=$(remote_locked bash "$REMOTE_HOME/gpu/rel-tools/gpu-release-export.sh" "$project" "$scene" | tail -1) || return
+	# One key for every project: the export cache in ~/gpu/rel is shared and pruned to the newest 3.
+	out=$(remote_shared rel bash "$REMOTE_HOME/gpu/rel-tools/gpu-release-export.sh" "$project" "$scene" | tail -1) || return
 	[[ -n $out ]] || return 1
 	echo "gpu.sh: release export $out" >&2
 	remote_locked bash -c "cd $(printf '%q' "$out") && exec timeout -k 15 ${GPU_TIMEOUT:-1800} $(printf '%q ' "${xrun[@]}" ./game.x86_64 "${drv[@]}" "${args[@]}")"
@@ -914,7 +928,8 @@ in_slice nice -n 5 timeout "$limit" bash -c '
 	wait $c; rc=$?
 	while kill -0 $c 2>/dev/null; do wait $c; rc=$?; done
 	pk=$(cat "$cg/memory.peak" 2>/dev/null || echo 0); us=$(awk "/^usage_usec/ {print \$2}" "$cg/cpu.stat" 2>/dev/null)
-	echo "__GPU_STATS peak_mb=$((pk / 1048576)) cpu_s=$(( ${us:-0} / 1000000 ))"
+	ok=$(awk "/^oom_kill / {print \$2}" "$cg/memory.events" 2>/dev/null)
+	echo "__GPU_STATS peak_mb=$((pk / 1048576)) cpu_s=$(( ${us:-0} / 1000000 )) oom_kill=${ok:-0}"
 	exit $rc' _ "$@" </dev/null 6>&- 7>&- 9>&- {f}>&- 2>&1 | while IFS= read -r line; do
 		if [[ $line == __GPU_STATS* ]]; then
 			line="$line wall_s=$(( $(date +%s) - t0 ))"
@@ -1008,10 +1023,123 @@ EOF
 # Failed copies of a worktree to a box (2026-11-08): after GPU_COPY_FAIL_MAX (5) failed rsyncs of THIS job
 # (worktree + command) to a box, that box is not offered the job again. State is a file per box and job in
 # $HEAVY_DIR, because heavy runs a fresh `offer` every 15 s. A successful copy resets the count.
-copyfail_file() { local b=$1; shift; printf '%s/gpu-copyfail.%s.%s' "${HEAVY_DIR:-/var/tmp/heavy}" "$b" "$(printf '%s\n' "${PROJ_DIR:-$PWD}|$*" | md5sum | cut -c1-16)"; }
-copyfail_count() { local f; f=$(copyfail_file "$@"); if [[ -s $f ]]; then cat "$f" 2>/dev/null || echo 0; else echo 0; fi; }
+# The job is the `offer` command line (JOB_ARGS): offer_on bumped with its own unwrapped arguments while `offer` counted the
+# command line, so the two keys never met and no box was ever blocked (fixed 2026-11-15). A count is one read of the file:
+# another job may empty or remove it at any moment.
+job_hash() { printf '%s\n' "${PROJ_DIR:-$PWD}|$*" | md5sum | cut -c1-16; }
+copyfail_file() { local b=$1; shift; printf '%s/gpu-copyfail.%s.%s' "${HEAVY_DIR:-/var/tmp/heavy}" "$b" "$(job_hash "$@")"; }
+copyfail_count() { local n; n=$(cat "$(copyfail_file "$@")" 2>/dev/null) || n=0; [[ $n =~ ^[0-9]+$ ]] || n=0; echo "$n"; }
 copyfail_bump() { local f n; f=$(copyfail_file "$@"); n=$(copyfail_count "$@"); mkdir -p "$(dirname "$f")"; echo $((n + 1)) >"$f"; }
 copyfail_reset() { rm -f "$(copyfail_file "$@")"; }
+
+# Down markers, $HEAVY_DIR/gpu-down.<box>: "<first miss> <last miss> <misses in a row>", written by a handshake that got no
+# answer, removed by one that did. Every reader goes through down_read/box_down, which read the file once and treat a
+# marker that vanished meanwhile as "up": `[[ -e $down ]]` then `stat` lost that race to a job removing it and the arithmetic
+# on stat's empty output aborted the offer, rc 1 and the suite never ran (2026-11-14). A box counts as down only after
+# GPU_DOWN_AFTER (default 2) misses in a row, for GPU_DOWN_S (default 300) after the last one: one slow handshake from a busy
+# box marked it down for every job while the next reply cleared it again, and GPU_BOX-pinned jobs exited 69 on that flap.
+# An empty marker (the older format) is one miss at its mtime that counts as down.
+down_file() { printf '%s/gpu-down.%s' "${HEAVY_DIR:-/var/tmp/heavy}" "$1"; }
+down_read() {
+	local s= l= n=
+	{ read -r s l n || true; } 2>/dev/null <"$1" || return 1
+	if ! [[ $s =~ ^[0-9]+$ && $l =~ ^[0-9]+$ && $n =~ ^[0-9]+$ ]]; then
+		l=$(stat -c %Y "$1" 2>/dev/null) || return 1
+		s=$l n=${GPU_DOWN_AFTER:-2}
+	fi
+	echo "$s $l $n"
+}
+box_down() {
+	local s l n
+	read -r s l n < <(down_read "$1") || return 1
+	(( n >= ${GPU_DOWN_AFTER:-2} && $(date +%s) - l < ${GPU_DOWN_S:-300} ))
+}
+# mark_down <marker>: one more miss; prints the misses in a row. A miss after GPU_DOWN_S of quiet starts a new run.
+mark_down() {
+	local f=$1 s l n now t
+	now=$(date +%s)
+	if read -r s l n < <(down_read "$f") && (( now - l < ${GPU_DOWN_S:-300} )); then n=$((n + 1)); else s=$now n=1; fi
+	mkdir -p "$(dirname "$f")" 2>/dev/null || true
+	t="$f.tmp.$$"
+	{ echo "$s $now $n" >"$t" && mv -f "$t" "$f"; } 2>/dev/null || rm -f "$t"
+	echo "$n"
+}
+
+# The boxes this offer tries, one per line: suite_boxes minus those down. A job pinned with GPU_BOX whose boxes are all
+# marked down is not failed on the marker alone: each pinned box is asked directly (box_capacity), and one that answers
+# is cleared and offered. Only when none answers and every one has been down GPU_PIN_DOWN_S (default 600; 0 = never)
+# since its first miss does the job fail (69); before that it waits (75), like a busy box.
+offer_boxes() {
+	local b order=() s l n now
+	for b in $(suite_boxes); do box_down "$(down_file "$b")" || order+=("$b"); done
+	if [[ ${#order[@]} == 0 && -n ${GPU_BOX:-} ]]; then
+		local old=1
+		for b in $(suite_boxes); do
+			if [[ $( set_box "$b"; box_capacity ) != *" down" ]]; then
+				rm -f "$(down_file "$b")"; order+=("$b")
+				echo "gpu.sh: $b was marked down but answers; offering it" >&2
+				continue
+			fi
+			mark_down "$(down_file "$b")" >/dev/null
+			now=$(date +%s)
+			if read -r s l n < <(down_read "$(down_file "$b")"); then :; else s=$now; fi
+			(( ${GPU_PIN_DOWN_S:-600} > 0 && now - s >= ${GPU_PIN_DOWN_S:-600} )) || old=0
+		done
+		if [[ ${#order[@]} == 0 ]]; then
+			if [[ $old == 1 ]]; then
+				echo "gpu.sh: GPU_BOX='$GPU_BOX' pins this job and every pinned box has been down ${GPU_PIN_DOWN_S:-600}+ s; not running it elsewhere" >&2
+				return 69
+			fi
+			[[ ${GPU_OFFER_VERBOSE:-0} == 1 ]] && echo "gpu.sh: GPU_BOX='$GPU_BOX' is not answering; waiting (fails after ${GPU_PIN_DOWN_S:-600} s down)" >&2
+			return 75
+		fi
+	fi
+	[[ ${#order[@]} == 0 ]] || printf '%s\n' "${order[@]}"
+}
+
+# Infrastructure kills (2026-11-15): the laptop's memory cap OOM-killed suites (rc 143/137 and no suite output), and agents
+# read them as real failures. A job the box killed (rc 137 or 143: the box's own `timeout` gives 124, a suite failure is a
+# small number) or that lost a process to the OOM killer (oom_kill in its scope's memory.events, sent in __GPU_STATS) is
+# reported as such and given back (75), and the box is not offered this job again for GPU_INFRA_FORGET_S (default 6 h), so the
+# next offer goes to another box. After GPU_INFRA_RETRIES (default 2; 0 = no limit) such kills of one job its rc stands.
+infra_file() { local b=$1; shift; printf '%s/gpu-infra.%s.%s' "${HEAVY_DIR:-/var/tmp/heavy}" "$b" "$(job_hash "$@")"; }
+infra_count() { # <box, or * for all boxes> job...: kills within GPU_INFRA_FORGET_S
+	local b=$1 d=${HEAVY_DIR:-/var/tmp/heavy} h; shift
+	h=$(job_hash "$@")
+	if [[ $b == '*' ]]; then set -- "$d"/gpu-infra.*."$h"; else set -- "$d/gpu-infra.$b.$h"; fi
+	{ cat "$@" 2>/dev/null || true; } | awk -v t=$(( $(date +%s) - ${GPU_INFRA_FORGET_S:-21600} )) '$1 ~ /^[0-9]+$/ && $1 >= t {n++} END {print n + 0}'
+}
+infra_reset() { rm -f "${HEAVY_DIR:-/var/tmp/heavy}"/gpu-infra.*."$(job_hash "$@")" 2>/dev/null || true; }
+# infra_kill <rc> <oom kills> job...: 0 when this was an infra kill to retry elsewhere (the caller gives the job back).
+infra_kill() {
+	local rc=$1 oom=${2:-0} n max=${GPU_INFRA_RETRIES:-2} f; shift 2
+	[[ $rc != 0 ]] || return 1
+	[[ $rc == 137 || $rc == 143 || $oom != 0 ]] || return 1
+	f=$(infra_file "$BOX" "$@"); mkdir -p "$(dirname "$f")" 2>/dev/null || true
+	date +%s >>"$f" 2>/dev/null || true
+	n=$(infra_count '*' "$@")
+	echo "gpu.sh: INFRA KILL on $BOX: the job was killed (rc $rc$([[ $oom != 0 ]] && echo ", $oom process(es) OOM-killed in its scope")), not a suite failure" >&2
+	if (( max == 0 || n <= max )); then
+		echo "gpu.sh: giving it back to be run again on another box (infra kill $n, at most $( ((max)) && echo "$max" || echo unlimited) retries)" >&2
+		return 0
+	fi
+	echo "gpu.sh: $n infra kills of this job in a row; not retrying again, rc $rc stands" >&2
+	infra_reset "$@"
+	return 1
+}
+
+# One try of the offer on box $1 (marker $2), in a subshell. set -e stops it at the first unchecked failure, which used to
+# end the try with rc 1 and not a word (the unresolved_links abort, 2026-11-14): the ERR trap names the failing command.
+offer_try() {
+	local b=$1 down=$2
+	set -eE
+	# Only this process's own failures: -E also runs the trap inside $(...), where a failure can be checked by the caller.
+	OFFER_PID=$BASHPID
+	trap 'rc=$?; [[ $BASHPID == "$OFFER_PID" ]] && echo "gpu.sh: offer to $b stopped (rc $rc) at gpu.sh line $LINENO: $BASH_COMMAND" >&2' ERR
+	set_box "$b"
+	if [[ ${UW_KIND:-} == tool || ${UW_KIND:-} == parse ]]; then offer_on "$down" "$UW_KIND" "${UW_ENV[@]}" "${UW_REST[@]}"
+	else offer_on "$down" "${UW_REST[0]}" "${UW_ENV[@]}" "${UW_REST[@]:1}"; fi
+}
 
 # One offer to the current box (set_box); runs in a subshell, so `exit` ends just this try.
 offer_on() {
@@ -1034,8 +1162,8 @@ offer_on() {
 	reply=
 	read -r -t "${GPU_HANDSHAKE_TIMEOUT:-30}" -u "$lane_out" reply || true
 	if [[ -z $reply ]]; then
-		mkdir -p "$(dirname "$down")"; touch "$down"
-		echo "gpu.sh: WARN $BOX did not answer in time; treating it as unavailable (running locally)" >&2
+		local miss; miss=$(mark_down "$down")
+		echo "gpu.sh: WARN $BOX did not answer in time (miss $miss in a row; skipped from ${GPU_DOWN_AFTER:-2}); not running it there" >&2
 	else rm -f "$down"; fi
 	# GPU_OFFER_VERBOSE=1 says why a box said no (heavy offers every 15 s, so it is quiet by default).
 	[[ $reply == OK* ]] || back_to_queue "$([[ ${GPU_OFFER_VERBOSE:-0} == 1 ]] && echo "$BOX: ${reply:-no answer}")"
@@ -1069,19 +1197,19 @@ offer_on() {
 	while IFS=$'\t' read -r _ lk lt; do ex+=(--exclude "/$lk"); done < <(linked_siblings "$PROJ_DIR")
 	local bad; bad=$(unresolved_links "$PROJ_DIR" || true)
 	if [[ -n $bad ]]; then
-		copyfail_bump "$BOX" "$@"
+		copyfail_bump "$BOX" "${JOB_ARGS[@]}"
 		echo "gpu.sh: $PROJ_DIR has links that dangle or loop; rsync --copy-links would stop with rc 23. Fix or remove them:" >&2
 		sed 's/^/  /' <<<"$bad" >&2
-		back_to_queue "not copying $project to $BOX ($(copyfail_count "$BOX" "$@")/${GPU_COPY_FAIL_MAX:-5})"
+		back_to_queue "not copying $project to $BOX ($(copyfail_count "$BOX" "${JOB_ARGS[@]}")/${GPU_COPY_FAIL_MAX:-5})"
 	fi
 	while IFS=$'\t' read -r _ lk lt; do ex+=(--exclude "/$lk"); done < <(linked_siblings "$PROJ_DIR")
 	rsync -az --delete --copy-links --exclude '.godot/' --exclude '.git/' --exclude 'screenshots/' "${ex[@]}" \
 		-e "$RSH" \
 		"$PROJ_DIR/" "$HOST:gpu/ws/$wsid/$project/" || {
-			copyfail_bump "$BOX" "$@"
-			back_to_queue "copying $project to $BOX failed ($(copyfail_count "$BOX" "$@")/${GPU_COPY_FAIL_MAX:-5})"
+			copyfail_bump "$BOX" "${JOB_ARGS[@]}"
+			back_to_queue "copying $project to $BOX failed ($(copyfail_count "$BOX" "${JOB_ARGS[@]}")/${GPU_COPY_FAIL_MAX:-5})"
 		}
-	copyfail_reset "$BOX" "$@"
+	copyfail_reset "$BOX" "${JOB_ARGS[@]}"
 
 	while IFS=$'\t' read -r _ lk lt; do
 		"${SSHQ[@]}" "cd ~/gpu/ws/$wsid/$project && rm -rf ./$lk && mkdir -p ./$(dirname $lk) && ln -s $lt ./$lk" </dev/null ||
@@ -1099,7 +1227,7 @@ offer_on() {
 		{ printf 'go none %s\n' "${sibarg:-,}" >&"$lane_in"; } 2>/dev/null || true
 	fi
 	exec {lane_in}>&-
-	rc= logsnap=
+	rc= logsnap= oom=0 nout=0
 	while IFS= read -r line <&"$lane_out"; do
 		if [[ $line == __GPU_SUITE_RC=* ]]; then rc=${line#*=}
 		elif [[ $line == __GPU_LOGS=* ]]; then logsnap=${line#*=}
@@ -1108,7 +1236,8 @@ offer_on() {
 			mkdir -p "$HOME/.fleet" 2>/dev/null
 			printf '%s\t%s\t%s\t%s\t%s\n' "$(date +%FT%T)" "$BOX" "$wsid" "${line#__GPU_STATS }" "$*" >> "$HOME/.fleet/gpu-stats.tsv" 2>/dev/null
 			echo "gpu.sh: $BOX ${line#__GPU_STATS }" >&2
-		else printf '%s\n' "$line"; fi
+			[[ $line =~ oom_kill=([0-9]+) ]] && oom=${BASH_REMATCH[1]}
+		else printf '%s\n' "$line"; nout=$((nout + 1)); fi
 	done
 	wait "$lane_pid" 2>/dev/null || true
 	# No exit code means the connection went mid-run: run it again here rather than
@@ -1145,6 +1274,12 @@ offer_on() {
 		fi
 		rm -f "$cl"
 	fi
+	# A failure with nothing printed gets one line of why, never a bare rc (2026-11-14: agents read silent rc 1 as a suite failure).
+	if [[ $rc != 0 && $nout == 0 ]]; then
+		echo "gpu.sh: the job on $BOX exited $rc without printing anything (its import log there: ~/gpu/suite/$wsid.import.log)" >&2
+	fi
+	infra_kill "$rc" "$oom" "${JOB_ARGS[@]}" && { lane_pid=; back_to_queue "the infra kill on $BOX is not this job's result"; }
+	infra_reset "${JOB_ARGS[@]}"
 	exit "$rc"
 }
 
@@ -1268,7 +1403,7 @@ shot_on() {
 	trap '' PIPE
 	reply=$("${SSHQ[@]}" "bash -c $(printf '%q' "$GUARD_FN"$'\n'"$REMOTE_SHOT") _ probe $(printf '%q ' \
 		"$project" "$DESKTOP_GUARD" 5 "$limit")" 2>/dev/null | tail -1) || true
-	if [[ -z $reply ]]; then mkdir -p "$(dirname "$down")"; touch "$down"; exit 76; else rm -f "$down"; fi
+	if [[ -z $reply ]]; then mark_down "$down" >/dev/null; exit 76; else rm -f "$down"; fi
 	[[ $reply == OK ]] || { [[ ${GPU_OFFER_VERBOSE:-0} == 1 ]] && echo "gpu.sh: $BOX: $reply" >&2; exit 75; }
 	local rs=(-e "$RSH")
 	"${SSHQ[@]}" "mkdir -p ~/gpu/shot/$project" && \
@@ -1344,8 +1479,8 @@ shot_cmd() {
 		while :; do
 			local answered=0 mine=0
 			for b in ${GPU_SHOT_BOXES:-staging staging02}; do
-				down="${HEAVY_DIR:-/var/tmp/heavy}/gpu-down.$b"
-				[[ -e $down && $(( $(date +%s) - $(stat -c %Y "$down" 2>/dev/null || echo 0) )) -lt 300 ]] && continue
+				down=$(down_file "$b")
+				box_down "$down" && continue
 				# Two shots of one project on one box would rsync over each other's copy, so dev02 holds one lock
 				# per project and box (2026-11-08; it was one per project, which kept the second GPU idle while
 				# a project's shots queued): a second shot of the project takes the other GPU at the same time.
@@ -1767,7 +1902,8 @@ case "${1:-}" in
 		# non-editor run of that never finishes: it spun for 24 minutes holding the lock. Import
 		# first, headless, whenever the class cache is missing or a source is newer than it (new glbs left
 		# "Cannot open file .godot/imported/...scn" on a box that had imported before).
-		remote_locked bash -c "cd $(printf '%q' "$REMOTE_HOME/$REMOTE_ROOT/$project") && { [ -f .godot/global_script_class_cache.cfg ] && [ -z \"\$(find . -path ./.godot -prune -o \\( -name \"*.import\" -o -name \"*.glb\" -o -name \"*.gd\" \\) -newer .godot/global_script_class_cache.cfg -print -quit)\" ] || timeout 900 $REMOTE_HOME/gpu/bin/godot --headless --path . --import >/dev/null 2>&1 </dev/null; }; true" || return
+		# Shared, not exclusive: an import needs no GPU and must not stop the box taking suites (remote_shared).
+		remote_shared "import.$project" bash -c "cd $(printf '%q' "$REMOTE_HOME/$REMOTE_ROOT/$project") && { [ -f .godot/global_script_class_cache.cfg ] && [ -z \"\$(find . -path ./.godot -prune -o \\( -name \"*.import\" -o -name \"*.glb\" -o -name \"*.gd\" \\) -newer .godot/global_script_class_cache.cfg -print -quit)\" ] || timeout 900 $REMOTE_HOME/gpu/bin/godot --headless --path . --import >/dev/null 2>&1 </dev/null; }; true" || return
 		idx=$GPU_INDEX
 		[[ -n $idx ]] || idx=$("${SSHQ[@]}" "vulkaninfo --summary 2>/dev/null | awk '/^GPU[0-9]+:/ {g=substr(\$1,4)+0} /deviceName.*NVIDIA/ {print g; exit}'" 2>/dev/null) || true
 		local xrun=(xvfb-run -a -s "-screen 0 1920x1080x24")
@@ -1915,16 +2051,9 @@ case "${1:-}" in
 		offer_eligible "$@" || { [[ ${GPU_OFFER_VERBOSE:-0} == 1 ]] && echo "gpu.sh: not a suite these boxes can run" >&2; exit 75; }
 		# The build VM (ph, 12 slots) first, then the desktop (staging02), then the laptop, dev02 last.
 		# A real-time suite (REALTIME_SUITES above) skips ph and the laptop: staging02, then dev02.
-		order=$(for b in $(suite_boxes); do
-			down="${HEAVY_DIR:-/var/tmp/heavy}/gpu-down.$b"
-			[[ -e $down && $(( $(date +%s) - $(stat -c %Y "$down" 2>/dev/null || echo 0) )) -lt 300 ]] && continue
-			echo "$b"
-		done)
-		# GPU_BOX pins the job: with every pinned box down it must fail, not wait to run on dev02 or elsewhere.
-		if [[ -z $order && -n ${GPU_BOX:-} ]]; then
-			echo "gpu.sh: GPU_BOX='$GPU_BOX' pins this job and every pinned box is down; not running it elsewhere" >&2
-			exit 69
-		fi
+		JOB_ARGS=("$@")
+		rc=0; order=$(offer_boxes) || rc=$?
+		[[ $rc == 0 ]] || exit "$rc"
 		# A box whose copies of this job failed GPU_COPY_FAIL_MAX times is no longer offered it.
 		blocked=0
 		order=$(for b in $order; do
@@ -1933,6 +2062,9 @@ case "${1:-}" in
 		done 3>"${TMPDIR:-/tmp}/gpu-blocked.$$")
 		[[ -s ${TMPDIR:-/tmp}/gpu-blocked.$$ ]] && blocked=1
 		rm -f "${TMPDIR:-/tmp}/gpu-blocked.$$"
+		# A box that killed this job (infra_kill) is skipped for it, unless that leaves none.
+		kept=$(for b in $order; do (( $(infra_count "$b" "$@") > 0 )) || echo "$b"; done)
+		[[ -z $kept ]] || order=$kept
 		# A sharded suite (hv shard sets HV_SHARD=1) must never fall back to importing on dev02: once copies
 		# to every usable box have failed, fail it (69) instead of 75, which leaves it to the local queue.
 		if [[ -z $order && $blocked == 1 && ${HV_SHARD:-0} == 1 ]]; then
@@ -1942,10 +2074,10 @@ case "${1:-}" in
 		for b in $order; do
 			# A box that did not answer is skipped for 5 minutes: heavy offers every 15 s,
 			# and a 10 s connect timeout each time would be most of the wait.
-			down="${HEAVY_DIR:-/var/tmp/heavy}/gpu-down.$b"
-			[[ -e $down && $(( $(date +%s) - $(stat -c %Y "$down" 2>/dev/null || echo 0) )) -lt 300 ]] && continue
+			down=$(down_file "$b")
+			box_down "$down" && continue
 			set +e
-			( set -e; set_box "$b"; if [[ ${UW_KIND:-} == tool || ${UW_KIND:-} == parse ]]; then offer_on "$down" "$UW_KIND" "${UW_ENV[@]}" "${UW_REST[@]}"; else offer_on "$down" "${UW_REST[0]}" "${UW_ENV[@]}" "${UW_REST[@]:1}"; fi )
+			( offer_try "$b" "$down" )
 			rc=$?
 			set -e
 			[[ $rc == 75 ]] || exit "$rc"
