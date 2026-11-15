@@ -205,6 +205,12 @@ rsync() {
 	if (( slots <= 0 )); then command rsync --bwlimit="$bw" "$@"; return; fi
 	local nextnote=$(( note < 5 ? note : 5 ))
 	mkdir -p "$dir" 2>/dev/null && chmod 1777 "$dir" 2>/dev/null
+	# Shared by every user on this host (gamedev, christian, core): the slot locks are created world-writable and
+	# opened read-only (flock needs no write access), so a lock another user created no longer fails `exec >` and
+	# leaves the caller waiting forever (2026-11-15: "job errored on a /tmp rsync-queue file").
+	for ((i = 1; i <= slots; i++)); do
+		[[ -e $dir/slot.$i.lock ]] || { ( umask 0; : > "$dir/slot.$i.lock" ) 2>/dev/null; }
+	done
 	t=${EPOCHREALTIME/./}; me="$dir/$t.$BASHPID"
 	printf '%s\n' "$BASHPID" > "$me" 2>/dev/null || me=
 	while :; do
@@ -214,13 +220,14 @@ rsync() {
 				[[ -e $f ]] || continue
 				[[ $f == "$me" ]] && break
 				p=$(<"$f") 2>/dev/null
-				if [[ -n $p ]] && ! kill -0 "$p" 2>/dev/null; then rm -f "$f"; continue; fi
+				# A dead waiter's ticket never counts, even when the sticky dir keeps us from removing another user's file.
+				if [[ -n $p ]] && ! kill -0 "$p" 2>/dev/null; then rm -f "$f" 2>/dev/null; continue; fi
 				pos=$((pos + 1))
 			done
 		fi
 		if (( pos < slots )); then
 			for ((i = 1; i <= slots; i++)); do
-				{ exec {fd}>"$dir/slot.$i.lock"; } 2>/dev/null || continue
+				{ exec {fd}<"$dir/slot.$i.lock"; } 2>/dev/null || continue
 				if flock -n "$fd"; then
 					(( noted )) && echo "gpu.sh: rsync slot after $((SECONDS - t0)) s" >&2
 					command rsync --bwlimit="$bw" "$@"; rc=$?
@@ -418,6 +425,26 @@ pick_box() {
 # box, in set_box). Measured peaks are ~1.1 GB per suite (2026-11-08); heavy's 3.5 GB worst case on
 # dev02 is what SUITE_MAX_GB still allows one suite to reach.
 SUITE_MIN_GB="${GPU_SUITE_MIN_GB:-2}"
+
+# Learned memory need (2026-11-15, laptop-oom-suites-1): the fixed SUITE_MIN_GB let a whole-repo `game.sh test` (3.8 GB
+# peak) start beside the laptop's owner on 2 GB + reserve and get OOM-killed. What a job needs to start is what the same
+# command peaked at in its last GPU_MEM_HISTORY (8) runs on any box (~/.fleet/gpu-stats.tsv, the `__GPU_STATS` rows),
+# x1.25, in whole GB, never below SUITE_MIN_GB; a run that lost a process to the OOM killer counts as 1.6 x its peak
+# (the peak is only how far it got). GPU_MEM_LEARN=0 turns it off (fixed SUITE_MIN_GB). Prints the GB.
+learned_need_gb() { # <the job's "$*" as written to the stats file>
+	local f=${GPU_STATS_FILE:-$HOME/.fleet/gpu-stats.tsv} mb
+	[[ ${GPU_MEM_LEARN:-1} != 0 && -r $f ]] || { echo "$SUITE_MIN_GB"; return; }
+	mb=$(awk -F'\t' -v key="$1" -v n="${GPU_MEM_HISTORY:-8}" '$5 == key {
+			pk = 0; ok = 0
+			if (match($4, /peak_mb=[0-9]+/)) pk = substr($4, RSTART + 8, RLENGTH - 8)
+			if (match($4, /oom_kill=[0-9]+/)) ok = substr($4, RSTART + 9, RLENGTH - 9)
+			if (ok > 0) pk = pk * 1.6
+			v[++c] = pk
+		} END { s = c > n ? c - n + 1 : 1; for (i = s; i <= c; i++) if (v[i] > m) m = v[i]; printf "%d", m * 1.25 }' "$f" 2>/dev/null)
+	local gb=$(( (${mb:-0} + 1023) / 1024 ))
+	(( gb < SUITE_MIN_GB )) && gb=$SUITE_MIN_GB
+	echo "$gb"
+}
 
 # A person at the machine: a local, active login that owns a seat (a graphical or console
 # session). Our own ssh logins are Remote=yes, and the systemd "manager" session an ssh
@@ -829,7 +856,9 @@ for v in $(seq 1 "$variants"); do
 done
 [ -n "$wsid" ] || { echo "BUSY $variants copies of $project are already running here"; exit 0; }
 avail=$(awk '/MemAvailable/ {print int($2/1048576)}' /proc/meminfo)
-[ "$avail" -ge $((reserve + min_gb)) ] || { echo "BUSY only $avail GB free (keeps $reserve GB)"; exit 0; }
+[ "$avail" -ge $((reserve + min_gb)) ] || {
+	total=$(awk '/MemTotal/ {print int($2/1048576)}' /proc/meminfo)
+	echo "BUSY only $avail GB free; this job needs $min_gb GB (its recent peaks) and the box keeps $reserve GB$([ "$total" -lt $((reserve + min_gb)) ] && echo ". It can NEVER fit here ($total GB in total): lower GPU_SUITE_RESERVE_GB or send it to a bigger box")"; exit 0; }
 printf '%s\n' "$who" > "suite.$slot.who"
 trap ': > ~/gpu/suite.'"$slot"'.who' EXIT
 # game.sh's parse pass lists scripts with `git ls-files`, which leaves out untracked
@@ -1145,9 +1174,10 @@ offer_try() {
 offer_on() {
 	local down=$1; shift
 	who="$(whoami)@$(hostname -s) since $(date +%H:%M:%S): $project: $*"
+	local need_gb; need_gb=$(learned_need_gb "$*")
 	trap '' PIPE  # a box that vanishes mid-handshake is a 75, not a SIGPIPE death
 	coproc LANE { exec "${SSH[@]}" "bash -c $(printf '%q' "$GUARD_FN"$'\n'"$REMOTE_SUITE") _ $(printf '%q ' \
-		"$project" "$SUITE_SLOTS" "$SUITE_MIN_GB" "$SUITE_MAX_GB" "$who" "$DESKTOP_GUARD" "${UW_LIMIT:-5400}" "${UW_KIND:-game}" \
+		"$project" "$SUITE_SLOTS" "$need_gb" "$SUITE_MAX_GB" "$who" "$DESKTOP_GUARD" "${UW_LIMIT:-5400}" "${UW_KIND:-game}" \
 		"$SUITE_RESERVE_GB" "$SUITE_VARIANTS" "$(realtime_job && echo 1 || echo 0)" "$RT_MAX" "$RT_BUSY" "${@:2}")"; }
 	lane_out=${LANE[0]} lane_in=${LANE[1]} lane_pid=$LANE_PID
 	# bash closes the coproc fds when it reaps the ssh; a dup survives that, so the last read cannot hit EBADF.

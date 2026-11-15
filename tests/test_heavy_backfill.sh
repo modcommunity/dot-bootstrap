@@ -30,7 +30,7 @@ head_ticket() {
 # waiter MINGB MAXWAIT MARKER: run heavy for `touch MARKER` with a memory need of MINGB; prints its exit code.
 waiter() {
 	PATH="$tmp/bin:$PATH" HEAVY_DIR=$tmp/dir HEAVY_CGROUP=$tmp/cg HEAVY_JOB_MAX_GB=0 HEAVY_JOB_CPUS=1 \
-	HEAVY_OFFLOAD= GPU_OFFLOAD=0 HEAVY_SLOTS_BUILD=1 HEAVY_SLOTS_CHECK=1 HEAVY_MIN_AVAIL_GB=$1 HEAVY_MAX_WAIT=$2 \
+	HEAVY_NEED_CHECK=0 HEAVY_OFFLOAD= GPU_OFFLOAD=0 HEAVY_SLOTS_BUILD=1 HEAVY_SLOTS_CHECK=1 HEAVY_MIN_AVAIL_GB=$1 HEAVY_MAX_WAIT=$2 \
 	timeout 60 "$src" -- touch "$3" >"$tmp/out" 2>&1
 	local rc=$?; sed 's/^/    heavy: /' "$tmp/out" | head -5 >&2
 	echo $rc
