@@ -1105,7 +1105,8 @@ link_content() {
             # Relative, so the two checkouts can move together: one ../ per level of
             # path, plus one out of the project itself.
             up="$(printf '%s' "$path" | awk -F/ '{for(i=1;i<NF;i++) printf "../"}')"
-            ln -s "../$up$src" "$dir/$path"
+            # -n: a link already there is replaced, never followed into (a real directory was refused above).
+            ln -sfn "../$up$src" "$dir/$path"
         fi
         say "$proj" "${DIM}$([ "$COPY_ADDONS" = "1" ] && echo copied || echo linked) $path -> $src${OFF}"
     done <<< "$(content_links_for "$proj")"

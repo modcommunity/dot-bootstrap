@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Driven by test_export.sh. Loads the export functions out of bootstrap.sh (the script
 # itself cannot be sourced: it runs a sync) and checks them against a fake release.
+# Run alone, it hands over to test_export.sh, which builds the fake release and calls
+# back here with H, T, TAG and DOT_GODOT_BASE set.
+if [ -z "${H:-}" ] || [ -z "${TAG:-}" ] || [ -z "${T:-}" ]; then
+    exec bash "$(cd "$(dirname "$0")" && pwd)/test_export.sh"
+fi
 set -u
 pass=0; fail=0
 check() { if eval "$2"; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $1"; fi; }

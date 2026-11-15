@@ -5,6 +5,10 @@
 # It refuses, and clones no second copy, when the folder is in use or DOT_NO_RENAME=1;
 # leaves both alone when both names exist; and leaves a foreign checkout under the old
 # name alone while cloning the listed one. Local bare remotes only; nothing leaves $T.
+# The sync also installs the Valve-origin hook, which runs tools/install-valve-hooks.sh and
+# needs a dot-cloud guard; this test has no dot-cloud checkout, so it gets a stand-in guard
+# (it only writes the hook) and the real installer. The guard itself is tested by
+# test_install_valve_hooks.sh.
 set -u
 H="$(cd "$(dirname "$0")/.." && pwd)"
 pass=0; fail=0
@@ -12,8 +16,21 @@ check() { if eval "$2"; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL
 
 T="$(mktemp -d)"; trap 'kill $holder 2>/dev/null; rm -rf "$T"' EXIT
 holder=
-mkdir -p "$T/bs" "$T/remote"
+mkdir -p "$T/bs/tools" "$T/remote" "$T/dot-cloud/tools"
 cp "$H/bootstrap.sh" "$T/bs/"
+cp "$H/tools/install-valve-hooks.sh" "$T/bs/tools/"
+cat > "$T/dot-cloud/tools/check_valve_files.py" <<'PY'
+# Stand-in for dot-cloud's guard: --install-hook writes a pre-commit hook that names this file.
+import os, subprocess, sys
+if len(sys.argv) != 3 or sys.argv[1] != "--install-hook": sys.exit(2)
+repo = sys.argv[2]
+common = subprocess.run(["git", "-C", repo, "rev-parse", "--git-common-dir"], capture_output=True, text=True).stdout.strip()
+if not common: sys.exit(1)
+common = os.path.join(repo, common)
+os.makedirs(os.path.join(common, "hooks"), exist_ok=True)
+with open(os.path.join(common, "hooks", "pre-commit"), "w") as f:
+    f.write("#!/bin/sh\nexec python3 -I '%s' --git --staged \"$@\"\n" % os.path.abspath(__file__))
+PY
 g() { git -c user.email=t@t -c user.name=t -c init.defaultBranch=main "$@"; }
 
 # Three repositories: a game that still names the old ones in its .gitignore, an addon
@@ -43,7 +60,7 @@ old_tree() { # <projects dir>
 }
 run() { # <projects dir> <VAR=value or ""> [bootstrap arguments]
     local p="$1" e="$2"; shift 2
-    (cd "$T" && env DOT_PROJECTS="$p" DOT_NATIVES=none DOT_STORES_FROM=none NO_COLOR=1 DOT_JOBS=1 $e ./bs/bootstrap.sh "$@" 2>&1)
+    (cd "$T" && env DOT_PROJECTS="$p" DOT_CLOUD="$T/dot-cloud" DOT_NATIVES=none DOT_STORES_FROM=none NO_COLOR=1 DOT_JOBS=1 $e ./bs/bootstrap.sh "$@" 2>&1)
 }
 
 # 1. The move: dirty work kept, links repointed, old names left as links, --check clean.
@@ -99,6 +116,16 @@ g clone -q "$T/remote/other.git" "$P/old-maps" 2>/dev/null
 out="$(run "$P" "")"
 check 'foreign: left alone'                 '[ -f "$P/old-maps/x.txt" ] && [ ! -L "$P/old-maps" ]'
 check 'foreign: the listed one is cloned'   '[ -f "$P/new-maps/maps/a.txt" ]'
+
+# 6. A real directory where a content link belongs is left alone and no link nests inside it.
+P="$T/p6"; old_tree "$P"
+run "$P" "" >/dev/null
+rm "$P/game-fc/maps/imported" && mkdir "$P/game-fc/maps/imported" && echo mine > "$P/game-fc/maps/imported/mine.txt"
+out="$(run "$P" "")"
+check 'real dir: left a real directory'      '[ -d "$P/game-fc/maps/imported" ] && [ ! -L "$P/game-fc/maps/imported" ]'
+check 'real dir: its contents are kept'      '[ "$(cat "$P/game-fc/maps/imported/mine.txt")" = mine ]'
+check 'real dir: no link nested inside it'   '[ ! -e "$P/game-fc/maps/imported/maps" ] && [ ! -L "$P/game-fc/maps/imported/maps" ]'
+check 'real dir: and reported'               'printf "%s" "$out" | grep -q "maps/imported is a real directory"'
 
 [ $fail -eq 0 ] || printf '%s\n' "$out" | tail -25
 echo "rename dirs: $pass passed, $fail failed"
