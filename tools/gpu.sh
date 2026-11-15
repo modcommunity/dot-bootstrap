@@ -356,10 +356,13 @@ box_lock() {
 	return 1
 }
 box_unlock() {
-	[[ -n ${SYNCLK_PID:-} ]] || return 0
+	# bash unsets SYNCLK_PID the moment it reaps the coproc (holder gone, or gone while we close its stdin below), so keep
+	# a copy: every later use of the bare name is an unbound variable under set -u.
+	local pid=${SYNCLK_PID:-}
+	[[ -n $pid ]] || return 0
 	eval "exec ${SYNCLK[1]}>&-" 2>/dev/null || true
-	local i; for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$SYNCLK_PID" 2>/dev/null || break; sleep 0.3; done
-	kill "$SYNCLK_PID" 2>/dev/null || true; wait "$SYNCLK_PID" 2>/dev/null || true; return 0
+	local i; for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$pid" 2>/dev/null || break; sleep 0.3; done
+	kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; return 0
 }
 
 # sync_tree <dir> <name> <dest, relative to ~/gpu on the box> [the job's extra rsync filter args, --exclude /<path> pairs]:
