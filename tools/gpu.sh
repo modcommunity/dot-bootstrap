@@ -651,9 +651,11 @@ realtime_job() {
 	done
 	return 1
 }
-# The boxes a suite job is offered to, in order (after offer_eligible).
+# The boxes a suite job is offered to, in order (after offer_eligible). GPU_BOX, when set, pins the
+# job to exactly those boxes (it wins over GPU_SUITE_BOXES and the tool/real-time lists).
 suite_boxes() {
-	if [[ ${UW_KIND:-} == tool ]]; then echo "${GPU_TOOL_BOXES:-ph}"
+	if [[ -n ${GPU_BOX:-} ]]; then echo "$GPU_BOX"
+	elif [[ ${UW_KIND:-} == tool ]]; then echo "${GPU_TOOL_BOXES:-ph}"
 	elif realtime_job; then echo "${GPU_REALTIME_BOXES:-staging02}"; else echo "${GPU_SUITE_BOXES:-ph staging02 staging}"; fi
 }
 
@@ -1900,6 +1902,11 @@ case "${1:-}" in
 			[[ -e $down && $(( $(date +%s) - $(stat -c %Y "$down" 2>/dev/null || echo 0) )) -lt 300 ]] && continue
 			echo "$b"
 		done)
+		# GPU_BOX pins the job: with every pinned box down it must fail, not wait to run on dev02 or elsewhere.
+		if [[ -z $order && -n ${GPU_BOX:-} ]]; then
+			echo "gpu.sh: GPU_BOX='$GPU_BOX' pins this job and every pinned box is down; not running it elsewhere" >&2
+			exit 69
+		fi
 		# A box whose copies of this job failed GPU_COPY_FAIL_MAX times is no longer offered it.
 		blocked=0
 		order=$(for b in $order; do
