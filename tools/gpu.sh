@@ -1318,7 +1318,7 @@ shot_cmd() {
 			local answered=0 mine=0
 			for b in ${GPU_SHOT_BOXES:-staging staging02}; do
 				down="${HEAVY_DIR:-/var/tmp/heavy}/gpu-down.$b"
-				[[ -e $down && $(( $(date +%s) - $(stat -c %Y "$down") )) -lt 300 ]] && continue
+				[[ -e $down && $(( $(date +%s) - $(stat -c %Y "$down" 2>/dev/null || echo 0) )) -lt 300 ]] && continue
 				# Two shots of one project on one box would rsync over each other's copy, so dev02 holds one lock
 				# per project and box (2026-11-08; it was one per project, which kept the second GPU idle while
 				# a project's shots queued): a second shot of the project takes the other GPU at the same time.
@@ -1890,7 +1890,7 @@ case "${1:-}" in
 		# A real-time suite (REALTIME_SUITES above) skips ph and the laptop: staging02, then dev02.
 		order=$(for b in $(suite_boxes); do
 			down="${HEAVY_DIR:-/var/tmp/heavy}/gpu-down.$b"
-			[[ -e $down && $(( $(date +%s) - $(stat -c %Y "$down") )) -lt 300 ]] && continue
+			[[ -e $down && $(( $(date +%s) - $(stat -c %Y "$down" 2>/dev/null || echo 0) )) -lt 300 ]] && continue
 			echo "$b"
 		done)
 		# A box whose copies of this job failed GPU_COPY_FAIL_MAX times is no longer offered it.
@@ -1911,7 +1911,7 @@ case "${1:-}" in
 			# A box that did not answer is skipped for 5 minutes: heavy offers every 15 s,
 			# and a 10 s connect timeout each time would be most of the wait.
 			down="${HEAVY_DIR:-/var/tmp/heavy}/gpu-down.$b"
-			[[ -e $down && $(( $(date +%s) - $(stat -c %Y "$down") )) -lt 300 ]] && continue
+			[[ -e $down && $(( $(date +%s) - $(stat -c %Y "$down" 2>/dev/null || echo 0) )) -lt 300 ]] && continue
 			set +e
 			( set -e; set_box "$b"; if [[ ${UW_KIND:-} == tool || ${UW_KIND:-} == parse ]]; then offer_on "$down" "$UW_KIND" "${UW_ENV[@]}" "${UW_REST[@]}"; else offer_on "$down" "${UW_REST[0]}" "${UW_ENV[@]}" "${UW_REST[@]:1}"; fi )
 			rc=$?
