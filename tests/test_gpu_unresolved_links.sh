@@ -22,7 +22,7 @@ ok() { echo "ok   $1"; }
 bad() { echo "FAIL $1"; fail=1; }
 
 fn=$(sed -n '/^unresolved_links() {/,/^}/p' "$src")
-sp=$(sed -n '/^sync_project() {/,/^}/p' "$src")
+sp=$(sed -n '/^sync_dir_once() {/,/^}/p;/^sync_project() {/,/^}/p' "$src")
 [[ -n $fn && -n $sp ]] || { echo "FAIL could not cut unresolved_links/sync_project out of $src"; exit 1; }
 # The offer_on call site as written: its `local bad; bad=$(unresolved_links ...)` line and the if that reads it.
 offer=$(sed -n '/local loops=() ll$/,/^\tfi$/p' "$src")

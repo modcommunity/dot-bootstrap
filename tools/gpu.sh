@@ -417,9 +417,12 @@ sync_tree() {
 # sync_ws <wsid> [filter args]: $PROJ_DIR into the suite workspace ws/<wsid>/<project>.
 sync_ws() { local wsid=$1; shift; sync_tree "$PROJ_DIR" "$project" "ws/$wsid/$project" "$@"; }
 
-sync_project() {
-	project_dir "$1"
-	local n d bad loops=() ll xl=(); n=$(proj_name "$1"); d=$(proj_src "$1")
+# sync_dir_once <dir> <name> [failure command, default die] [extra rsync filter args]: <dir> into ~/gpu/godot/<name> on $BOX
+# through sync_tree (once per tree per box; GPU_SYNC_ONCE=0 is the old direct upload). A self-looping link is left out of
+# the copy with a warning; other dangling or looping links stop it through the failure command.
+sync_dir_once() {
+	local d=$1 n=$2 fail=${3:-die}; shift 3 || shift $#
+	local bad loops=() ll xl=("$@")
 	# Same loop handling as offer_on: a self-looping link is left out of the copy with a warning, not a die.
 	while IFS= read -r ll; do
 		[[ -n $ll ]] || continue
@@ -427,10 +430,15 @@ sync_project() {
 		echo "gpu.sh: WARNING $d/$ll is a link that loops into its own directory; left out of the copy to $BOX. Remove it (a repeated \`ln -s\` into a directory link makes these)." >&2
 	done < <(loop_links "$d")
 	bad=$(unresolved_except_loops "$d" "${loops[@]}")
-	[[ -z $bad ]] || die "$d has links that dangle or loop, so --copy-links cannot copy it to $BOX (rsync would stop with rc 23). Fix or remove them:
+	[[ -z $bad ]] || $fail "$d has links that dangle or loop, so --copy-links cannot copy it to $BOX (rsync would stop with rc 23). Fix or remove them:
 $(sed 's/^/  /' <<<"$bad")"
-	# Once per tree per box (sync_tree), like a suite workspace; GPU_SYNC_ONCE=0 is the old direct upload.
 	sync_tree "$d" "$n" "${REMOTE_ROOT#gpu/}/$n" "${xl[@]}"
+}
+
+sync_project() {
+	project_dir "$1"
+	local n d; n=$(proj_name "$1"); d=$(proj_src "$1")
+	sync_dir_once "$d" "$n" die
 }
 
 # Runs a command on the laptop under the one-job lock. printf %q keeps arguments
@@ -1823,10 +1831,10 @@ publish_cmd() {
 	for n in "${want[@]}"; do
 		[[ $seen == *" $n "* || ! $n =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ || ! -d $ROOT/$n ]] && continue
 		seen+="$n "
-		"${SSHQ[@]}" "mkdir -p ~/$REMOTE_ROOT/$n"
 		echo "gpu.sh: copying $n to $BOX_DESC" >&2
-		rsync -az --delete --copy-links --exclude '.godot/' --exclude '.git/' --exclude '__pycache__/' -e "$RSH" \
-			"$ROOT/$n/" "$HOST:$REMOTE_ROOT/$n/" || $fail "copying $n failed"
+		# Once per tree per box like every other copy (sync_tree); GPU_SYNC_ONCE=0 is the old direct upload. __pycache__ is no
+		# longer left out: the tree hash must match what sync_project and the suite copies upload, and python ignores a stale .pyc.
+		sync_dir_once "$ROOT/$n" "$n" "$fail" || $fail "copying $n failed"
 	done
 	# A lock or output path outside the tree is copied over at the same absolute path.
 	for v in "${lockfiles[@]}"; do

@@ -12,7 +12,7 @@ fail=0
 ok() { echo "ok   $1"; }
 bad() { echo "FAIL $1"; fail=1; }
 
-fns=$(sed -n '/^tree_hash() {/,/^}/p;/^read -r -d .. WS_FROM_SRC/,/^EOF$/p;/^box_lock() {/,/^}/p;/^box_unlock() {/,/^}/p;/^sync_tree() {/,/^}/p;/^sync_ws() {/,/^}/p' "$src")
+fns=$(sed -n '/^tree_hash() {/,/^}/p;/^read -r -d .. WS_FROM_SRC/,/^EOF$/p;/^box_lock() {/,/^}/p;/^box_unlock() {/,/^}/p;/^sync_tree() {/,/^}/p;/^sync_ws() {/p;/^sync_dir_once() {/,/^}/p;/^loop_links() {/,/^}/p;/^unresolved_links() {/,/^}/p;/^unresolved_except_loops() {/,/^}/p' "$src")
 [[ $fns == *"tree_hash() {"* && $fns == *WS_FROM_SRC* && $fns == *"sync_ws() {"* && $fns == *"box_lock() {"* && $fns == *"sync_tree() {"* ]] || { echo "FAIL could not cut the sync code out of $src"; exit 1; }
 
 box=$root/box
@@ -37,6 +37,7 @@ run_sync() {
 	local ws=$1; shift
 	env "$@" ROOTT="$root" BOX_HOME="$box" PROJ_DIR="$p" GPU_SYNC_LOCK_DIR="$root/locks" bash -c 'set -eE
 project=proj BOX=fake HOST=h RSH=true
+die() { echo "gpu.sh: $*" >&2; exit 2; }
 SSH=("$ROOTT/bin/fakessh"); SSHQ=(timeout -k 5 25 "$ROOTT/bin/fakessh")
 # rsync stub: h:<path> is <box>/<path>; -e and its value dropped; every upload (local -> h:) counted, with an optional
 # delay (SLOW), a failure (FAILN: the first N uploads fail) or an edit of the tree during the upload (EDIT_ONCE).
@@ -57,7 +58,7 @@ rsync() {
 	command rsync "${a[@]}"
 }
 '"$fns"'
-if [ "${SYNC_FN:-}" = sync_tree ]; then sync_tree "$PROJ_DIR" proj "$@"; else sync_ws "$@"; fi' _ "$ws" "${EXARGS[@]}"
+case "${SYNC_FN:-}" in sync_tree) sync_tree "$PROJ_DIR" proj "$@" ;; sync_dir_once) REMOTE_ROOT=gpu/godot; sync_dir_once "$PROJ_DIR" proj die ;; *) sync_ws "$@" ;; esac' _ "$ws" "${EXARGS[@]}"
 }
 uploads() { cat "$root/uploads" 2>/dev/null | wc -l; }
 same() { # same <wsid>: the workspace holds exactly the tree (less .godot/screenshots/excluded links)
@@ -121,7 +122,7 @@ rm -rf "$box/gpu"; mkdir -p "$box/gpu"; rm -f "$root/uploads"; echo ten > "$p/a.
 mkdir -p "$box/gpu/godot/proj/.godot" "$box/gpu/shot/proj/.godot"; echo imp > "$box/gpu/godot/proj/.godot/i"; echo imp > "$box/gpu/shot/proj/.godot/i"
 out=$(run_sync 'godot/proj' SYNC_FN=sync_tree 2>&1); rc=$?
 out2=$(run_sync 'shot/proj' SYNC_FN=sync_tree 2>&1); rc2=$?
-dsame() { diff -r -x .godot -x screenshots -x sib -x maps "$p" "$box/gpu/$1" >/dev/null 2>&1 && [[ ! -e $box/gpu/$1/maps/maps && ! -e $box/gpu/$1/addons/sib ]]; }
+dsame() { local d=$1; shift; diff -r "$@" -x .godot -x screenshots -x sib -x maps "$p" "$box/gpu/$d" >/dev/null 2>&1 && [[ ! -e $box/gpu/$d/maps/maps && ! -e $box/gpu/$d/addons/sib ]]; }
 [[ $rc == 0 && $rc2 == 0 && $(uploads) == 1 ]] && dsame godot/proj && dsame shot/proj && [[ $(cat "$box/gpu/godot/proj/.godot/i") == imp && $(cat "$box/gpu/shot/proj/.godot/i") == imp ]] &&
 	ok "sync_project/shot paths: one upload for both, .godot kept, exclusions held" || bad "project+shot: rc=$rc/$rc2 uploads=$(uploads) $out $out2"
 
@@ -155,5 +156,23 @@ sleep 0.5; t0=$SECONDS
 out=$(run_sync proj GPU_SYNC_LOCK_WAIT_S=20 2>&1); rc=$?
 [[ $rc == 0 && $(( SECONDS - t0 )) -ge 2 ]] && same proj && ok "stale holder lets go on its timeout; job then runs" || bad "stale holder: rc=$rc t=$((SECONDS - t0)) out=$out"
 wait
+
+
+# 15. publish_cmd's sibling copy (sync_dir_once, godot/<name>): one upload for repeated publishes, a loop link left out with a warning, a dangling link a loud failure,
+# GPU_SYNC_ONCE=0 the direct upload
+# publish excludes only the loop link (the sibling link is followed, as before), so the check differs from dsame
+psame() { diff -r -x .godot -x screenshots -x maps "$p" "$box/gpu/godot/proj" >/dev/null 2>&1 && [[ ! -e $box/gpu/godot/proj/maps/maps && -e $box/gpu/godot/proj/addons/sib/s.gd ]]; }
+rm -rf "$box/gpu"; mkdir -p "$box/gpu"; rm -f "$root/uploads"; echo fifteen > "$p/a.txt"
+mkdir -p "$p/__pycache__"; echo pyc > "$p/__pycache__/x.pyc"
+out=$(run_sync x SYNC_FN=sync_dir_once 2>&1); rc=$?
+out2=$(run_sync x SYNC_FN=sync_dir_once 2>&1); rc2=$?
+[[ $rc == 0 && $rc2 == 0 && $(uploads) == 1 && $out == *WARNING* && $out2 == *"no upload"* ]] && psame && [[ -e $box/gpu/godot/proj/__pycache__/x.pyc ]] &&
+	ok "publish copy: one upload for two publishes, loop link left out with a warning" || bad "publish copy: rc=$rc/$rc2 uploads=$(uploads) $out $out2"
+ln -s /nonexistent-gsync "$p/dangling"
+out=$(run_sync x SYNC_FN=sync_dir_once 2>&1); rc=$?
+[[ $rc != 0 && $out == *"dangle or loop"* ]] && ok "publish copy: dangling link fails loudly" || bad "dangling: rc=$rc $out"
+rm "$p/dangling"; rm -rf "$box/gpu"; mkdir -p "$box/gpu"; rm -f "$root/uploads"
+out=$(run_sync x SYNC_FN=sync_dir_once GPU_SYNC_ONCE=0 2>&1); rc=$?
+[[ $rc == 0 && $(uploads) == 1 && ! -e $box/gpu/ws/proj~src ]] && psame && ok "publish copy, GPU_SYNC_ONCE=0: direct upload" || bad "publish ONCE=0: rc=$rc $out"
 
 exit $fail
