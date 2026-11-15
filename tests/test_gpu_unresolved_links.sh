@@ -50,6 +50,7 @@ die() { echo "DIED: $*" >&2; exit 2; }
 project_dir() { :; }; proj_name() { echo n; }; proj_src() { echo "$ROOTT"; }
 SSHQ=(true); BOX=b; HOST=h; REMOTE_ROOT=r; RSH=true
 rsync() { echo "RSYNC $*"; }
+sync_tree() { shift 3; echo "RSYNC sync_tree $*"; }
 '"$fn"'
 '"$fn2"'
 '"$sp"'

@@ -5,15 +5,15 @@
 # Real code only: tree_hash, WS_FROM_SRC and sync_ws are cut out of tools/gpu.sh.
 set -u
 here=$(cd "$(dirname "$0")/.." && pwd)
-src=$here/tools/gpu.sh
+src=${GPU_SRC:-$here/tools/gpu.sh}
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
 fail=0
 ok() { echo "ok   $1"; }
 bad() { echo "FAIL $1"; fail=1; }
 
-fns=$(sed -n '/^tree_hash() {/,/^}/p;/^read -r -d .. WS_FROM_SRC/,/^EOF$/p;/^sync_ws() {/,/^}/p' "$src")
-[[ $fns == *"tree_hash() {"* && $fns == *WS_FROM_SRC* && $fns == *"sync_ws() {"* ]] || { echo "FAIL could not cut the sync code out of $src"; exit 1; }
+fns=$(sed -n '/^tree_hash() {/,/^}/p;/^read -r -d .. WS_FROM_SRC/,/^EOF$/p;/^box_lock() {/,/^}/p;/^box_unlock() {/,/^}/p;/^sync_tree() {/,/^}/p;/^sync_ws() {/,/^}/p' "$src")
+[[ $fns == *"tree_hash() {"* && $fns == *WS_FROM_SRC* && $fns == *"sync_ws() {"* && $fns == *"box_lock() {"* && $fns == *"sync_tree() {"* ]] || { echo "FAIL could not cut the sync code out of $src"; exit 1; }
 
 box=$root/box
 mkdir -p "$box/gpu" "$root/bin"
@@ -57,7 +57,7 @@ rsync() {
 	command rsync "${a[@]}"
 }
 '"$fns"'
-sync_ws "$1" "${@:2}"' _ "$ws" "${EXARGS[@]}"
+if [ "${SYNC_FN:-}" = sync_tree ]; then sync_tree "$PROJ_DIR" proj "$@"; else sync_ws "$@"; fi' _ "$ws" "${EXARGS[@]}"
 }
 uploads() { cat "$root/uploads" 2>/dev/null | wc -l; }
 same() { # same <wsid>: the workspace holds exactly the tree (less .godot/screenshots/excluded links)
@@ -104,7 +104,7 @@ wait
 n_ok=0; for w in proj 'proj~2' 'proj~3' 'proj~4'; do same "$w" && n_ok=$((n_ok + 1)); done
 [[ $(uploads) == 1 && $n_ok == 4 ]] && ok "4 concurrent jobs: 1 upload, 4 correct workspaces" || bad "concurrent: uploads=$(uploads) correct=$n_ok $(cat "$root"/par.*)"
 # 7. the box side refuses a copy whose stamp is not the tree asked for
-out=$(cd "$box" && HOME=$box bash -c "$(sed -n '/^read -r -d .. WS_FROM_SRC/,/^EOF$/p' "$src" | sed '1d;$d')" _ 'proj~src' proj 'proj~5' deadbeef 2>&1); rc=$?
+out=$(cd "$box" && HOME=$box bash -c "$(sed -n '/^read -r -d .. WS_FROM_SRC/,/^EOF$/p' "$src" | sed '1d;$d')" _ 'proj~src' proj 'ws/proj~5/proj' deadbeef 2>&1); rc=$?
 [[ $rc == 5 && ! -e $box/gpu/ws/proj~5/proj/a.txt ]] && ok "box: stale stamp refused, nothing copied" || bad "box stale stamp: rc=$rc out=$out"
 # 8. a stamp removed on the box (janitor pruned the ~src copy): uploads again
 rm -rf "$box/gpu/ws/proj~src"; rm -f "$root/uploads"
@@ -114,5 +114,46 @@ out=$(run_sync 'proj~2' 2>&1); rc=$?
 rm -rf "$box/gpu/ws"; mkdir -p "$box/gpu/ws/proj"; rm -f "$root/uploads"; echo nine > "$p/a.txt"  # the box script makes ws/<wsid>
 out=$(run_sync proj GPU_SYNC_ONCE=0 2>&1); rc=$?
 [[ $rc == 0 && $(uploads) == 1 && ! -e $box/gpu/ws/proj~src ]] && same proj && ok "GPU_SYNC_ONCE=0: direct upload" || bad "GPU_SYNC_ONCE=0: rc=$rc out=$out"
+
+# 10. sync_tree for the other two copy paths (sync_project -> godot/<name>, shot_on -> shot/<name>): one upload serves
+# all of them, kept .godot survives, loop-link exclusions hold
+rm -rf "$box/gpu"; mkdir -p "$box/gpu"; rm -f "$root/uploads"; echo ten > "$p/a.txt"
+mkdir -p "$box/gpu/godot/proj/.godot" "$box/gpu/shot/proj/.godot"; echo imp > "$box/gpu/godot/proj/.godot/i"; echo imp > "$box/gpu/shot/proj/.godot/i"
+out=$(run_sync 'godot/proj' SYNC_FN=sync_tree 2>&1); rc=$?
+out2=$(run_sync 'shot/proj' SYNC_FN=sync_tree 2>&1); rc2=$?
+dsame() { diff -r -x .godot -x screenshots -x sib -x maps "$p" "$box/gpu/$1" >/dev/null 2>&1 && [[ ! -e $box/gpu/$1/maps/maps && ! -e $box/gpu/$1/addons/sib ]]; }
+[[ $rc == 0 && $rc2 == 0 && $(uploads) == 1 ]] && dsame godot/proj && dsame shot/proj && [[ $(cat "$box/gpu/godot/proj/.godot/i") == imp && $(cat "$box/gpu/shot/proj/.godot/i") == imp ]] &&
+	ok "sync_project/shot paths: one upload for both, .godot kept, exclusions held" || bad "project+shot: rc=$rc/$rc2 uploads=$(uploads) $out $out2"
+
+# 11. jobs from different hosts (separate host-local lock dirs): the box lock still makes them share one upload
+rm -rf "$box/gpu"; mkdir -p "$box/gpu"; rm -f "$root/uploads"; echo eleven > "$p/a.txt"
+for w in proj 'proj~2' 'proj~3'; do run_sync "$w" SLOW=1 GPU_SYNC_LOCK_DIR="$root/locks.$w" > "$root/hp.$w" 2>&1 & done
+wait
+n_ok=0; for w in proj 'proj~2' 'proj~3'; do same "$w" && n_ok=$((n_ok + 1)); done
+[[ $(uploads) == 1 && $n_ok == 3 ]] && ok "3 jobs from 3 hosts: 1 upload, 3 correct workspaces (box lock)" || bad "multi-host: uploads=$(uploads) correct=$n_ok $(cat "$root"/hp.*)"
+
+# 12. a lock held on the box by something else: the job waits at most GPU_SYNC_LOCK_WAIT_S, then fails loudly, uploading nothing
+rm -rf "$box/gpu"; mkdir -p "$box/gpu/.sync.d"; rm -f "$root/uploads"; echo twelve > "$p/a.txt"
+( cd "$box" && flock -o gpu/.sync.d/proj.lk sleep 6 ) &
+sleep 0.5
+out=$(run_sync proj GPU_SYNC_LOCK_WAIT_S=2 2>&1); rc=$?
+[[ $rc != 0 && $out == *"could not take the copy lock"* && $(uploads) == 0 ]] && ok "box lock held elsewhere: wait capped, fails loudly, no upload" || bad "box lock timeout: rc=$rc uploads=$(uploads) out=$out"
+wait
+out=$(run_sync proj 2>&1); rc=$?
+[[ $rc == 0 && $(uploads) == 1 ]] && same proj && ok "box lock free again: job runs" || bad "after box lock: rc=$rc uploads=$(uploads) out=$out"
+
+# 13. a dead holder (killed job: its ssh session gone) frees the box lock at once; a hung one lets go after GPU_SYNC_LOCK_STALE_S
+rm -rf "$box/gpu"; mkdir -p "$box/gpu"; rm -f "$root/uploads"; echo thirteen > "$p/a.txt"
+t0=$SECONDS
+out=$(run_sync proj SLOW=3 2>&1 & sleep 1; wait) ; # a normal run ends and releases
+out=$(run_sync 'proj~2' 2>&1); rc=$?
+[[ $rc == 0 && $(( SECONDS - t0 )) -lt 15 && -z $(pgrep -f 'gpu/.sync.d/proj.lk' 2>/dev/null) ]] && ok "box lock released when the job ends (no leftover session)" || bad "box lock release: rc=$rc out=$out"
+rm -rf "$box/gpu"; mkdir -p "$box/gpu/.sync.d"; echo fourteen > "$p/a.txt"
+# a session that holds the lock and never closes: the holder's own stale timeout (here 3 s) frees it
+( cd "$box" && exec flock -o gpu/.sync.d/proj.lk timeout 3 sleep 100 ) &
+sleep 0.5; t0=$SECONDS
+out=$(run_sync proj GPU_SYNC_LOCK_WAIT_S=20 2>&1); rc=$?
+[[ $rc == 0 && $(( SECONDS - t0 )) -ge 2 ]] && same proj && ok "stale holder lets go on its timeout; job then runs" || bad "stale holder: rc=$rc t=$((SECONDS - t0)) out=$out"
+wait
 
 exit $fail

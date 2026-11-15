@@ -324,65 +324,98 @@ tree_hash() {
 # Runs on the box: fills ws/<wsid>/<project> from ws/<src>/<project> when the stamp there is the tree dev02 hashed.
 read -r -d '' WS_FROM_SRC <<'EOF' || true
 set -u
-src=$1 project=$2 wsid=$3 h=$4; shift 4
+src=$1 project=$2 dest=$3 h=$4; shift 4
 cd ~/gpu || exit 3
 mkdir -p suite
 exec 8>>"suite/$src.lock"
 flock -w 600 8 || { echo "gpu.sh: ws/$src on $(hostname) stayed locked for 600 s" >&2; exit 4; }
 touch "ws/$src" 2>/dev/null
-at() { [ "$(cat "ws/$src/.tree-hash" 2>/dev/null)" = "$h" ] || { echo "gpu.sh: ws/$src on $(hostname) is not at tree $h $1 the copy into ws/$wsid" >&2; exit 5; }; }
+at() { [ "$(cat "ws/$src/.tree-hash" 2>/dev/null)" = "$h" ] || { echo "gpu.sh: ws/$src on $(hostname) is not at tree $h $1 the copy into $dest" >&2; exit 5; }; }
 at before
-mkdir -p "ws/$wsid/$project" || exit 6
-rsync -a --delete "$@" "ws/$src/$project/" "ws/$wsid/$project/" || exit 6
+mkdir -p "$dest" || exit 6
+rsync -a --delete "$@" "ws/$src/$project/" "$dest/" || exit 6
 at after
+touch "$dest" 2>/dev/null
+exit 0
 EOF
 
-# sync_ws <wsid> [the job's extra rsync filter args, --exclude /<path> pairs]: $PROJ_DIR into ws/<wsid>/<project> on $BOX,
-# uploading only when the box's ~src copy is not at this tree. Returns non-zero, with a line on stderr, on any failure.
-sync_ws() {
-	local wsid=$1; shift
-	local ex=("$@") paths=() i src="$project~src" h h2 st= try fd q rc t0=$SECONDS
+# Held on the box, not only on this host, so jobs started from any host (dev02, a builder's laptop, another box) wait for
+# one transfer: one ssh session runs `flock` on ~/gpu/.sync.d/<name>.lk there and holds it until its stdin closes, so the
+# lock goes with the session (a crashed or killed job, a dropped link) and needs no cleanup. A session that outlives its
+# job (a hung link that never closes) lets go by itself after GPU_SYNC_LOCK_STALE_S (default 3600) seconds; waiting is
+# capped by GPU_SYNC_LOCK_WAIT_S (default 1800). Needs a global coproc SYNCLK: one lock held per process at a time.
+box_lock() {
+	local name=$1 line="" t0=$SECONDS
+	coproc SYNCLK { exec "${SSH[@]}" "mkdir -p gpu/.sync.d && exec flock -o -w ${GPU_SYNC_LOCK_WAIT_S:-1800} gpu/.sync.d/$name.lk bash -c 'echo LOCKED; exec timeout ${GPU_SYNC_LOCK_STALE_S:-3600} head -c1 >/dev/null'" 2>&1; }
+	if read -r -t "$(( ${GPU_SYNC_LOCK_WAIT_S:-1800} + 60 ))" line <&"${SYNCLK[0]}" && [[ $line == LOCKED ]]; then
+		(( SECONDS - t0 < 2 )) || echo "gpu.sh: waited $((SECONDS - t0)) s for another host's copy of $name to $BOX" >&2
+		return 0
+	fi
+	box_unlock
+	echo "gpu.sh: could not take the copy lock of $name on $BOX (${line:-no answer} after $((SECONDS - t0)) s)" >&2
+	return 1
+}
+box_unlock() {
+	[[ -n ${SYNCLK_PID:-} ]] || return 0
+	eval "exec ${SYNCLK[1]}>&-" 2>/dev/null || true
+	local i; for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$SYNCLK_PID" 2>/dev/null || break; sleep 0.3; done
+	kill "$SYNCLK_PID" 2>/dev/null || true; wait "$SYNCLK_PID" 2>/dev/null || true; return 0
+}
+
+# sync_tree <dir> <name> <dest, relative to ~/gpu on the box> [the job's extra rsync filter args, --exclude /<path> pairs]:
+# <dir> into ~/gpu/<dest> on $BOX, uploading only when the box's ws/<name>~src copy is not at this tree. Returns non-zero,
+# with a line on stderr, on any failure. sync_ws (a suite workspace), sync_project (godot/<name>) and shot_on (shot/<name>)
+# all go through it, laptop included.
+sync_tree() {
+	local dir=$1 name=$2 dest=$3; shift 3
+	local ex=("$@") paths=() i src="$name~src" h h2 st= try fd q rc t0=$SECONDS
 	local filt=(--exclude '.godot/' --exclude '.git/' --exclude 'screenshots/' "${ex[@]}")
 	if [[ ${GPU_SYNC_ONCE:-1} == 0 ]]; then
-		rsync -az --delete --copy-links "${filt[@]}" -e "$RSH" "$PROJ_DIR/" "$HOST:gpu/ws/$wsid/$project/"; return
+		"${SSHQ[@]}" "mkdir -p gpu/$dest" </dev/null || return 1
+		rsync -az --delete --copy-links "${filt[@]}" -e "$RSH" "$dir/" "$HOST:gpu/$dest/"; return
 	fi
 	for ((i = 0; i < ${#ex[@]}; i++)); do [[ ${ex[i]} == --exclude && ${ex[i+1]:-} == /* ]] && paths+=("${ex[i+1]#/}"); done
 	local ldir=${GPU_SYNC_LOCK_DIR:-/tmp/gpu-sync-locks} lk
 	mkdir -p "$ldir" 2>/dev/null && chmod 1777 "$ldir" 2>/dev/null
-	lk=$ldir/$BOX.$project.lock
-	# World-writable and opened read-only, like the rsync slot locks: shared by every user on this host.
+	lk=$ldir/$BOX.$name.lock
+	# World-writable and opened read-only, like the rsync slot locks: shared by every user on this host. This host's jobs
+	# queue here (one ssh session in all, not one per waiting job); the box lock below covers the other hosts.
 	[[ -e $lk ]] || { ( umask 0; : > "$lk" ) 2>/dev/null; }
 	{ exec {fd}<"$lk"; } 2>/dev/null || { echo "gpu.sh: cannot open the sync lock $lk" >&2; return 1; }
 	if ! flock -w "${GPU_SYNC_LOCK_WAIT_S:-1800}" "$fd"; then
-		exec {fd}<&-; echo "gpu.sh: waited $((SECONDS - t0)) s for another job's copy of $project to $BOX; giving up" >&2; return 1
+		exec {fd}<&-; echo "gpu.sh: waited $((SECONDS - t0)) s for another job's copy of $name to $BOX; giving up" >&2; return 1
 	fi
-	(( SECONDS - t0 < 2 )) || echo "gpu.sh: waited $((SECONDS - t0)) s for another job's copy of $project to $BOX" >&2
-	h=$(tree_hash "$PROJ_DIR" "${paths[@]}") || { exec {fd}<&-; echo "gpu.sh: cannot hash $PROJ_DIR" >&2; return 1; }
+	(( SECONDS - t0 < 2 )) || echo "gpu.sh: waited $((SECONDS - t0)) s for another job's copy of $name to $BOX" >&2
+	box_lock "$name" || { exec {fd}<&-; return 1; }
+	h=$(tree_hash "$dir" "${paths[@]}") || { box_unlock; exec {fd}<&-; echo "gpu.sh: cannot hash $dir" >&2; return 1; }
 	st=$("${SSHQ[@]}" "cat gpu/ws/$src/.tree-hash 2>/dev/null" </dev/null) || st=
 	if [[ $st == "$h" ]]; then
-		echo "gpu.sh: $project (tree ${h:0:12}) is already on $BOX; no upload" >&2
+		echo "gpu.sh: $name (tree ${h:0:12}) is already on $BOX; no upload" >&2
 	else
 		st=
 		for try in 1 2 3; do
-			"${SSHQ[@]}" "mkdir -p gpu/ws/$src/$project && rm -f gpu/ws/$src/.tree-hash" </dev/null || break
-			rsync -az --delete --copy-links "${filt[@]}" -e "$RSH" "$PROJ_DIR/" "$HOST:gpu/ws/$src/$project/" || break
-			h2=$(tree_hash "$PROJ_DIR" "${paths[@]}") || break
+			"${SSHQ[@]}" "mkdir -p gpu/ws/$src/$name && rm -f gpu/ws/$src/.tree-hash" </dev/null || break
+			rsync -az --delete --copy-links "${filt[@]}" -e "$RSH" "$dir/" "$HOST:gpu/ws/$src/$name/" || break
+			h2=$(tree_hash "$dir" "${paths[@]}") || break
 			if [[ $h2 == "$h" ]]; then
 				"${SSHQ[@]}" "printf '%s\n' $h > gpu/ws/$src/.tree-hash" </dev/null && st=$h
 				break
 			fi
-			echo "gpu.sh: $PROJ_DIR changed during its upload to $BOX; uploading again ($try/3)" >&2
+			echo "gpu.sh: $dir changed during its upload to $BOX; uploading again ($try/3)" >&2
 			h=$h2
 		done
-		[[ $st == "$h" ]] || { exec {fd}<&-; echo "gpu.sh: uploading $project to $BOX failed" >&2; return 1; }
-		echo "gpu.sh: uploaded $project (tree ${h:0:12}) to $BOX in $((SECONDS - t0)) s" >&2
+		[[ $st == "$h" ]] || { box_unlock; exec {fd}<&-; echo "gpu.sh: uploading $name to $BOX failed" >&2; return 1; }
+		echo "gpu.sh: uploaded $name (tree ${h:0:12}) to $BOX in $((SECONDS - t0)) s" >&2
 	fi
-	q=$(printf '%q ' "$src" "$project" "$wsid" "$h" "${filt[@]}")
+	q=$(printf '%q ' "$src" "$name" "$dest" "$h" "${filt[@]}")
 	rc=0; timeout -k 5 "${GPU_SYNC_COPY_TIMEOUT:-900}" "${SSH[@]}" "bash -c $(printf '%q' "$WS_FROM_SRC") _ $q" </dev/null || rc=$?
-	exec {fd}<&-
-	(( rc == 0 )) || echo "gpu.sh: filling ws/$wsid from ws/$src on $BOX failed (rc $rc)" >&2
+	box_unlock; exec {fd}<&-
+	(( rc == 0 )) || echo "gpu.sh: filling gpu/$dest from ws/$src on $BOX failed (rc $rc)" >&2
 	return $rc
 }
+
+# sync_ws <wsid> [filter args]: $PROJ_DIR into the suite workspace ws/<wsid>/<project>.
+sync_ws() { local wsid=$1; shift; sync_tree "$PROJ_DIR" "$project" "ws/$wsid/$project" "$@"; }
 
 sync_project() {
 	project_dir "$1"
@@ -396,11 +429,8 @@ sync_project() {
 	bad=$(unresolved_except_loops "$d" "${loops[@]}")
 	[[ -z $bad ]] || die "$d has links that dangle or loop, so --copy-links cannot copy it to $BOX (rsync would stop with rc 23). Fix or remove them:
 $(sed 's/^/  /' <<<"$bad")"
-	"${SSHQ[@]}" "mkdir -p ~/$REMOTE_ROOT/$n"
-	rsync -az --delete --copy-links \
-		--exclude '.godot/' --exclude '.git/' --exclude 'screenshots/' "${xl[@]}" \
-		-e "$RSH" \
-		"$d/" "$HOST:$REMOTE_ROOT/$n/"
+	# Once per tree per box (sync_tree), like a suite workspace; GPU_SYNC_ONCE=0 is the old direct upload.
+	sync_tree "$d" "$n" "${REMOTE_ROOT#gpu/}/$n" "${xl[@]}"
 }
 
 # Runs a command on the laptop under the one-job lock. printf %q keeps arguments
@@ -1558,9 +1588,7 @@ shot_on() {
 	if [[ -z $reply ]]; then mark_down "$down" >/dev/null; exit 76; else rm -f "$down"; fi
 	[[ $reply == OK ]] || { [[ ${GPU_OFFER_VERBOSE:-0} == 1 ]] && echo "gpu.sh: $BOX: $reply" >&2; exit 75; }
 	local rs=(-e "$RSH")
-	"${SSHQ[@]}" "mkdir -p ~/gpu/shot/$project" && \
-	rsync -az --delete --copy-links --exclude '.godot/' --exclude '.git/' --exclude 'screenshots/' \
-		"${rs[@]}" "$SHOT_DIR/" "$HOST:gpu/shot/$project/" || { echo "gpu.sh: copying $project to $BOX failed" >&2; exit 75; }
+	sync_tree "$SHOT_DIR" "$project" "shot/$project" || { echo "gpu.sh: copying $project to $BOX failed" >&2; exit 75; }
 	for d in "${SHOT_STAGE[@]}"; do
 		"${SSHQ[@]}" "mkdir -p $(printf '%q' "$d")" && rsync -az "${rs[@]}" "$d/" "$HOST:$d/" || exit 75
 	done
