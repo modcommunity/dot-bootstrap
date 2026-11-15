@@ -6,10 +6,10 @@
 #
 # Why: parallel agents each "checked nothing heavy was running" and then all started a
 # `next build` / smoke run / Godot suite at once. The guest filled its RAM, the host ran out
-# and killed the whole VM (x-tmc-dev01, 2026-10-16). A check-then-start rule is a race;
+# and killed the whole VM (the build VM, 2026-10-16). A check-then-start rule is a race;
 # this is a lock. The Bash hook (heavy-gate.py) refuses those commands unless they go
 # through here. Smoke-class runs additionally wait for an empty agent board (heavy-smoke.py).
-# See ~/stack/nightly/scripts/heavy/README.md.
+# See scripts/heavy/README.md.
 #
 # Each job runs in its own systemd scope capped at HEAVY_JOB_MAX_GB (default 12), or at the
 # memory free when it starts less HEAVY_JOB_HEADROOM_GB if that is lower, with no swap, so a
@@ -32,7 +32,7 @@
 # leaves a daemon behind cannot wedge the queue. A nested `heavy` (a script that calls it
 # again) runs straight through instead of deadlocking on its own slot.
 set -u
-# sudo -u gamedev heavy ... runs with sudo's secure PATH: godot (~/.local/bin) and cargo were not found (2026-11-13).
+# sudo -u someuser heavy ... runs with sudo's secure PATH: godot (~/.local/bin) and cargo were not found (2026-11-13).
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 
 # /etc/heavy.conf holds this VM's defaults; a HEAVY_* already in the environment wins, so
@@ -46,17 +46,17 @@ SLOTS_build=${HEAVY_SLOTS_BUILD:-1}
 SLOTS_check=${HEAVY_SLOTS_CHECK:-2}
 MIN_AVAIL_GB=${HEAVY_MIN_AVAIL_GB:-4}
 # Free memory a build slot beyond the first needs before it is taken. Higher than the first
-# slot's, because the job already running may still be growing: on dev02 (11 GB) Godot suites
+# slot's, because the job already running may still be growing: on the small VM (11 GB) Godot suites
 # peak at 0.5 GB median, 2 GB p99 and 3.5 GB worst (1010 jobs, 2026-10-18), with ~4.5 GB free
 # while one runs. Checked at acquisition, not held: a slot it cannot use goes back.
 EXTRA_AVAIL_GB=${HEAVY_EXTRA_AVAIL_GB:-$MIN_AVAIL_GB}
 # Per-job ceiling (GB) and the swap it may use: past it the job is killed, not the VM
 # thrashed. The user slice's MemoryHigh only throttles, so a 17 GB dev server under it
-# swapped dev01 for 15 minutes (2026-10-16) instead of dying.
+# swapped the large VM for 15 minutes (2026-10-16) instead of dying.
 JOB_MAX_GB=${HEAVY_JOB_MAX_GB:-12}
 JOB_SWAP_GB=${HEAVY_JOB_SWAP_GB:-0}
 # The ceiling is also held under what is free when the job starts, less this headroom: an
-# 18 GB ceiling on dev01 with 14 GB already in use (ClickHouse, editors, sessions) let a
+# 18 GB ceiling on the large VM with 14 GB already in use (ClickHouse, editors, sessions) let a
 # `next build` take the VM to 100% commit and a load of 31 without ever reaching it (2026-10-20).
 JOB_HEADROOM_GB=${HEAVY_JOB_HEADROOM_GB:-3}
 # CPUs a job may use (CPUQuota), default all but two, and it runs at low CPU/IO priority, so
@@ -66,7 +66,7 @@ DIR=${HEAVY_DIR:-/var/tmp/heavy}
 
 # Available memory (kB): the lesser of the VM's MemAvailable and the headroom of the user's
 # cgroup (min of memory.max/memory.high less memory.current, less swap in use, with
-# reclaimable file cache not counted). The cgroup caps at 20-22 GB on dev01 while the VM has
+# reclaimable file cache not counted). The cgroup caps at 20-22 GB on the large VM while the VM has
 # more, so MemAvailable alone let a build in at the cap and swap thrashed (2026-10-30).
 # HEAVY_CGROUP overrides the directory (tests); a missing or unlimited cgroup falls back.
 CGROUP=${HEAVY_CGROUP:-/sys/fs/cgroup/user.slice/user-$(id -u).slice}
@@ -92,7 +92,7 @@ avail_kb() {
   fi
   echo "$vm"
 }
-# Optional offload hook (see the wait loop); unset on dev01.
+# Optional offload hook (see the wait loop); unset on the large VM.
 OFFLOAD=${HEAVY_OFFLOAD:-}
 OFFLOAD_EVERY=${HEAVY_OFFLOAD_EVERY:-15}
 # heavy sources /etc/heavy.conf without exporting, and the hook reads this from its environment.
@@ -115,7 +115,7 @@ while [ $# -gt 0 ]; do
           echo "busy  $(basename "$f" .lock): $(cat "${f%.lock}.who" 2>/dev/null)"
         fi
       done
-      # The boxes behind the offload hook (dev02: staging, staging02): free suite slots and their jobs.
+      # The boxes behind the offload hook (the small VM: the offload boxes): free suite slots and their jobs.
       if [ -n "$OFFLOAD" ] && [ -x "$OFFLOAD" ] && [ "${GPU_OFFLOAD:-1}" != 0 ]; then
         echo "boxes:"; HEAVY_HELD=offload timeout 40 "$OFFLOAD" capacity 2>/dev/null | sed "s/^/  /"
       fi
@@ -134,7 +134,14 @@ if [ "$lane" = build ]; then
   case " $* " in *" --check-only "*|*" --import "*) lane=check ;; esac
 fi
 
+# 2026-11-11: a perf bench (tools/perf_bench.sh) runs on a remote GPU box and sits idle here for up to 90 min; in the
+# build lane it held the only local slot and blocked every local-only job behind it. Own lane, own locks.
+if [ "$lane" = build ]; then
+  case " $* " in *" tools/perf_bench.sh "*) lane=perf ;; esac
+fi
+
 case $lane in
+  perf) slots=${HEAVY_SLOTS_PERF:-2} ;;
   build) slots=$SLOTS_build ;;
   check) slots=$SLOTS_check ;;
   *) echo "heavy: unknown lane '$lane' (build or check)" >&2; exit 64 ;;
@@ -151,7 +158,7 @@ if [ -n "${HEAVY_HELD:-}" ]; then
   exec "$@"
 fi
 
-# Route hook, before any slot: the offload script (dev02: gpu.sh) may take the job at once.
+# Route hook, before any slot: the offload script (your own offload script) may take the job at once.
 # Screenshot tools (tools/screenshot*.sh) always go to a real GPU on a box first, and a game
 # suite goes to the boxes first when HEAVY_PREFER_OFFLOAD=1 (the nightly runner). Exit 75
 # means "not taken": queue it here as before. GPU_OFFLOAD=0 skips the hook.
@@ -162,6 +169,19 @@ if [ -n "$OFFLOAD" ] && [ -x "$OFFLOAD" ] && [ "${GPU_OFFLOAD:-1}" != 0 ]; then
 fi
 
 mkdir -p "$DIR" 2>/dev/null; chmod 1777 "$DIR" 2>/dev/null
+# Lock, .who and peaks files are shared by every user on the box (agents run as several users). A file
+# created by one user under the default umask (664) made the next user's `exec >> lock` fail with exit 70 (2026-11-15).
+# pub_file creates one world-writable; it is idempotent and silent when the chmod is not ours to do.
+pub_file() {
+  [ -e "$1" ] || ( umask 0; : >> "$1" ) 2>/dev/null
+  chmod a+rw "$1" 2>/dev/null
+  return 0
+}
+# Open a lock fd: append if we may write, else read-only (flock needs no write access) so a foreign 644 file still queues us.
+open_lock() { # <fdvar> <path>
+  pub_file "$2"
+  eval "exec {$1}>>\"\$2\"" 2>/dev/null || eval "exec {$1}<\"\$2\"" 2>/dev/null
+}
 # Dynamic gate: the memory this command needs is what it peaked at in recent runs (x1.25), not a
 # fixed number. No history: MIN_AVAIL_GB. A waiter short of memory first asks the kernel to give
 # back page cache (memory.reclaim, then drop_caches) before it keeps waiting.
@@ -173,20 +193,20 @@ if [ -z "${HEAVY_MIN_AVAIL_GB_SET:-}" ] && [ -r "$PEAKS" ]; then
   [ "${hist:-0}" -gt 0 ] && need_mb=$(( hist * 5 / 4 ))
   [ "$need_mb" -lt 1024 ] && need_mb=1024
 fi
-# Real-time suites (2026-11-13, heavy-realtime-mem-floor-1): suites that measure the netcode against wall time
-# (headless_lossy*, latency, feel) failed ~2 runs in 7 when their runner stalled 90-165 ms: on dev02 with the 2560 MB
-# floor and 2-3 GB free (the user slice past MemoryHigh throttles every process in it), and on staging02 with all 8
-# slots busy. Every dev02 run that had 5.5 GB passed. So a real-time job here needs HEAVY_RT_MIN_MB (5632) free and
+# Real-time suites (2026-11-13): suites that measure the netcode against wall time
+# (headless_lossy*, latency, feel) failed ~2 runs in 7 when their runner stalled 90-165 ms: on the small VM with the 2560 MB
+# floor and 2-3 GB free (the user slice past MemoryHigh throttles every process in it), and on an offload box with all 8
+# slots busy. Every run on the small VM that had 5.5 GB passed. So a real-time job here needs HEAVY_RT_MIN_MB (5632) free and
 # gets at least that ceiling, at most HEAVY_RT_MAX (2) run at once (rt.N.lock), it runs at normal CPU/IO weight
 # instead of the build jobs' 20, and while one runs every other job needs HEAVY_RT_GUARD_MB (2048) more free than its
-# own need to start. The names: tools/realtime_suites.conf (gpu.sh reads the same file; HEAVY_REALTIME_CONF, or
-# HEAVY_REALTIME_SUITES as the list itself), matched like gpu.sh's realtime_job.
+# own need to start. The names: realtime_suites.conf next to this script (the offload script may read the same file; HEAVY_REALTIME_CONF, or
+# HEAVY_REALTIME_SUITES as the list itself), matched like the offload script does.
 RT_MIN_MB=${HEAVY_RT_MIN_MB:-5632}
 RT_MAX=${HEAVY_RT_MAX:-2}
 RT_GUARD_MB=${HEAVY_RT_GUARD_MB:-2048}
 rt_list=${HEAVY_REALTIME_SUITES:-}
 if [ -z "$rt_list" ]; then
-  for f in "${HEAVY_REALTIME_CONF:-}" "$(dirname "$(readlink -f "$0")")/realtime_suites.conf" "$HOME/godot/dot-bootstrap/tools/realtime_suites.conf"; do
+  for f in "${HEAVY_REALTIME_CONF:-}" "$(dirname "$(readlink -f "$0")")/realtime_suites.conf"; do
     [ -n "$f" ] && [ -r "$f" ] && { rt_list=$(sed 's/#.*//' "$f" | tr '\n' ' '); break; }
   done
   [ -n "${rt_list// /}" ] || rt_list="headless_lossy headless_lossy_* headless_latency headless_feel"
@@ -218,8 +238,8 @@ if [ "${HEAVY_NEED_CHECK:-1}" != 0 ] && [ "${total_mb:-0}" -gt 0 ] && [ "$need_m
   exit 69
 fi
 # Some real-time slot held (any rt.N.lock busy), or all of them held.
-rt_busy() { local j; for j in $(seq 1 "$RT_MAX"); do flock -n "$DIR/rt.$j.lock" true 2>/dev/null || return 0; done; return 1; }
-rt_full() { local j; for j in $(seq 1 "$RT_MAX"); do flock -n "$DIR/rt.$j.lock" true 2>/dev/null && return 1; done; return 0; }
+rt_busy() { local j; for j in $(seq 1 "$RT_MAX"); do pub_file "$DIR/rt.$j.lock"; flock -n "$DIR/rt.$j.lock" true 2>/dev/null || return 0; done; return 1; }
+rt_full() { local j; for j in $(seq 1 "$RT_MAX"); do pub_file "$DIR/rt.$j.lock"; flock -n "$DIR/rt.$j.lock" true 2>/dev/null && return 1; done; return 0; }
 reclaim_cache() {
   sudo -n sh -c "echo 4G > $CGROUP/memory.reclaim; sync; echo 1 > /proc/sys/vm/drop_caches" >/dev/null 2>&1
 }
@@ -229,7 +249,7 @@ start=$(date +%s); last_note=0; last_offer=0; last_reclaim=0; fd=; slot=; lfd=; 
 # before it queues, and then finds the tree imported, so it is quick.
 ifd=
 case " $* " in *" --import "*)
-  exec {ifd}>>"$DIR/import.$(printf '%s' "$PWD" | md5sum | cut -c1-12).lock" &&
+  open_lock ifd "$DIR/import.$(printf '%s' "$PWD" | md5sum | cut -c1-12).lock" &&
   if ! flock -n "$ifd"; then
     echo "heavy: another import of $PWD is running; waiting for it first" >&2
     flock "$ifd"
@@ -252,7 +272,7 @@ fi
 tval="$need_mb"; [ "$rt" = 1 ] && tval="$need_mb rt"
 ticket="$DIR/queue.$qlane.$(date +%s%N).$$"
 # A job pinned to a box (GPU_BOX) that the box can run waits for THAT box only: taking a free slot here would run it on
-# this VM after all (2026-11-15: a pinned laptop run waited 19 min, then ran whole on dev02 and game.sh's own import
+# this VM after all (2026-11-15: a pinned run waited 19 min, then ran whole on this VM and the game script's own import
 # aborted in the slot). It holds no local ticket either, so it does not head the local queue. HEAVY_PIN_LOCAL=1 undoes it.
 pinned=0
 if [ "$lane" = build ] && [ -n "${GPU_BOX:-}" ] && [ "${HEAVY_PIN_LOCAL:-0}" != 1 ] && [ "${GPU_OFFLOAD:-1}" != 0 ] &&
@@ -302,9 +322,9 @@ while :; do
     fi
   else
     for i in $(seq 1 "$slots"); do
-      exec {fd}>>"$DIR/$lane.$i.lock" || exit 70
+      open_lock fd "$DIR/$lane.$i.lock" || exit 70
       # The slot is kept only if the memory for it is free now: a job that owns a slot while it
-      # waits for memory blocks every other job behind it (dev02, 2026-10-31, 1-2 h).
+      # waits for memory blocks every other job behind it (2026-10-31, 1-2 h).
       if flock -n "$fd"; then
         avail=$(avail_kb)
         gneed=$need_mb; [ "$rt" = 0 ] && rt_busy && gneed=$((need_mb + RT_GUARD_MB))
@@ -312,13 +332,13 @@ while :; do
            { [ "$i" -eq 1 ] || [ "$lane" != build ] || [ "$avail" -ge $(( (need_mb + (EXTRA_AVAIL_GB - MIN_AVAIL_GB) * 1024) * 1024 )) ]; }; then
           if [ "$rt" = 1 ]; then
             for j in $(seq 1 "$RT_MAX"); do
-              exec {rfd}>>"$DIR/rt.$j.lock" || exit 70
+              open_lock rfd "$DIR/rt.$j.lock" || exit 70
               flock -n "$rfd" && { slot=$i; break 3; }
               exec {rfd}>&-; rfd=
             done
           elif [ "$long" = 1 ]; then
             for j in $(seq 1 "${HEAVY_LONG_MAX:-1}"); do
-              exec {lfd}>>"$DIR/long.$j.lock" || exit 70
+              open_lock lfd "$DIR/long.$j.lock" || exit 70
               flock -n "$lfd" && { slot=$i; break 3; }
               exec {lfd}>&-; lfd=
             done
@@ -331,7 +351,7 @@ while :; do
     done
   fi
   # Offload: a VM may name a script that runs a waiting build-lane job on another machine
-  # (dev02: ~/godot/gpu.sh). Offered only while waiting, never instead of a free slot here.
+  # (your own offload script). Offered only while waiting, never instead of a free slot here.
   # Every waiter offers, head or not: a local-only job at the head (import, tool script) would
   # otherwise keep every suite behind it from the idle boxes (2026-11-02). Exit 75 = not taken.
   if [ "$lane" = build ] && [ -n "$OFFLOAD" ] && [ -x "$OFFLOAD" ] && [ $((now - last_offer)) -ge "$OFFLOAD_EVERY" ]; then
@@ -354,8 +374,8 @@ while :; do
   sleep 3
 done
 rm -f "$ticket"
-printf '%s pid %s since %s: %s\n' "$(whoami)@$(hostname -s)" "$$" "$(date +%H:%M:%S)" "$*" | cut -c1-300 > "$DIR/$lane.$slot.who"
-[ -n "$rfd" ] && echo "real-time job in $lane.$slot (pid $$)" > "$DIR/rt.$j.who"
+printf '%s pid %s since %s: %s\n' "$(whoami)@$(hostname -s)" "$$" "$(date +%H:%M:%S)" "$*" | cut -c1-300 2>/dev/null > "$DIR/$lane.$slot.who"; pub_file "$DIR/$lane.$slot.who"
+if [ -n "$rfd" ]; then echo "real-time job in $lane.$slot (pid $$)" 2>/dev/null > "$DIR/rt.$j.who"; pub_file "$DIR/rt.$j.who"; fi
 
 waited=$(( $(date +%s) - start ))
 [ "$waited" -ge 3 ] && echo "heavy: $lane/$slot acquired after ${waited}s" >&2
@@ -391,9 +411,9 @@ fi
 # The scope's OOM kills are counted in the user journal; read them to tell its ceiling
 # from a kill by somebody else.
 oom_before=$(journalctl --user -q -o cat -u "$unit.scope" 2>/dev/null | grep -c 'oom' || true)
-# Wall-clock ceiling: a 7000 s exploration run held both dev02 build slots for over an hour
+# Wall-clock ceiling: a 7000 s exploration run held both build slots for over an hour
 # (2026-11-02). Raise per job with HEAVY_JOB_MAX_MIN=N, 0 disables.
-MAX_MIN=${HEAVY_JOB_MAX_MIN:-45}
+MAX_MIN=${HEAVY_JOB_MAX_MIN:-$([ "$lane" = perf ] && echo 100 || echo 45)}
 cap=(); [ "$MAX_MIN" != 0 ] && cap=(timeout -k 15 "$(( MAX_MIN * 60 ))")
 [ -n "$lfd" ] || exec {lfd}>/dev/null
 [ -n "$rfd" ] || exec {rfd}>/dev/null
@@ -403,9 +423,9 @@ if [ "$job_mb" -gt 0 ] && [[ " $* " =~ (node|npm|npx|tsc|next|tsx) ]] && [[ "${N
   heap=$(( job_mb * 3 / 4 )); [ "$heap" -gt 8192 ] && heap=8192
   export NODE_OPTIONS="${NODE_OPTIONS:-} --max-old-space-size=$heap"
 fi
-# On a GPU box (gpu.sh's ~/gpu/.lock exists) a build job holds that lock shared, as the box's suites and shots
-# do, so an exclusive frame timing (perf_bench through `gpu.sh run`) waits for it and it waits for the timing:
-# a 31-bot sim server started under heavy on staging02 beside a sim-host bench swung its ms/tick by 0.6
+# On a GPU box (the offload script keeps a ~/gpu/.lock) a build job holds that lock shared, as the box's suites and shots
+# do, so an exclusive frame timing (perf_bench through the offload script) waits for it and it waits for the timing:
+# a 31-bot sim server started under heavy on an offload box beside a sim-host bench swung its ms/tick by 0.6
 # (2026-11-13). It first waits out .gate (held by an exclusive job that is waiting) so benches are not
 # starved, at most HEAVY_GPU_GATE_WAIT s: a job started inside one that already holds .lock shared must not
 # wait on the exclusive waiter that waits on it. HEAVY_GPU_LOCK=none skips this.
@@ -420,8 +440,8 @@ if [ "$lane" = build ] && [ "$gpu_lock" != none ] && [ -f "$gpu_lock" ]; then
   exec {gfd}>&-; exec {gfd}>>"$gpu_lock" && flock -s "$gfd"
 fi
 # A headless godot run here in a project that was never imported (a fresh worktree: no class cache) cannot resolve
-# class_name scripts and idles until its watchdog. hv used to queue a separate local `godot --import` before every such
-# scene, even when the box that took the scene imports there itself (gpu.sh), so imports filled dev02's check lane
+# class_name scripts and idles until its watchdog. the wrapper used to queue a separate local `godot --import` before every such
+# scene, even when the box that took the scene imports there itself, so imports filled the check lane
 # (10 of 21 waiters, 2026-11-13). Now the job that really runs here imports first, in its own slot and cgroup.
 pre=()
 if [ "${HEAVY_NO_PREIMPORT:-0}" != 1 ] && [ -f project.godot ] && [ ! -f .godot/global_script_class_cache.cfg ]; then
@@ -447,8 +467,10 @@ while kill -0 "$jpid" 2>/dev/null; do
 done
 wait "$jpid"; rc=$?
 if [ "$rc" = 0 ] && [ "$peak" -gt 0 ]; then
-  printf '%s\t%s\n' "$KEY" "$peak" >> "$PEAKS"
-  tail -500 "$PEAKS" > "$PEAKS.t" 2>/dev/null && mv "$PEAKS.t" "$PEAKS"
+  pub_file "$PEAKS"
+  printf '%s\t%s\n' "$KEY" "$peak" >> "$PEAKS" 2>/dev/null
+  # Trim through a private temp file; mv over another user's peaks is refused in the sticky dir, so fall back to rewriting in place.
+  pt=$(mktemp "$DIR/peaks.t.XXXXXX" 2>/dev/null) && { tail -500 "$PEAKS" > "$pt" 2>/dev/null && chmod a+rw "$pt" 2>/dev/null && { mv -f "$pt" "$PEAKS" 2>/dev/null || cat "$pt" > "$PEAKS" 2>/dev/null; }; rm -f "$pt"; }
 fi
 [ "$rc" = 124 ] && echo "heavy: stopped after ${MAX_MIN} min (HEAVY_JOB_MAX_MIN) so it cannot hold a slot for hours." >&2
 # An OOM kill is reported as one whatever exit code the job ended with (137 for the process, 143/1/2 when its parent
@@ -466,5 +488,5 @@ if [ "$rc" != 0 ] && [ "$rc" != 124 ] && [ ${#scope[@]} -gt 0 ]; then
     echo "heavy: killed (SIGKILL), not by its ${job_mb} MB ceiling as far as the journal shows: somebody else killed it." >&2
   fi
 fi
-: > "$DIR/$lane.$slot.who"
+: 2>/dev/null > "$DIR/$lane.$slot.who"
 exit $rc
