@@ -608,7 +608,7 @@ tool_job() {
 		# shellcheck disable=SC2053
 		[[ $stem == $pat ]] && return 1
 	done
-	marker=$(grep -m1 -oE '^# gpu-offload: (ok|local)' "$file" 2>/dev/null | awk '{print $3}')
+	marker=$(grep -m1 -oE '^# gpu-offload: (ok|local)' "$file" 2>/dev/null | awk '{print $3}') || true
 	[[ $marker == local ]] && return 1
 	[[ $marker == ok ]] && ok=1
 	if [[ $ok == 0 ]]; then
