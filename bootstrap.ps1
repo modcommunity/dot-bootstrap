@@ -91,7 +91,7 @@
 [CmdletBinding()]
 param(
     [string]$Projects = $(if ($env:DOT_PROJECTS) { $env:DOT_PROJECTS } else { '' }),
-    [string]$GitBase  = $(if ($env:DOT_GIT_BASE) { $env:DOT_GIT_BASE } else { 'git@github.com:modcommunity' }),
+    [string]$GitBase  = $(if ($env:DOT_GIT_BASE) { $env:DOT_GIT_BASE } else { 'git@github.com:gamespice-platform' }),
     [string]$Hub      = $(if ($env:DOTHUB) { $env:DOTHUB } else { '' }),
     [switch]$Links,
     [switch]$ContentKeys,
@@ -1124,7 +1124,7 @@ function Get-NativePlatform {
 function Fetch-Natives ($proj) {
     if ($env:DOT_NATIVES -eq 'none') { return }
     $plat = Get-NativePlatform
-    $root = if ($env:DOT_NATIVES_BASE) { $env:DOT_NATIVES_BASE } else { 'https://github.com/modcommunity' }
+    $root = if ($env:DOT_NATIVES_BASE) { $env:DOT_NATIVES_BASE } else { 'https://github.com/gamespice-platform' }
     foreach ($n in @(Get-NativesFor $proj)) {
         $n.Repo = Get-OnDisk $n.Repo
         $dir = Join-Path $projectsDir $n.Repo
@@ -1145,7 +1145,9 @@ function Fetch-Natives ($proj) {
         if (-not (Test-Path $stamp) -and (Test-NativeBuiltHere $libDir $plat)) {
             Say $proj "natives: keeps the $($n.Addon) library built here ($plat)" 'DarkGray'; continue
         }
-        $base = "$root/$($n.Repo)/releases/download/$($n.Tag)"
+        # The organisation names its repositories without the dot- prefix; a named base keeps the directory name.
+        $repoName = if ($env:DOT_NATIVES_BASE) { $n.Repo } else { $n.Repo -replace '^dot-', '' }
+        $base = "$root/$repoName/releases/download/$($n.Tag)"
         try { $sums = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 60 -Uri "$base/SHA256SUMS.natives").Content }
         catch { Warn $proj "natives: no $($n.Repo) $($n.Tag) release to fetch (GDScript runs, slower)"; continue }
         if ($sums -is [byte[]]) { $sums = [System.Text.Encoding]::UTF8.GetString($sums) }

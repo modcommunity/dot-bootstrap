@@ -1,4 +1,4 @@
-The first thing to run. It clones the projects of the Dot family (games, addons, maps), links each addon into the projects that use it, and gets you to a running game. Part of the [dot-*](https://github.com/modcommunity) family.
+The first thing to run. It clones the projects of the Dot family (games, addons, maps), links each addon into the projects that use it, and gets you to a running game. Part of the [dot-*](https://github.com/gamespice-platform) family.
 
 Each Dot project is its own Git repository on purpose: an addon is used by copying its `addons/<name>/` folder. These scripts are the one place that knows which repositories exist and which addons each one needs.
 
@@ -13,13 +13,13 @@ Each Dot project is its own Git repository on purpose: an addon is used by copyi
 The repositories are public, so you need no credentials to clone or pull. The scripts use HTTPS by default. Use `--ssh` (`-Ssh` on Windows) on a machine you push from.
 
 ```bash
-git clone https://github.com/modcommunity/dot-bootstrap.git
+git clone https://github.com/gamespice-platform/bootstrap.git
 cd dot-bootstrap
 ./bootstrap.sh
 ```
 
 ```powershell
-git clone https://github.com/modcommunity/dot-bootstrap.git
+git clone https://github.com/gamespice-platform/bootstrap.git
 cd dot-bootstrap
 Set-ExecutionPolicy RemoteSigned -Scope CurrentUser   # once, if PowerShell refuses
 .\bootstrap.ps1
@@ -79,7 +79,7 @@ You can play a converted map folder or `.zip` without publishing it. Name it `<m
 - In a source checkout, put it in `res://addons/maps`.
 - Drag it onto the window of a game that calls `DotMapLocalMaps.watch_drops` (Fatal Contact does).
 
-It shows as `<title> (local)` and plays solo only. See [dot-map docs/content.md](https://github.com/modcommunity/dot-map/blob/main/docs/content.md).
+It shows as `<title> (local)` and plays solo only. See [dot-map docs/content.md](https://github.com/gamespice-platform/map/blob/main/docs/content.md).
 
 ### Art for converted maps
 
@@ -89,7 +89,7 @@ Some games draw converted maps with shared textures and models that are in no re
 dot-map-convert/tools/stage_stores.sh zombie-zone-maps --from dev02:godot/zombie-zone-maps/.stores --game game-zombie-zone
 ```
 
-This is not part of a plain sync because it is a large download. Details: [dot-map docs/content.md](https://github.com/modcommunity/dot-map/blob/main/docs/content.md#without-the-slices).
+This is not part of a plain sync because it is a large download. Details: [dot-map docs/content.md](https://github.com/gamespice-platform/map/blob/main/docs/content.md#without-the-slices).
 
 ## How the scripts know what to link
 

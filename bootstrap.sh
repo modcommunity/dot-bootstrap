@@ -143,7 +143,7 @@ fi
 LIST="$REPO_DIR/projects.tsv"
 [ -f "$LIST" ] || LIST="$SELF_DIR/projects.tsv"
 
-GIT_BASE="${DOT_GIT_BASE:-git@github.com:modcommunity}"
+GIT_BASE="${DOT_GIT_BASE:-git@github.com:gamespice-platform}"
 HUB="${DOTHUB:-}"
 
 # Whether to reach GitHub over HTTPS instead of SSH. HTTPS is the default: every
@@ -945,7 +945,7 @@ link_addons() {
 # mac with arm64 and x86_64 fetched side by side does not flip one stamp) skips the download
 # next time (an old single bin/.natives naming this platform is adopted); a library built locally (bin without a stamp) is kept. No release for
 # this platform, or offline: a warning, and the GDScript twins run. DOT_NATIVES=none
-# skips the lot; DOT_NATIVES_BASE replaces https://github.com/modcommunity.
+# skips the lot; DOT_NATIVES_BASE replaces https://github.com/gamespice-platform.
 #
 # An optional third field names the library directory inside the addon when it is not
 # bin/ -- dot-net's runtime-loaded snapshot core keeps its flat, Godot-named files in
@@ -1005,7 +1005,9 @@ fetch_natives() {
         if [ ! -f "$stamp" ] && native_built_here "$lib" "$plat"; then
             say "$proj" "${DIM}natives: keeps the $addon library built here ($plat)${OFF}"; continue
         fi
-        base="${DOT_NATIVES_BASE:-https://github.com/modcommunity}/$repo/releases/download/$tag"
+        # The organisation names its repositories without the dot- prefix; a named base keeps the directory name.
+        if [ -n "${DOT_NATIVES_BASE:-}" ]; then base="$DOT_NATIVES_BASE/$repo/releases/download/$tag"
+        else base="https://github.com/gamespice-platform/${repo#dot-}/releases/download/$tag"; fi
         tmp="$(mktemp -d)"
         if ! sums="$(curl -fsSL "$base/SHA256SUMS.natives" 2>/dev/null)"; then
             warn "$proj" "natives: no $repo $tag release to fetch (GDScript runs, slower)"; rm -rf "$tmp"; continue

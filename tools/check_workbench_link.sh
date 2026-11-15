@@ -30,11 +30,11 @@ grep -qx 'link game-fatal-contact addon dot_workbench' <<<"$plan" || bad "plan a
 
 # A real run for dot-workbench itself (small): clone, then its four links.
 mkdir -p "$tmp/src" "$tmp/out"
-for d in "$sib"/*/; do n="$(basename "$d")"; [ -d "$d/.git" ] && ln -sfn "${d%/}" "$tmp/src/$n.git"; done
+for d in "$sib"/*/; do n="$(basename "$d")"; [ -d "$d/.git" ] && { ln -sfn "${d%/}" "$tmp/src/$n.git"; case "$n" in dot-*) ln -sfn "${d%/}" "$tmp/src/${n#dot-}.git";; esac; }; done
 export GIT_CONFIG_COUNT=4
 for i in 0 1 2 3; do export "GIT_CONFIG_KEY_$i=url.$tmp/src/.insteadOf"; done
-export GIT_CONFIG_VALUE_0="git@github.com:modcommunity/" GIT_CONFIG_VALUE_1="git@github.com:zees-games/" \
-       GIT_CONFIG_VALUE_2="https://github.com/modcommunity/" GIT_CONFIG_VALUE_3="https://github.com/zees-games/"
+export GIT_CONFIG_VALUE_0="git@github.com:gamespice-platform/" GIT_CONFIG_VALUE_1="git@github.com:zees-games/" \
+       GIT_CONFIG_VALUE_2="https://github.com/gamespice-platform/" GIT_CONFIG_VALUE_3="https://github.com/zees-games/"
 DOT_PROJECTS="$tmp/out" "$here/bootstrap.sh" --only workbench >"$tmp/run.log" 2>&1 || { bad "bootstrap --only workbench failed"; tail -5 "$tmp/run.log"; }
 for a in dot_core dot_ui dot_menu dot_settings; do
     [ -L "$tmp/out/dot-workbench/addons/$a" ] || bad "dot-workbench did not get $a"
