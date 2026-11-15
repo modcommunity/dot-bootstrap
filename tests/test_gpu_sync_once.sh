@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# gpu.sh sync_ws (nightly heavy-queue-diag-1): a tree goes to a box once and every workspace of it is filled there from
+# that copy, never from a stale or half-uploaded one. The box is a fake: a directory used as its $HOME, reached through a
+# fake ssh that runs the command there, and an rsync stub that maps "h:<path>" onto it and counts uploads.
+# Real code only: tree_hash, WS_FROM_SRC and sync_ws are cut out of tools/gpu.sh.
+set -u
+here=$(cd "$(dirname "$0")/.." && pwd)
+src=$here/tools/gpu.sh
+root=$(mktemp -d)
+trap 'rm -rf "$root"' EXIT
+fail=0
+ok() { echo "ok   $1"; }
+bad() { echo "FAIL $1"; fail=1; }
+
+fns=$(sed -n '/^tree_hash() {/,/^}/p;/^read -r -d .. WS_FROM_SRC/,/^EOF$/p;/^sync_ws() {/,/^}/p' "$src")
+[[ $fns == *"tree_hash() {"* && $fns == *WS_FROM_SRC* && $fns == *"sync_ws() {"* ]] || { echo "FAIL could not cut the sync code out of $src"; exit 1; }
+
+box=$root/box
+mkdir -p "$box/gpu" "$root/bin"
+# ssh stand-in: runs its one command string in the fake box's home.
+cat > "$root/bin/fakessh" <<EOF
+#!/usr/bin/env bash
+cd "$box" && HOME="$box" exec bash -c "\$*"
+EOF
+chmod +x "$root/bin/fakessh"
+
+# The project: plain files, a sibling link the job excludes (/addons/sib), and a self-looping link (/maps/maps).
+p=$root/proj
+mkdir -p "$p/sub" "$p/maps" "$p/.godot" "$p/screenshots" "$root/sibrepo"
+echo one > "$p/a.txt"; echo two > "$p/sub/b.txt"; echo cache > "$p/.godot/c"; echo shot > "$p/screenshots/s.png"
+echo sib > "$root/sibrepo/s.gd"; mkdir -p "$p/addons"; ln -s "$root/sibrepo" "$p/addons/sib"
+ln -s "$p/maps" "$p/maps/maps"
+EXARGS=(--exclude /addons/sib --exclude /maps/maps)
+
+# run_sync <wsid> [env...]: one job's sync_ws in its own bash, as offer_on calls it (under set -eE).
+run_sync() {
+	local ws=$1; shift
+	env "$@" ROOTT="$root" BOX_HOME="$box" PROJ_DIR="$p" GPU_SYNC_LOCK_DIR="$root/locks" bash -c 'set -eE
+project=proj BOX=fake HOST=h RSH=true
+SSH=("$ROOTT/bin/fakessh"); SSHQ=(timeout -k 5 25 "$ROOTT/bin/fakessh")
+# rsync stub: h:<path> is <box>/<path>; -e and its value dropped; every upload (local -> h:) counted, with an optional
+# delay (SLOW), a failure (FAILN: the first N uploads fail) or an edit of the tree during the upload (EDIT_ONCE).
+rsync() {
+	local a=() x skip=0 up=0
+	for x in "$@"; do
+		if (( skip )); then skip=0; continue; fi
+		[[ $x == -e ]] && { skip=1; continue; }
+		[[ $x == h:* ]] && { x=$BOX_HOME/${x#h:}; up=1; }
+		a+=("$x")
+	done
+	if (( up )); then
+		echo up >> "$ROOTT/uploads"
+		sleep "${SLOW:-0}"
+		if [[ -n ${FAILN:-} ]] && (( $(wc -l < "$ROOTT/uploads") <= FAILN )); then return 12; fi
+		if [[ -n ${EDIT_ONCE:-} && ! -e $ROOTT/edited ]]; then : > "$ROOTT/edited"; command rsync "${a[@]}"; echo edited-during > "$PROJ_DIR/a.txt"; return; fi
+	fi
+	command rsync "${a[@]}"
+}
+'"$fns"'
+sync_ws "$1" "${@:2}"' _ "$ws" "${EXARGS[@]}"
+}
+uploads() { cat "$root/uploads" 2>/dev/null | wc -l; }
+same() { # same <wsid>: the workspace holds exactly the tree (less .godot/screenshots/excluded links)
+	diff -r -x .godot -x screenshots -x sib -x maps "$p" "$box/gpu/ws/$1/proj" >/dev/null 2>&1 &&
+		[[ $(cat "$box/gpu/ws/$1/proj/maps/../a.txt" 2>/dev/null) == "$(cat "$p/a.txt")" ]] &&
+		[[ ! -e $box/gpu/ws/$1/proj/maps/maps && ! -e $box/gpu/ws/$1/proj/.godot/c && ! -e $box/gpu/ws/$1/proj/addons/sib ]]
+}
+
+# 1. first job uploads once; the workspace equals the tree
+out=$(run_sync proj 2>&1); rc=$?
+[[ $rc == 0 && $(uploads) == 1 ]] && same proj && ok "first job: one upload, workspace is the tree" || bad "first job: rc=$rc uploads=$(uploads) out=$out"
+# 2. a second workspace of the same tree: no upload, filled on the box
+mkdir -p "$box/gpu/ws/proj~2/proj/.godot"; echo keep > "$box/gpu/ws/proj~2/proj/.godot/imported"
+out=$(run_sync 'proj~2' 2>&1); rc=$?
+[[ $rc == 0 && $(uploads) == 1 && $out == *"no upload"* ]] && same 'proj~2' && ok "same tree: no upload, second workspace filled on the box" || bad "same tree: rc=$rc uploads=$(uploads) out=$out"
+[[ $(cat "$box/gpu/ws/proj~2/proj/.godot/imported" 2>/dev/null) == keep ]] && ok "workspace .godot kept" || bad "workspace .godot lost"
+# 3. an edit (new file, changed file, removed file) uploads again and reaches the workspace; deletions too
+echo three-longer > "$p/a.txt"; echo new > "$p/sub/n.txt"; rm "$p/sub/b.txt"
+out=$(run_sync 'proj~2' 2>&1); rc=$?
+[[ $rc == 0 && $(uploads) == 2 ]] && same 'proj~2' && ok "edited tree: uploaded again, workspace updated (incl. deletion)" || bad "edited tree: rc=$rc uploads=$(uploads) out=$out"
+# 3b. a same-size edit (only the mtime moves) is seen too
+echo three-LONGER > "$p/a.txt"; touch -d '+1 sec' "$p/a.txt"
+out=$(run_sync proj 2>&1); rc=$?
+[[ $rc == 0 && $(uploads) == 3 ]] && same proj && ok "same-size edit: uploaded again" || bad "same-size edit: rc=$rc uploads=$(uploads) out=$out"
+# 3c. a mode change (chmod +x) is seen too
+chmod +x "$p/sub/n.txt"
+out=$(run_sync proj 2>&1); rc=$?
+[[ $rc == 0 && $(uploads) == 4 && -x $box/gpu/ws/proj/proj/sub/n.txt ]] && ok "mode change: uploaded again" || bad "mode change: rc=$rc uploads=$(uploads) out=$out"
+# 4. a failed upload fails the job loudly, leaves no stamp, and the next job uploads again
+echo four > "$p/a.txt"; rm -f "$root/uploads"
+out=$(run_sync 'proj~3' FAILN=1 2>&1); rc=$?
+[[ $rc != 0 && $out == *"failed"* && ! -e $box/gpu/ws/proj~src/.tree-hash ]] && ok "failed upload: job fails, no stamp left" || bad "failed upload: rc=$rc out=$out stamp=$(cat "$box/gpu/ws/proj~src/.tree-hash" 2>/dev/null)"
+out=$(run_sync 'proj~3' 2>&1); rc=$?
+[[ $rc == 0 && $(uploads) == 2 ]] && same 'proj~3' && ok "after a failed upload: next job uploads and runs" || bad "retry after failure: rc=$rc uploads=$(uploads) out=$out"
+# 5. an edit during the upload: uploaded again, the workspace has the edit, the stamp is the final tree
+rm -f "$root/uploads"; echo five > "$p/a.txt"
+out=$(run_sync proj EDIT_ONCE=1 2>&1); rc=$?
+[[ $rc == 0 && $(uploads) == 2 && $out == *"changed during"* && $(cat "$box/gpu/ws/proj/proj/a.txt") == edited-during ]] && same proj &&
+	ok "edit during upload: uploaded again, workspace has the edit" || bad "edit during upload: rc=$rc uploads=$(uploads) out=$out"
+# 6. four jobs of a fresh tree at once: one upload, the others wait for it; every workspace is right
+echo six > "$p/a.txt"; rm -f "$root/uploads"
+for w in proj 'proj~2' 'proj~3' 'proj~4'; do run_sync "$w" SLOW=1 > "$root/par.$w" 2>&1 & done
+wait
+n_ok=0; for w in proj 'proj~2' 'proj~3' 'proj~4'; do same "$w" && n_ok=$((n_ok + 1)); done
+[[ $(uploads) == 1 && $n_ok == 4 ]] && ok "4 concurrent jobs: 1 upload, 4 correct workspaces" || bad "concurrent: uploads=$(uploads) correct=$n_ok $(cat "$root"/par.*)"
+# 7. the box side refuses a copy whose stamp is not the tree asked for
+out=$(cd "$box" && HOME=$box bash -c "$(sed -n '/^read -r -d .. WS_FROM_SRC/,/^EOF$/p' "$src" | sed '1d;$d')" _ 'proj~src' proj 'proj~5' deadbeef 2>&1); rc=$?
+[[ $rc == 5 && ! -e $box/gpu/ws/proj~5/proj/a.txt ]] && ok "box: stale stamp refused, nothing copied" || bad "box stale stamp: rc=$rc out=$out"
+# 8. a stamp removed on the box (janitor pruned the ~src copy): uploads again
+rm -rf "$box/gpu/ws/proj~src"; rm -f "$root/uploads"
+out=$(run_sync 'proj~2' 2>&1); rc=$?
+[[ $rc == 0 && $(uploads) == 1 ]] && same 'proj~2' && ok "pruned ~src: uploaded again" || bad "pruned ~src: rc=$rc uploads=$(uploads) out=$out"
+# 9. GPU_SYNC_ONCE=0: the old direct upload into the workspace, no ~src
+rm -rf "$box/gpu/ws"; mkdir -p "$box/gpu/ws/proj"; rm -f "$root/uploads"; echo nine > "$p/a.txt"  # the box script makes ws/<wsid>
+out=$(run_sync proj GPU_SYNC_ONCE=0 2>&1); rc=$?
+[[ $rc == 0 && $(uploads) == 1 && ! -e $box/gpu/ws/proj~src ]] && same proj && ok "GPU_SYNC_ONCE=0: direct upload" || bad "GPU_SYNC_ONCE=0: rc=$rc out=$out"
+
+exit $fail

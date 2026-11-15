@@ -294,6 +294,96 @@ unresolved_except_loops() {
 	grep -v '^$' <<<"$out" || true
 }
 
+# ---- one upload per tree per box (2026-11-15, nightly heavy-queue-diag-1) ----
+# hv shard sends one job per suite and a box puts each in its own workspace (ws/<project>, <project>~2 .. ~8 on ph), so the
+# same tree crossed the uplink up to 8 times per run (~270 MB each for a zombie-zone worktree), and the 2-3 rsync slots at
+# 18 MB/s became the queue's bottleneck (57 waiters). Now offer_on's sync_ws uploads a tree once per box into
+# ws/<project>~src/<project>, stamped ws/<project>~src/.tree-hash with tree_hash, and fills each workspace from that copy
+# on the box (a local rsync). A later job whose tree hashes the same skips the upload and the rsync slot queue.
+# Never stale or half-synced: the stamp is removed before an upload and written only after one that succeeded AND after
+# which the tree still hashes as before it (an edit during the upload uploads again, at most 3 times, then the job goes
+# back to the queue like any failed copy, counted by copyfail); the box checks the stamp before and after filling the
+# workspace, under the ~src workspace's own lock (which janitor.sh and prune_stale honour). All of it runs under one lock
+# per box and project on this host (GPU_SYNC_LOCK_DIR, default /tmp/gpu-sync-locks), so a shard's suites wait for the
+# one transfer instead of each starting their own. GPU_SYNC_ONCE=0 is the old direct upload into each workspace.
+
+# tree_hash <dir> [<project-relative path left out of the copy>...]: a hash of what the copy to a box ships: every entry,
+# links followed as --copy-links does, with type, mode, size and mtime in ns (rsync's quick check, finer), plus the list of
+# left-out paths. .godot, .git and screenshots directories are left out as the copy leaves them out; anything the hash
+# covers beyond the copy can only cost a needless upload, never a stale tree.
+tree_hash() {
+	local d=${1%/} p pr=(); shift
+	[[ -d $d ]] || return 1
+	for p in "$@"; do pr+=(-o -path "./$p"); done
+	{ printf 'x %s\n' "$@"
+	  ( cd "$d/" && LC_ALL=C find -L . \( -type d \( -name .godot -o -name .git -o -name screenshots \) "${pr[@]}" \) -prune \
+		-o -printf '%y %m %s %T@ %P\n' 2>/dev/null ) | LC_ALL=C sort
+	} | md5sum | cut -c1-32
+}
+
+# Runs on the box: fills ws/<wsid>/<project> from ws/<src>/<project> when the stamp there is the tree dev02 hashed.
+read -r -d '' WS_FROM_SRC <<'EOF' || true
+set -u
+src=$1 project=$2 wsid=$3 h=$4; shift 4
+cd ~/gpu || exit 3
+mkdir -p suite
+exec 8>>"suite/$src.lock"
+flock -w 600 8 || { echo "gpu.sh: ws/$src on $(hostname) stayed locked for 600 s" >&2; exit 4; }
+touch "ws/$src" 2>/dev/null
+at() { [ "$(cat "ws/$src/.tree-hash" 2>/dev/null)" = "$h" ] || { echo "gpu.sh: ws/$src on $(hostname) is not at tree $h $1 the copy into ws/$wsid" >&2; exit 5; }; }
+at before
+mkdir -p "ws/$wsid/$project" || exit 6
+rsync -a --delete "$@" "ws/$src/$project/" "ws/$wsid/$project/" || exit 6
+at after
+EOF
+
+# sync_ws <wsid> [the job's extra rsync filter args, --exclude /<path> pairs]: $PROJ_DIR into ws/<wsid>/<project> on $BOX,
+# uploading only when the box's ~src copy is not at this tree. Returns non-zero, with a line on stderr, on any failure.
+sync_ws() {
+	local wsid=$1; shift
+	local ex=("$@") paths=() i src="$project~src" h h2 st= try fd q rc t0=$SECONDS
+	local filt=(--exclude '.godot/' --exclude '.git/' --exclude 'screenshots/' "${ex[@]}")
+	if [[ ${GPU_SYNC_ONCE:-1} == 0 ]]; then
+		rsync -az --delete --copy-links "${filt[@]}" -e "$RSH" "$PROJ_DIR/" "$HOST:gpu/ws/$wsid/$project/"; return
+	fi
+	for ((i = 0; i < ${#ex[@]}; i++)); do [[ ${ex[i]} == --exclude && ${ex[i+1]:-} == /* ]] && paths+=("${ex[i+1]#/}"); done
+	local ldir=${GPU_SYNC_LOCK_DIR:-/tmp/gpu-sync-locks} lk
+	mkdir -p "$ldir" 2>/dev/null && chmod 1777 "$ldir" 2>/dev/null
+	lk=$ldir/$BOX.$project.lock
+	# World-writable and opened read-only, like the rsync slot locks: shared by every user on this host.
+	[[ -e $lk ]] || { ( umask 0; : > "$lk" ) 2>/dev/null; }
+	{ exec {fd}<"$lk"; } 2>/dev/null || { echo "gpu.sh: cannot open the sync lock $lk" >&2; return 1; }
+	if ! flock -w "${GPU_SYNC_LOCK_WAIT_S:-1800}" "$fd"; then
+		exec {fd}<&-; echo "gpu.sh: waited $((SECONDS - t0)) s for another job's copy of $project to $BOX; giving up" >&2; return 1
+	fi
+	(( SECONDS - t0 < 2 )) || echo "gpu.sh: waited $((SECONDS - t0)) s for another job's copy of $project to $BOX" >&2
+	h=$(tree_hash "$PROJ_DIR" "${paths[@]}") || { exec {fd}<&-; echo "gpu.sh: cannot hash $PROJ_DIR" >&2; return 1; }
+	st=$("${SSHQ[@]}" "cat gpu/ws/$src/.tree-hash 2>/dev/null" </dev/null) || st=
+	if [[ $st == "$h" ]]; then
+		echo "gpu.sh: $project (tree ${h:0:12}) is already on $BOX; no upload" >&2
+	else
+		st=
+		for try in 1 2 3; do
+			"${SSHQ[@]}" "mkdir -p gpu/ws/$src/$project && rm -f gpu/ws/$src/.tree-hash" </dev/null || break
+			rsync -az --delete --copy-links "${filt[@]}" -e "$RSH" "$PROJ_DIR/" "$HOST:gpu/ws/$src/$project/" || break
+			h2=$(tree_hash "$PROJ_DIR" "${paths[@]}") || break
+			if [[ $h2 == "$h" ]]; then
+				"${SSHQ[@]}" "printf '%s\n' $h > gpu/ws/$src/.tree-hash" </dev/null && st=$h
+				break
+			fi
+			echo "gpu.sh: $PROJ_DIR changed during its upload to $BOX; uploading again ($try/3)" >&2
+			h=$h2
+		done
+		[[ $st == "$h" ]] || { exec {fd}<&-; echo "gpu.sh: uploading $project to $BOX failed" >&2; return 1; }
+		echo "gpu.sh: uploaded $project (tree ${h:0:12}) to $BOX in $((SECONDS - t0)) s" >&2
+	fi
+	q=$(printf '%q ' "$src" "$project" "$wsid" "$h" "${filt[@]}")
+	rc=0; timeout -k 5 "${GPU_SYNC_COPY_TIMEOUT:-900}" "${SSH[@]}" "bash -c $(printf '%q' "$WS_FROM_SRC") _ $q" </dev/null || rc=$?
+	exec {fd}<&-
+	(( rc == 0 )) || echo "gpu.sh: filling ws/$wsid from ws/$src on $BOX failed (rc $rc)" >&2
+	return $rc
+}
+
 sync_project() {
 	project_dir "$1"
 	local n d bad loops=() ll xl=(); n=$(proj_name "$1"); d=$(proj_src "$1")
@@ -1266,9 +1356,8 @@ offer_on() {
 		back_to_queue "not copying $project to $BOX ($(copyfail_count "$BOX" "${JOB_ARGS[@]}")/${GPU_COPY_FAIL_MAX:-5})"
 	fi
 	while IFS=$'\t' read -r _ lk lt; do ex+=(--exclude "/$lk"); done < <(linked_siblings "$PROJ_DIR")
-	rsync -az --delete --copy-links --exclude '.godot/' --exclude '.git/' --exclude 'screenshots/' "${ex[@]}" \
-		-e "$RSH" \
-		"$PROJ_DIR/" "$HOST:gpu/ws/$wsid/$project/" || {
+	# One upload per tree per box; the workspace is filled from the box's copy (sync_ws).
+	sync_ws "$wsid" "${ex[@]}" || {
 			copyfail_bump "$BOX" "${JOB_ARGS[@]}"
 			back_to_queue "copying $project to $BOX failed ($(copyfail_count "$BOX" "${JOB_ARGS[@]}")/${GPU_COPY_FAIL_MAX:-5})"
 		}
