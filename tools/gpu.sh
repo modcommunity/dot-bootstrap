@@ -259,9 +259,19 @@ project_dir() {
 	[[ -f "$d/project.godot" ]] || die "$d is not a Godot project"
 }
 
+# Links under a project that --copy-links cannot ship: dangling, or looping (zombie-zone-maps/maps/maps -> maps,
+# made by an `ln -s` into a directory link, 2026-11-13). rsync stops on the first with rc 23 and no hint which
+# link, so list them before the copy. Skips what the copy excludes (.git, .godot, screenshots). One finding per line ("dangling: ./p" or find's own loop message).
+unresolved_links() {
+	( cd "${1%/}/" && { find -L . \( -path ./.git -o -path ./.godot -o -path ./screenshots \) -prune -o -type l -printf 'dangling: %p\n' 2>&1 >&3 | grep -i 'loop' | sed 's/^/loop: /'; } 3>&1 | head -20 )
+}
+
 sync_project() {
 	project_dir "$1"
-	local n d; n=$(proj_name "$1"); d=$(proj_src "$1")
+	local n d bad; n=$(proj_name "$1"); d=$(proj_src "$1")
+	bad=$(unresolved_links "$d")
+	[[ -z $bad ]] || die "$d has links that dangle or loop, so --copy-links cannot copy it to $BOX (rsync would stop with rc 23). Fix or remove them:
+$(sed 's/^/  /' <<<"$bad")"
 	"${SSHQ[@]}" "mkdir -p ~/$REMOTE_ROOT/$n"
 	rsync -az --delete --copy-links \
 		--exclude '.godot/' --exclude '.git/' --exclude 'screenshots/' \
@@ -1055,6 +1065,14 @@ offer_on() {
 				back_to_queue "$fl points into another worktree ($ft); not copying it to $BOX"
 			fi
 		done < <(find "${PROJ_DIR%/}/" -maxdepth 2 -type l -not -path '*/.godot/*' 2>/dev/null)
+	fi
+	while IFS=$'\t' read -r _ lk lt; do ex+=(--exclude "/$lk"); done < <(linked_siblings "$PROJ_DIR")
+	local bad; bad=$(unresolved_links "$PROJ_DIR")
+	if [[ -n $bad ]]; then
+		copyfail_bump "$BOX" "$@"
+		echo "gpu.sh: $PROJ_DIR has links that dangle or loop; rsync --copy-links would stop with rc 23. Fix or remove them:" >&2
+		sed 's/^/  /' <<<"$bad" >&2
+		back_to_queue "not copying $project to $BOX ($(copyfail_count "$BOX" "$@")/${GPU_COPY_FAIL_MAX:-5})"
 	fi
 	while IFS=$'\t' read -r _ lk lt; do ex+=(--exclude "/$lk"); done < <(linked_siblings "$PROJ_DIR")
 	rsync -az --delete --copy-links --exclude '.godot/' --exclude '.git/' --exclude 'screenshots/' "${ex[@]}" \
