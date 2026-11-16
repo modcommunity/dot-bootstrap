@@ -1785,10 +1785,10 @@ publish_cmd() {
 	[[ ${cmd[0]:-} == tools/publish*.sh || ${cmd[0]:-} == ./tools/publish*.sh ]] || $fail "not a publish command: ${cmd[*]:0:1}"
 	for kv in "${UW_ENV[@]}"; do
 		[[ $kv == GPU_PUBLISH=* ]] && continue
-		[[ ${kv%%=*} =~ (TOKEN|KEY|SECRET|PASS|CRED) && ${kv%%=*} != DOT_CLI_TOKEN_FILE ]] && $fail "a secret in the command's environment stays local"
+		[[ ${kv%%=*} =~ (TOKEN|KEY|SECRET|PASS|CRED) && ${kv%%=*} != GS_CLI_TOKEN_FILE ]] && $fail "a secret in the command's environment stays local"
 		envs+=("$kv")
 	done
-	[[ -z ${DOT_CLI_TOKEN:-} ]] || $fail "DOT_CLI_TOKEN is set; it would have to travel, so it stays local"
+	[[ -z ${GS_CLI_TOKEN:-${DOT_CLI_TOKEN:-}} ]] || $fail "GS_CLI_TOKEN is set; it would have to travel, so it stays local"
 	local ha
 	for ha in "${cmd[@]:1}"; do
 		[[ $ha == --host-addons || $ha == --host-addons=* ]] || continue
@@ -1800,9 +1800,9 @@ publish_cmd() {
 	local rroot="$REMOTE_HOME/$REMOTE_ROOT" rhome=$REMOTE_HOME
 
 	# Arguments: local paths under the tree or $HOME become the box's; --lock, --out and --site are noted.
-	local args=() lockfiles=("$PWD/content.lock.json") outs=() site=${DOT_SITE:-} has_token=0 a prev= v
-	for kv in "${envs[@]}"; do [[ $kv == DOT_SITE=* ]] && site=${kv#DOT_SITE=}; [[ $kv == DOT_CLI_TOKEN_FILE=* ]] && has_token=1; done
-	[[ -z ${DOT_CLI_TOKEN_FILE:-} ]] || has_token=1
+	local args=() lockfiles=("$PWD/content.lock.json") outs=() site=${GS_SITE:-${DOT_SITE:-}} has_token=0 a prev= v
+	for kv in "${envs[@]}"; do [[ $kv == GS_SITE=* ]] && site=${kv#GS_SITE=}; [[ $kv == GS_CLI_TOKEN_FILE=* ]] && has_token=1; done
+	[[ -z ${GS_CLI_TOKEN_FILE:-${DOT_CLI_TOKEN_FILE:-}} ]] || has_token=1
 	for a in "${cmd[@]:1}"; do
 		case $prev in
 			--site) site=$a ;;
@@ -1817,12 +1817,12 @@ publish_cmd() {
 	done
 	if [[ $has_token == 0 ]]; then
 		case $site in
-			*moddingcommunity.com*) envs+=("DOT_CLI_TOKEN_FILE=$rhome/.config/dot/creator-token-prod") ;;
-			*tmcdev.net*|*dev.dotgames.org*) envs+=("DOT_CLI_TOKEN_FILE=$rhome/.config/dot/creator-token-dev") ;;
+			*moddingcommunity.com*) envs+=("GS_CLI_TOKEN_FILE=$rhome/.config/dot/creator-token-prod") ;;
+			*tmcdev.net*|*dev.dotgames.org*) envs+=("GS_CLI_TOKEN_FILE=$rhome/.config/dot/creator-token-dev") ;;
 		esac
 	fi
 	local tok
-	for kv in "${envs[@]}"; do [[ $kv == DOT_CLI_TOKEN_FILE=* ]] && { tok=${kv#*=}; "${SSHQ[@]}" "[ -s $(printf '%q' "$tok") ]" || $fail "no token file $tok on $BOX_DESC"; }; done
+	for kv in "${envs[@]}"; do [[ $kv == GS_CLI_TOKEN_FILE=* ]] && { tok=${kv#*=}; "${SSHQ[@]}" "[ -s $(printf '%q' "$tok") ]" || $fail "no token file $tok on $BOX_DESC"; }; done
 
 	# Projects to copy: this one, dot-cloud, and every $ROOT/<name> or ../<name> the arguments name
 	# (not the ../ references in scripts: some siblings are GBs; list those in .gpu-siblings). Links are resolved in the copy.

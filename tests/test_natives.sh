@@ -21,7 +21,7 @@ R="$T/rel/dot-sim/releases/download/v9.9.9"; mkdir -p "$R" "$T/z/addons/dot_sim/
 echo lib > "$T/z/addons/dot_sim/bin/$plat/libdot_sim.so"; echo ext > "$T/z/addons/dot_sim/dot_sim.gdextension"
 (cd "$T/z" && python3 -m zipfile -c "$R/dot_sim-9.9.9-$plat.zip" addons)
 (cd "$R" && sha256sum "dot_sim-9.9.9-$plat.zip" > SHA256SUMS.natives)
-export DOT_NATIVES_BASE="file://$T/rel"
+export GS_NATIVES_BASE="file://$T/rel"
 WARNED=; ERRED=; fetch_natives game-x
 [ -f "$PROJECTS_DIR/dot-sim/addons/dot_sim/bin/$plat/libdot_sim.so" ] && [ -f "$PROJECTS_DIR/dot-sim/addons/dot_sim/dot_sim.gdextension" ]; ok_ "installs the library and .gdextension" $?
 [ "$(cat "$PROJECTS_DIR/dot-sim/addons/dot_sim/bin/.natives-$plat")" = "v9.9.9 $plat" ]; ok_ "writes the per-platform stamp" $?
@@ -29,8 +29,8 @@ rm "$R/dot_sim-9.9.9-$plat.zip"; fetch_natives game-x; [ -z "$ERRED$WARNED" ]; o
 rm "$PROJECTS_DIR/dot-sim/addons/dot_sim/bin/.natives-$plat"; WARNED=; fetch_natives game-x; [ -z "$WARNED$ERRED" ]; ok_ "a local build (no stamp) is kept" $?
 rm -rf "$PROJECTS_DIR/dot-sim/addons/dot_sim/bin"; echo bad > "$R/dot_sim-9.9.9-$plat.zip"; ERRED=; fetch_natives game-x
 [ -n "$ERRED" ] && [ ! -e "$PROJECTS_DIR/dot-sim/addons/dot_sim/bin/$plat" ]; ok_ "a checksum mismatch installs nothing" $?
-WARNED=; DOT_NATIVES_BASE="file://$T/none" fetch_natives game-x; [ -n "$WARNED" ]; ok_ "no release: a warning, not an error" $?
-WARNED=; ERRED=; DOT_NATIVES=none fetch_natives game-x; [ -z "$WARNED$ERRED" ]; ok_ "DOT_NATIVES=none skips" $?
+WARNED=; GS_NATIVES_BASE="file://$T/none" fetch_natives game-x; [ -n "$WARNED" ]; ok_ "no release: a warning, not an error" $?
+WARNED=; ERRED=; GS_NATIVES=none fetch_natives game-x; [ -z "$WARNED$ERRED" ]; ok_ "GS_NATIVES=none skips" $?
 # dot-net: a flat, Godot-named library directory given as the pin's third field.
 mkdir -p "$PROJECTS_DIR/game-y" "$PROJECTS_DIR/dot-net/addons/dot_net/native"
 printf '# bootstrap-natives: dot-net v1.2.3 native/bin/\n/addons/dot_net\n' > "$PROJECTS_DIR/game-y/.gitignore"

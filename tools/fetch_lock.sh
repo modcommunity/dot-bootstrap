@@ -5,8 +5,8 @@
 # Lock (written by dot-cloud's `publish --upload --lock`, format in dot-cloud docs/cdn-publish.md): {format, origin, mirrors[],
 # packs[{id, version, manifest_sha256, into, kind, optional}]}. kind "store" files are written to <root>/<into>; a kind "pack" is
 # mirrored to --packs DIR/<id>/<version>/ (manifest.json + objects/) when given, else left for DotCloudClient to mount.
-# WHERE FROM, first set wins: --from BASE (a folder or a full origin URL), $DOT_PACKS_FROM (`none` fetches nothing),
-#   --cdn URL / $DOT_CDN_URL, DOT_CDN_URL in dot-bootstrap/.env (beside this tools/ folder; one edit for every repo), the lock's
+# WHERE FROM, first set wins: --from BASE (a folder or a full origin URL), GS_PACKS_FROM (`none` fetches nothing),
+#   --cdn URL / GS_CDN_URL, GS_CDN_URL in dot-bootstrap/.env (beside this tools/ folder; one edit for every repo), the lock's
 #   own `origin` then its `mirrors`, https://content.gamespice.net. A CDN URL is the site root: "/content" is added unless it ends in it.
 # WHAT: ITEM is a pack id, its name half, its `into` folder, its kind or the repo (the lock's folder name); globs allowed
 #   (`gamemann/zz-*`). --only keeps matches, --skip/--except drops them. With --cfg DIR (default <lock folder>/cfg) the
@@ -16,14 +16,14 @@
 # PER-ENVIRONMENT HASHES: each site signs manifests with its own key, so one pack version has one manifest hash per site (prod, dev).
 #   manifest_sha256 is the lock origin's (prod by default and never changed for dev); an entry may add
 #   "manifest_sha256_by_origin": {"https://dev.dotgames.org/content": "<sha>"}, used when that base serves the manifest. A key
-#   naming a renamed host matches its new name too ($DOT_ORIGIN_ALIASES, default https://dotgames.org=https://content.gamespice.net).
-# A token file path in $DOT_PACKS_TOKEN_FILE (never the token itself) is sent as a bearer.
+#   naming a renamed host matches its new name too (GS_ORIGIN_ALIASES, default https://dotgames.org=https://content.gamespice.net).
+# A token file path in GS_PACKS_TOKEN_FILE (never the token itself) is sent as a bearer.
 set -euo pipefail
 LOCK="${1:?usage: fetch_lock.sh <content.lock.json> [--root DIR] [--from BASE|--cdn URL] [--cfg DIR] [--skip IDs] [--only IDs] [--packs DIR] [--list]}"; shift
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; CFG=""; CDN="${DOT_CDN_URL:-}"; LIST=0
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; CFG=""; CDN="${GS_CDN_URL:-${DOT_CDN_URL:-}}"; LIST=0
 [ -f "$LOCK" ] || { echo "fetch_lock: no $LOCK, nothing pinned"; exit 0; }
 ROOT="$(cd "$(dirname "$LOCK")" && pwd)"
-FROM="${DOT_PACKS_FROM:-}"; SKIP=""; ONLY=""; PACKS=""
+FROM="${GS_PACKS_FROM:-${DOT_PACKS_FROM:-}}"; SKIP=""; ONLY=""; PACKS=""
 while [ $# -gt 0 ]; do
     case $1 in
         --root) ROOT="$(cd "${2:?}" && pwd)"; shift 2 ;;
@@ -37,7 +37,7 @@ while [ $# -gt 0 ]; do
         *) echo "fetch_lock: unknown argument $1" >&2; exit 2 ;;
     esac
 done
-[ "${DOT_PACKS_FROM:-}" = none ] || [ "$FROM" = none ] && { echo "fetch_lock: DOT_PACKS_FROM=none, nothing fetched"; exit 0; }
+[ "${GS_PACKS_FROM:-${DOT_PACKS_FROM:-}}" = none ] || [ "$FROM" = none ] && { echo "fetch_lock: GS_PACKS_FROM=none, nothing fetched"; exit 0; }
 command -v python3 >/dev/null || { echo "fetch_lock: python3 is needed" >&2; exit 2; }
 exec python3 -I - "$LOCK" "$ROOT" "$FROM" "$SKIP" "$ONLY" "$PACKS" "$HERE" "$CFG" "$CDN" "$LIST" <<'PY'
 import base64, fnmatch, hashlib, json, math, os, sys, time, urllib.request, urllib.error, zlib
@@ -56,12 +56,12 @@ def dotenv(path):
     return out
 
 env = dotenv(os.path.join(here, ".env"))
-if not base and not cdn: cdn = env.get("DOT_CDN_URL", "")
-if not base and not cdn: base = env.get("DOT_PACKS_FROM", "")
+if not base and not cdn: cdn = env.get("GS_CDN_URL", env.get("DOT_CDN_URL", ""))
+if not base and not cdn: base = env.get("GS_PACKS_FROM", env.get("DOT_PACKS_FROM", ""))
 if cdn and not base:
     base = cdn.rstrip("/")
     if "://" in base and not base.endswith("/content"): base += "/content"
-if base == "none": print("fetch_lock: DOT_PACKS_FROM=none, nothing fetched"); sys.exit(0)
+if base == "none": print("fetch_lock: GS_PACKS_FROM=none, nothing fetched"); sys.exit(0)
 bases = [base] if base else ([doc["origin"]] if doc.get("origin") else ["https://content.gamespice.net/content"]) + list(doc.get("mirrors", []))
 bases = [b.rstrip("/") if "://" in b else "file://" + os.path.abspath(b) for b in bases]
 repo = os.path.basename(os.path.dirname(os.path.abspath(lock)))
@@ -125,7 +125,7 @@ if listing == "1":
         w = wanted(p); print("%s %s %s %s" % ("skip " if w else "fetch", p["id"], p["version"], w))
     sys.exit(0)
 tok = ""
-tf = os.environ.get("DOT_PACKS_TOKEN_FILE", "")
+tf = os.environ.get("GS_PACKS_TOKEN_FILE", os.environ.get("DOT_PACKS_TOKEN_FILE", ""))
 if tf: tok = open(tf).read().strip()
 
 def get(url, start=0):
@@ -136,8 +136,8 @@ def get(url, start=0):
     return urllib.request.urlopen(urllib.request.Request(url, headers=h), timeout=60)
 
 # The pack's progress line, as tools/dot_download.ps1 prints it: name, file i/n, MB done / total, MB/s, ETA, at most
-# every $DOT_PROGRESS_SECONDS (2) s, and a done line if any was shown.
-try: EVERY = max(0.0, float(os.environ.get("DOT_PROGRESS_SECONDS", "2")))
+# every GS_PROGRESS_SECONDS (2) s, and a done line if any was shown.
+try: EVERY = max(0.0, float(os.environ.get("GS_PROGRESS_SECONDS", os.environ.get("DOT_PROGRESS_SECONDS", "2"))))
 except ValueError: EVERY = 2.0
 def eta(s):
     s = int(math.ceil(s))
@@ -201,8 +201,8 @@ def pinned(p):
     return lambda b: by.get(canon(b), p["manifest_sha256"])
 
 # Renamed CDN hosts, old=new (the game CDN dotgames.org became content.gamespice.net and stays served under both).
-# $DOT_ORIGIN_ALIASES replaces the list (space separated old=new); empty turns it off.
-ALIASES = [a.split("=", 1) for a in os.environ.get("DOT_ORIGIN_ALIASES", "https://dotgames.org=https://content.gamespice.net").split() if "=" in a]
+# GS_ORIGIN_ALIASES replaces the list (space separated old=new); empty turns it off.
+ALIASES = [a.split("=", 1) for a in os.environ.get("GS_ORIGIN_ALIASES", os.environ.get("DOT_ORIGIN_ALIASES", "https://dotgames.org=https://content.gamespice.net")).split() if "=" in a]
 
 def canon(u):
     u = u.rstrip("/")

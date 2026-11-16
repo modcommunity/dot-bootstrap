@@ -2,7 +2,7 @@
 # Driven by test_export.sh. Loads the export functions out of bootstrap.sh (the script
 # itself cannot be sourced: it runs a sync) and checks them against a fake release.
 # Run alone, it hands over to test_export.sh, which builds the fake release and calls
-# back here with H, T, TAG and DOT_GODOT_BASE set.
+# back here with H, T, TAG and GS_GODOT_BASE set.
 if [ -z "${H:-}" ] || [ -z "${TAG:-}" ] || [ -z "${T:-}" ]; then
     exec bash "$(cd "$(dirname "$0")" && pwd)/test_export.sh"
 fi
@@ -44,7 +44,7 @@ check 'templates: returns the release template' '[ "$got" = "$dest/linux_release
 check 'templates: the template is the archive entry' '[ "$(cat "$dest/linux_release.x86_64" 2>/dev/null)" = big ]'
 check 'templates: executable' '[ -x "$dest/linux_release.x86_64" ]'
 check 'templates: only this platform is kept' '[ "$(ls "$dest" | wc -l)" = 1 ]'
-got2="$(DOT_GODOT_BASE=http://127.0.0.1:1 get_export_templates "$TAG" 2>"$T/err")"
+got2="$(GS_GODOT_BASE=http://127.0.0.1:1 get_export_templates "$TAG" 2>"$T/err")"
 check 'templates: a second call downloads nothing' '[ "$got2" = "$got" ] && grep -q already "$T/err"'
 # A wrong checksum installs nothing.
 bad=8.8.8-stable; mkdir -p "$T/rel/$bad"

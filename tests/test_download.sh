@@ -59,7 +59,7 @@ ok() { if [ "$2" = 0 ]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "
 
 # fetch_lock.sh (a copy, so its .env lookup stays in $T): the same lines as the PowerShell side.
 mkdir -p "$T/boot" && cp -r "$SRC/tools" "$T/boot/" && cp -r "$T/repo" "$T/repo-sh" && rm -rf "$T/repo-sh/.alpha"
-out="$(DOT_PROGRESS_SECONDS=0 timeout 60 "$T/boot/tools/fetch_lock.sh" "$T/repo-sh/content.lock.json" --cdn http://127.0.0.1:18131 2>&1)"; rc=$?
+out="$(GS_PROGRESS_SECONDS=0 timeout 60 "$T/boot/tools/fetch_lock.sh" "$T/repo-sh/content.lock.json" --cdn http://127.0.0.1:18131 2>&1)"; rc=$?
 ok "fetch_lock.sh exit 0 ($rc)" "$rc"
 grep -q 'fetching o/zz-alpha 1.0.0: 3 files, 0.3 MB' <<<"$out"; ok "sh header line" $?
 grep -Eq 'o/zz-alpha +file [123]/3  [0-9.]+ / 0\.3 MB  [0-9.]+ MB/s  ETA ' <<<"$out"; ok "sh file i/n line" $?

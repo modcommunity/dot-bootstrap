@@ -2,14 +2,15 @@
 #   Invoke-DotDownload <url> <file> [-Name n] [-Progress p] [-Resume]   stream <url> to <file> (256 KB buffer)
 #   $p = New-DotProgress <name> [-Total bytes] [-Files n]; $p.File = i; Write-DotProgress $p [-Final]   one line for many files
 # Its own progress, never PowerShell's: Invoke-WebRequest's progress bar slows a 5.1 download to a crawl, and with the
-# bar silenced a 1.9 GB store fetch printed nothing for 45 minutes. A line every ~2 s ($env:DOT_PROGRESS_SECONDS), laid
+# bar silenced a 1.9 GB store fetch printed nothing for 45 minutes. A line every ~2 s ($env:GS_PROGRESS_SECONDS), laid
 # out like bootstrap.ps1's Say: name, [file i/n,] MB done / total, MB/s, ETA. A download that ends inside the first
-# tick prints nothing. A connection that sends no byte for 60 s ($env:DOT_DOWNLOAD_STALL) fails instead of hanging;
+# tick prints nothing. A connection that sends no byte for 60 s ($env:GS_DOWNLOAD_STALL) fails instead of hanging;
 # the callers keep their own retries and hash checks. -Resume continues an existing <file> with a Range request.
 Add-Type -AssemblyName System.Net.Http
+foreach ($e in Get-ChildItem env:DOT_*) { $g = 'GS_' + $e.Name.Substring(4); if (-not (Test-Path "env:$g")) { Set-Item "env:$g" $e.Value; if (-not $env:GS_QUIET_DEPRECATION) { [Console]::Error.WriteLine("WARN: $($e.Name) is deprecated, use $g") } } }  # old DOT_* names still work
 $script:DotHttp = $null
 
-function Get-DotStallSeconds { $s = $env:DOT_DOWNLOAD_STALL -as [int]; if ($s -gt 0) { $s } else { 60 } }
+function Get-DotStallSeconds { $s = $env:GS_DOWNLOAD_STALL -as [int]; if ($s -gt 0) { $s } else { 60 } }
 
 function Get-DotHttp {
     if (-not $script:DotHttp) {
@@ -28,7 +29,7 @@ function Get-DotHttp {
 }
 
 function New-DotProgress([string]$Name, [long]$Total = -1, [int]$Files = 0) {
-    $every = $env:DOT_PROGRESS_SECONDS -as [double]; if ($null -eq $every -or $every -lt 0) { $every = 2.0 }
+    $every = $env:GS_PROGRESS_SECONDS -as [double]; if ($null -eq $every -or $every -lt 0) { $every = 2.0 }
     @{ Name = $Name; Total = $Total; Done = [long]0; Files = $Files; File = 0; Every = $every
        Watch = [Diagnostics.Stopwatch]::StartNew(); Next = $every; Shown = $false }
 }

@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 $pass = 0; $fail = 0
 function Check ($name, $cond) { if ($cond) { $script:pass++ } else { $script:fail++; Write-Host "FAIL: $name" } }
 . "$env:H/tools/dot_download.ps1"
-$env:DOT_PROGRESS_SECONDS = '0'
+$env:GS_PROGRESS_SECONDS = '0'
 $T = $env:T; $U = $env:U
 $big = [IO.File]::ReadAllBytes("$T/cdn/big")
 function Same($f) { $b = [IO.File]::ReadAllBytes($f); $b.Length -eq $big.Length -and [Linq.Enumerable]::SequenceEqual($b, $big) }
@@ -19,13 +19,13 @@ $e = $null; try { Invoke-DotDownload "$U/nothing" "$T/none" } catch { $e = "$_" 
 Check '404 throws' ($e -match 'HTTP 404')
 Check '404 leaves no file' (-not (Test-Path "$T/none"))
 
-# A connection that goes quiet fails after DOT_DOWNLOAD_STALL instead of hanging.
-$env:DOT_DOWNLOAD_STALL = '2'; $script:DotHttp = $null
+# A connection that goes quiet fails after GS_DOWNLOAD_STALL instead of hanging.
+$env:GS_DOWNLOAD_STALL = '2'; $script:DotHttp = $null
 $w = [Diagnostics.Stopwatch]::StartNew(); $e = $null
 try { Invoke-DotDownload "$U/hang" "$T/hang" 6>$null } catch { $e = "$_" }
 Check "stall throws ($e)" ($e -match 'stalled')
 Check "stall fails fast ($([int]$w.Elapsed.TotalSeconds) s)" ($w.Elapsed.TotalSeconds -lt 15)
-Remove-Item Env:DOT_DOWNLOAD_STALL; $script:DotHttp = $null
+Remove-Item Env:GS_DOWNLOAD_STALL; $script:DotHttp = $null
 
 # -Resume continues a part with a Range request; a whole part gets 416 and is left alone.
 [IO.File]::WriteAllBytes("$T/big2", $big[0..999999])

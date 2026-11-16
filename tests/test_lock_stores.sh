@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lock_lists_stores: a content lock that pins only maps must not stop link_content from using DOT_STORES_FROM.
+# lock_lists_stores: a content lock that pins only maps must not stop link_content from using GS_STORES_FROM.
 # Also checks bootstrap.ps1 carries the same condition, so the two scripts stay in step. Run: tests/test_lock_stores.sh
 set -u
 H="$(cd "$(dirname "$0")/.." && pwd)"

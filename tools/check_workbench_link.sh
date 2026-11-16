@@ -24,7 +24,7 @@ for g in $games dot-game-template; do
 done
 
 mkdir -p "$tmp/empty"
-plan="$(DOT_PROJECTS="$tmp/empty" DOT_PLAN_FROM="$sib" "$here/bootstrap.sh" --plan arena 2>&1)"
+plan="$(GS_PROJECTS="$tmp/empty" GS_PLAN_FROM="$sib" "$here/bootstrap.sh" --plan arena 2>&1)"
 grep -qx 'clone dot-workbench' <<<"$plan" || bad "plan arena does not clone dot-workbench"
 grep -qx 'link game-fatal-contact addon dot_workbench' <<<"$plan" || bad "plan arena does not link dot_workbench"
 
@@ -35,7 +35,7 @@ export GIT_CONFIG_COUNT=4
 for i in 0 1 2 3; do export "GIT_CONFIG_KEY_$i=url.$tmp/src/.insteadOf"; done
 export GIT_CONFIG_VALUE_0="git@github.com:gamespice-platform/" GIT_CONFIG_VALUE_1="git@github.com:zees-games/" \
        GIT_CONFIG_VALUE_2="https://github.com/gamespice-platform/" GIT_CONFIG_VALUE_3="https://github.com/zees-games/"
-DOT_PROJECTS="$tmp/out" "$here/bootstrap.sh" --only workbench >"$tmp/run.log" 2>&1 || { bad "bootstrap --only workbench failed"; tail -5 "$tmp/run.log"; }
+GS_PROJECTS="$tmp/out" "$here/bootstrap.sh" --only workbench >"$tmp/run.log" 2>&1 || { bad "bootstrap --only workbench failed"; tail -5 "$tmp/run.log"; }
 for a in dot_core dot_ui dot_menu dot_settings; do
     [ -L "$tmp/out/dot-workbench/addons/$a" ] || bad "dot-workbench did not get $a"
 done

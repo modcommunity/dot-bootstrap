@@ -25,7 +25,7 @@ Set-ExecutionPolicy RemoteSigned -Scope CurrentUser   # once, if PowerShell refu
 .\bootstrap.ps1
 ```
 
-Everything goes into `./projects` next to the script (gitignored). Run it again at any time to pull updates. Uncommitted work is never overwritten. Set `DOT_PROJECTS` (`-Projects` on Windows) to use another folder. The first line printed says where it decided to put things.
+Everything goes into `./projects` next to the script (gitignored). Run it again at any time to pull updates. Uncommitted work is never overwritten. Set `GS_PROJECTS` (`-Projects` on Windows) to use another folder. The first line printed says where it decided to put things.
 
 A plain run with no selection clones every repository in `projects.tsv`: all games, all map repositories and the optional weapon and monster packs.
 
@@ -58,7 +58,7 @@ Name what you want and it brings what that needs, and nothing else.
 | `--content-keys` (`-ContentKeys`) | Make a content signing key so this machine can publish packs. |
 | `--no-stores` (`-NoStores`) | Skip the large art stores (maps then use low-detail art). |
 
-Set `DOT_GIT_BASE` to clone from somewhere other than GitHub.
+Set `GS_GIT_BASE` to clone from somewhere other than GitHub.
 
 ## Play a game
 
@@ -119,7 +119,7 @@ tools/install-valve-hooks.sh /path/to/dir    # any directory of repositories
 tools/install-valve-hooks.sh --check         # list repositories without the hook
 ```
 
-`bootstrap.sh` runs this on every sync. The hook needs `dot-cloud` cloned next to the others; set `DOT_CLOUD=/path` if it is elsewhere. Git worktrees share their repository's hooks.
+`bootstrap.sh` runs this on every sync. The hook needs `dot-cloud` cloned next to the others; set `GS_CLOUD=/path` if it is elsewhere. Git worktrees share their repository's hooks.
 
 ## Fetching content
 
@@ -136,13 +136,13 @@ tools/fetch_lock.sh <repo>/content.lock.json --list  # what would be fetched
 The CDN is the first of these that is set:
 
 1. `--from` (a full origin URL or a folder).
-2. `$DOT_PACKS_FROM` (`none` fetches nothing).
-3. `--cdn URL` or `$DOT_CDN_URL`.
-4. `DOT_CDN_URL=` in `dot-bootstrap/.env` (copy `.env.example`; gitignored).
+2. `$GS_PACKS_FROM` (`none` fetches nothing).
+3. `--cdn URL` or `$GS_CDN_URL`.
+4. `GS_CDN_URL=` in `dot-bootstrap/.env` (copy `.env.example`; gitignored).
 5. The lock file's own `origin` and `mirrors`.
 6. `https://content.gamespice.net`.
 
-Download lists in `cfg/content/addons.yml` and `games.yml` (and `cfg/server/content/`) are respected. Packs are only mirrored when `--packs DIR` is given; otherwise `DotCloudClient` mounts them at run time. The raw art stores of `zombie-zone-maps` are fetched once and kept; set `DOT_STORES_FROM=none` to skip them, or to a folder or `.tar` URL to use your own. On Windows the fetch scripts need PowerShell 7 (`pwsh`) or the Windows PowerShell 5.1 that ships with Windows 10 and later.
+Download lists in `cfg/content/addons.yml` and `games.yml` (and `cfg/server/content/`) are respected. Packs are only mirrored when `--packs DIR` is given; otherwise `DotCloudClient` mounts them at run time. The raw art stores of `zombie-zone-maps` are fetched once and kept; set `GS_STORES_FROM=none` to skip them, or to a folder or `.tar` URL to use your own. On Windows the fetch scripts need PowerShell 7 (`pwsh`) or the Windows PowerShell 5.1 that ships with Windows 10 and later.
 
 ## Publishing from a fresh clone
 
@@ -162,7 +162,7 @@ This gives the machine its own key and rewrites `dot-server-deploy/client/conten
 | --- | --- | --- |
 | [fastgmad 0.2.1](https://github.com/WilliamVenner/fastgmad) | William Venner | Apache-2.0 |
 
-The release zip is checked against a pinned SHA-256 before it is unpacked into `~/.local/share/fastgmad-0.2.1` (`DOT_TOOLS_PREFIX` changes the prefix). Linux x86_64 and macOS are supported (macOS untested). On Windows it unpacks into `%LOCALAPPDATA%\fastgmad\0.2.1`, which you must put on `PATH` or point `DOTBSP_FASTGMAD` at (untested).
+The release zip is checked against a pinned SHA-256 before it is unpacked into `~/.local/share/fastgmad-0.2.1` (`GS_TOOLS_PREFIX` changes the prefix). Linux x86_64 and macOS are supported (macOS untested). On Windows it unpacks into `%LOCALAPPDATA%\fastgmad\0.2.1`, which you must put on `PATH` or point `DOTBSP_FASTGMAD` at (untested).
 
 ## Maintainer tools in `tools/`
 

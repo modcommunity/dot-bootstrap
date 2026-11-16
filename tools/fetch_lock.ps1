@@ -1,26 +1,27 @@
 # THE one fetcher on Windows: fetch exactly what a repo's content.lock.json names, hash-checked, once (present files skipped).
 #   .\tools\fetch_lock.ps1 <content.lock.json> [-Root DIR] [-From BASE] [-Cdn URL] [-Cfg DIR] [-Except a,b] [-Only a,b] [-Packs DIR] [-List]
 # Same behaviour as fetch_lock.sh, which documents the lock, the item names (id, name half, into, kind, repo; globs) and the cfg/content
-# rules. Where from, first set wins: -From, $env:DOT_PACKS_FROM ('none' fetches nothing), -Cdn / $env:DOT_CDN_URL, DOT_CDN_URL in
+# rules. Where from, first set wins: -From, $env:GS_PACKS_FROM ('none' fetches nothing), -Cdn / $env:GS_CDN_URL, GS_CDN_URL in
 # dot-bootstrap\.env, the lock's origin and mirrors, https://content.gamespice.net. (-Skip is the older name of -Except.)
 param([Parameter(Mandatory)][string]$Lock, [string]$Root, [string]$From, [string]$Cdn, [string]$Cfg, [string]$Packs,
       [Alias('Skip')][string[]]$Except = @(), [string[]]$Only = @(), [switch]$List)
 $ErrorActionPreference = 'Stop'
+foreach ($e in Get-ChildItem env:DOT_*) { $g = 'GS_' + $e.Name.Substring(4); if (-not (Test-Path "env:$g")) { Set-Item "env:$g" $e.Value; if (-not $env:GS_QUIET_DEPRECATION) { [Console]::Error.WriteLine("WARN: $($e.Name) is deprecated, use $g") } } }  # old DOT_* names still work
 $ProgressPreference = 'SilentlyContinue'  # never PowerShell's progress bar (it slows 5.1 to a crawl); dot_download.ps1 prints our own
 . (Join-Path $PSScriptRoot 'dot_download.ps1')
 if (-not (Test-Path $Lock)) { Write-Host "fetch_lock: no $Lock, nothing pinned"; exit 0 }
 $Lock = (Resolve-Path $Lock).Path
 $lockDir = Split-Path -Parent $Lock
 if (-not $Root) { $Root = $lockDir }
-if (-not $From) { $From = $env:DOT_PACKS_FROM }
-if (-not $Cdn) { $Cdn = $env:DOT_CDN_URL }
+if (-not $From) { $From = $env:GS_PACKS_FROM }
+if (-not $Cdn) { $Cdn = $env:GS_CDN_URL }
 $envFile = Join-Path (Split-Path -Parent $PSScriptRoot) '.env'
 $dotenv = @{}
 if (Test-Path $envFile) { foreach ($l in Get-Content $envFile) { $l = $l.Trim(); if ($l -and -not $l.StartsWith('#') -and $l.Contains('=')) { $k, $v = $l.Split('=', 2); $dotenv[$k.Trim()] = $v.Trim().Trim('"', "'") } } }
-if (-not $From -and -not $Cdn) { $Cdn = $dotenv['DOT_CDN_URL'] }
-if (-not $From -and -not $Cdn) { $From = $dotenv['DOT_PACKS_FROM'] }
+if (-not $From -and -not $Cdn) { $Cdn = $dotenv['GS_CDN_URL'] }
+if (-not $From -and -not $Cdn) { $From = $dotenv['GS_PACKS_FROM'] }
 if ($Cdn -and -not $From) { $From = $Cdn.TrimEnd('/'); if ($From -match '^[a-z]+://' -and -not $From.EndsWith('/content')) { $From += '/content' } }
-if ($From -eq 'none') { Write-Host 'fetch_lock: DOT_PACKS_FROM=none, nothing fetched'; exit 0 }
+if ($From -eq 'none') { Write-Host 'fetch_lock: GS_PACKS_FROM=none, nothing fetched'; exit 0 }
 $doc = Get-Content -Raw $Lock | ConvertFrom-Json
 if ($doc.format -ne 1) { throw 'fetch_lock: unsupported lock format' }
 $repo = Split-Path -Leaf $lockDir
@@ -43,8 +44,8 @@ function Expand-Gzip([string]$p) {
 }
 
 # The manifest hash expected from base $b: the entry's manifest_sha256_by_origin[$b] when present, else manifest_sha256 (as fetch_lock.sh).
-# Renamed CDN hosts, old=new, as fetch_lock.sh: $env:DOT_ORIGIN_ALIASES replaces the list (space separated); empty turns it off.
-$aliasList = if ($null -ne $env:DOT_ORIGIN_ALIASES) { $env:DOT_ORIGIN_ALIASES } else { 'https://dotgames.org=https://content.gamespice.net' }
+# Renamed CDN hosts, old=new, as fetch_lock.sh: $env:GS_ORIGIN_ALIASES replaces the list (space separated); empty turns it off.
+$aliasList = if ($null -ne $env:GS_ORIGIN_ALIASES) { $env:GS_ORIGIN_ALIASES } else { 'https://dotgames.org=https://content.gamespice.net' }
 $Aliases = @($aliasList -split '\s+' | Where-Object { $_ -match '=' } | ForEach-Object { , ($_ -split '=', 2) })
 function Canon([string]$u) {
     $u = $u.TrimEnd('/')

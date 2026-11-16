@@ -38,8 +38,8 @@ custom_template/release=""
 binary_format/embed_pck=false
 CFG
 rc=0
-DOT_GODOT_BASE="http://127.0.0.1:$port" T="$T" H="$H" TAG="$tag" bash "$H/tests/test_export_sh.sh" || rc=1
+GS_GODOT_BASE="http://127.0.0.1:$port" T="$T" H="$H" TAG="$tag" bash "$H/tests/test_export_sh.sh" || rc=1
 if command -v pwsh >/dev/null 2>&1; then
-    DOT_GODOT_BASE="http://127.0.0.1:$port" T="$T" H="$H" TAG="$tag" pwsh -NoProfile -NonInteractive -File "$H/tests/test_export.ps1" || rc=1
+    GS_GODOT_BASE="http://127.0.0.1:$port" T="$T" H="$H" TAG="$tag" pwsh -NoProfile -NonInteractive -File "$H/tests/test_export.ps1" || rc=1
 else echo "test_export (ps1): skipped (no pwsh)"; fi
 exit $rc

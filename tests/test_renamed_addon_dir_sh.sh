@@ -38,7 +38,7 @@ mk() { # <repo> <setup in the seed>
 }
 run() { # <projects dir> [bootstrap arguments]
     local p="$1"; shift
-    (cd "$T" && env DOT_PROJECTS="$p" DOT_CLOUD="$T/dot-cloud" DOT_NATIVES=none DOT_STORES_FROM=none NO_COLOR=1 DOT_JOBS=1 ./bs/bootstrap.sh "$@" 2>&1)
+    (cd "$T" && env GS_PROJECTS="$p" GS_CLOUD="$T/dot-cloud" GS_NATIVES=none GS_STORES_FROM=none NO_COLOR=1 GS_JOBS=1 ./bs/bootstrap.sh "$@" 2>&1)
 }
 # setup <dir fc-weapons holds> <dir the game names>
 setup() {

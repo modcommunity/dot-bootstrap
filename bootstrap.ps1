@@ -17,8 +17,8 @@
         .\bootstrap.ps1 -Ssh            clone over SSH (to push from this machine); HTTPS is the default
         .\bootstrap.ps1 -Only arena,wipeout     only these, plus the addon and map repos they need
         .\bootstrap.ps1 -Only 'mg-*' -NoDeps    only these, and nothing they need
-        .\bootstrap.ps1 -NoStores              do not fetch the raw art stores (about 1.6 GB, once, kept); maps draw low-detail art. Or $env:DOT_STORES_FROM = 'none'
-        $env:DOT_NATIVES = 'none'               skip the native libraries a game pins (# bootstrap-natives: in its .gitignore); GDScript runs
+        .\bootstrap.ps1 -NoStores              do not fetch the raw art stores (about 1.6 GB, once, kept); maps draw low-detail art. Or $env:GS_STORES_FROM = 'none'
+        $env:GS_NATIVES = 'none'               skip the native libraries a game pins (# bootstrap-natives: in its .gitignore); GDScript runs
         .\bootstrap.ps1 -Jobs N                repositories synced and games imported at most N at once (default: the CPU count; 1 = one at a time)
         .\bootstrap.ps1 -Import                 import every game headless (the editor can crash on a first import); -Only narrows it
         .\bootstrap.ps1 -GetGodot               download the latest stable Godot into .godot-bin beside this script, then carry on (sync, and -Import if given); every mode that runs Godot looks there
@@ -34,7 +34,7 @@
     from projects.tsv, or its short form (arena = game-arena, wipeout =
     mg-wipeout, core = dot-core), or another name projects.tsv lists for it
     (fatal-contact and final-contact = game-arena, airdrift = game-g2gfast,
-    playlot = game-playground), or a wildcard. Set $env:DOT_ONLY to make a
+    playlot = game-playground), or a wildcard. Set $env:GS_ONLY to make a
     selection stick. Addons are copied (or linked) into the named projects only.
     Selecting a game also selects the addons it requires and the content it links
     (maps, courses, optional weapon and monster packs) unless -Min. With no
@@ -49,7 +49,7 @@
     It also recognises the layout it was born in, where this repository sits at
     godot\bootstrap inside the game-dev tree and its siblings are the projects.
     Then it uses that godot\ directory rather than making a second copy of
-    everything. Override either with -Projects, or $env:DOT_PROJECTS.
+    everything. Override either with -Projects, or $env:GS_PROJECTS.
 
     Clone from somewhere else:  -GitBase git@gitlab.example/mine
     Also add a second remote called `hub` (bare repos on a dev box):
@@ -90,8 +90,8 @@
 
 [CmdletBinding()]
 param(
-    [string]$Projects = $(if ($env:DOT_PROJECTS) { $env:DOT_PROJECTS } else { '' }),
-    [string]$GitBase  = $(if ($env:DOT_GIT_BASE) { $env:DOT_GIT_BASE } else { 'git@github.com:gamespice-platform' }),
+    [string]$Projects = $(if ($env:GS_PROJECTS) { $env:GS_PROJECTS } elseif ($env:DOT_PROJECTS) { $env:DOT_PROJECTS } else { '' }),
+    [string]$GitBase  = $(if ($env:GS_GIT_BASE) { $env:GS_GIT_BASE } elseif ($env:DOT_GIT_BASE) { $env:DOT_GIT_BASE } else { 'git@github.com:gamespice-platform' }),
     [string]$Hub      = $(if ($env:DOTHUB) { $env:DOTHUB } else { '' }),
     [switch]$Links,
     [switch]$ContentKeys,
@@ -103,7 +103,7 @@ param(
     [switch]$Junction,
     [switch]$Https,
     [switch]$Ssh,
-    [string[]]$Only = $(if ($env:DOT_ONLY) { $env:DOT_ONLY -split '[,\s]+' } else { @() }),
+    [string[]]$Only = $(if ($env:GS_ONLY) { $env:GS_ONLY -split '[,\s]+' } elseif ($env:DOT_ONLY) { $env:DOT_ONLY -split '[,\s]+' } else { @() }),
     [switch]$NoDeps,
     [int]$Jobs = [Environment]::ProcessorCount,
     [switch]$NoStores,
@@ -127,6 +127,7 @@ param(
 $ProgressPreference = 'SilentlyContinue'
 
 $ErrorActionPreference = 'Continue'
+foreach ($e in Get-ChildItem env:DOT_*) { $g = 'GS_' + $e.Name.Substring(4); if (-not (Test-Path "env:$g")) { Set-Item "env:$g" $e.Value; if (-not $env:GS_QUIET_DEPRECATION) { [Console]::Error.WriteLine("WARN: $($e.Name) is deprecated, use $g") } } }  # old DOT_* names still work
 $repoDir = $PSScriptRoot
 $dotDownload = Join-Path $repoDir 'tools\dot_download.ps1'
 . $dotDownload
@@ -323,15 +324,15 @@ function Get-OptionalFor ($proj) {
     }
 }
 
-# A project's .gitignore: its checkout, else (for -Plan) the one in $env:DOT_PLAN_FROM.
+# A project's .gitignore: its checkout, else (for -Plan) the one in $env:GS_PLAN_FROM.
 function Get-GitignorePath ($proj) {
     $here = Join-Path $projectsDir "$proj\.gitignore"
-    if ((Test-Path $here) -or -not $env:DOT_PLAN_FROM) { return $here }
-    $there = Join-Path $env:DOT_PLAN_FROM "$proj\.gitignore"
+    if ((Test-Path $here) -or -not $env:GS_PLAN_FROM) { return $here }
+    $there = Join-Path $env:GS_PLAN_FROM "$proj\.gitignore"
     if (Test-Path $there) { return $there }
     # A tree whose checkouts still have their old names (game-arena for game-fatal-contact).
     $p = Get-Projects | Where-Object { $_.Name -eq $proj } | Select-Object -First 1
-    if ($p) { foreach ($o in $p.Aliases) { $g = Join-Path $env:DOT_PLAN_FROM "$o\.gitignore"; if (Test-Path $g) { return $g } } }
+    if ($p) { foreach ($o in $p.Aliases) { $g = Join-Path $env:GS_PLAN_FROM "$o\.gitignore"; if (Test-Path $g) { return $g } } }
     return $there
 }
 
@@ -686,7 +687,7 @@ function Repair-Checkout ($proj, $dir, $net) {
 # not while a program has a file or its working directory in it). A dirty tree moves as
 # it is. The old name is left as a junction to the new one, so junctions and paths that
 # went through it still arrive. A refused move keeps the old folder and does NOT clone a
-# second copy beside it. $env:DOT_NO_RENAME = '1' refuses every move.
+# second copy beside it. $env:GS_NO_RENAME = '1' refuses every move.
 $script:keptOld = @{}
 
 function Move-Renamed {
@@ -712,9 +713,9 @@ function Move-Renamed {
             if ((& $repoOf $origin) -ne (& $repoOf $p.Url) -and $base -ne $new -and (Get-AliasTarget $base) -ne $new) {
                 Warn $old "left alone: $old's origin is $origin, not $new"; continue
             }
-            if ($env:DOT_NO_RENAME -eq '1') {
+            if ($env:GS_NO_RENAME -eq '1') {
                 $script:keptOld[$new] = $old
-                Warn $new "still at its old name $old, not renamed: DOT_NO_RENAME=1. Run again once that is fixed."
+                Warn $new "still at its old name $old, not renamed: GS_NO_RENAME=1. Run again once that is fixed."
                 continue
             }
             try {
@@ -1101,7 +1102,7 @@ function Link-Addons ($proj) {
 # reasoning: the release's zip for this machine, checksum checked, unpacked at the addon
 # repository's root before the links (so a copy carries it), a stamp to skip it next
 # time, a local build kept, and a warning (GDScript runs) when there is none.
-# $env:DOT_NATIVES = 'none' skips it; $env:DOT_NATIVES_BASE replaces the GitHub base.
+# $env:GS_NATIVES = 'none' skips it; $env:GS_NATIVES_BASE replaces the GitHub base.
 # An optional third field is the library directory inside the addon (default bin):
 # "# bootstrap-natives: dot-net v0.1.29 native/bin" for dot-net's runtime-loaded core.
 function Get-NativesFor ($proj) {
@@ -1140,9 +1141,9 @@ function Get-NativePlatform {
 }
 
 function Fetch-Natives ($proj) {
-    if ($env:DOT_NATIVES -eq 'none') { return }
+    if ($env:GS_NATIVES -eq 'none') { return }
     $plat = Get-NativePlatform
-    $root = if ($env:DOT_NATIVES_BASE) { $env:DOT_NATIVES_BASE } else { 'https://github.com/gamespice-platform' }
+    $root = if ($env:GS_NATIVES_BASE) { $env:GS_NATIVES_BASE } else { 'https://github.com/gamespice-platform' }
     foreach ($n in @(Get-NativesFor $proj)) {
         $n.Repo = Get-OnDisk $n.Repo
         $dir = Join-Path $projectsDir $n.Repo
@@ -1164,7 +1165,7 @@ function Fetch-Natives ($proj) {
             Say $proj "natives: keeps the $($n.Addon) library built here ($plat)" 'DarkGray'; continue
         }
         # The organisation names its repositories without the dot- prefix; a named base keeps the directory name.
-        $repoName = if ($env:DOT_NATIVES_BASE) { $n.Repo } else { $n.Repo -replace '^dot-', '' }
+        $repoName = if ($env:GS_NATIVES_BASE) { $n.Repo } else { $n.Repo -replace '^dot-', '' }
         $base = "$root/$repoName/releases/download/$($n.Tag)"
         try { $sums = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 60 -Uri "$base/SHA256SUMS.natives").Content }
         catch { Warn $proj "natives: no $($n.Repo) $($n.Tag) release to fetch (GDScript runs, slower)"; continue }
@@ -1209,15 +1210,15 @@ function Link-Content ($proj) {
             $target = Join-Path $projectsDir ($src -replace '/', '\')
             $link   = Join-Path $dir $path
             # The raw art stores (a maps repo's .stores) are in no repository. They are fetched once and kept, from the
-            # maps repo's content.lock.json (tools/fetch_lock.ps1), or from $env:DOT_STORES_FROM (a folder or the URL of
-            # a .tar) when that is set; -NoStores or DOT_STORES_FROM=none skips them and the maps draw low-detail art.
+            # maps repo's content.lock.json (tools/fetch_lock.ps1), or from $env:GS_STORES_FROM (a folder or the URL of
+            # a .tar) when that is set; -NoStores or GS_STORES_FROM=none skips them and the maps draw low-detail art.
             # (The old published tar, dev.dotgames.org/stores/zombie-zone-maps/zz-stores-cc0.tar, is gone: 404.)
-            $from = if ($env:DOT_STORES_FROM) { $env:DOT_STORES_FROM } else { 'none' }
+            $from = if ($env:GS_STORES_FROM) { $env:GS_STORES_FROM } else { 'none' }
             $lockFile = Join-Path $projectsDir (($src -split '/')[0] + '\content.lock.json')
             $fetcher = Join-Path $repoDir 'tools\fetch_lock.ps1'
             # A store the fetcher has finished has .dot-pack; one it was stopped in still has its .manifest.json and is
             # resumed (present files are skipped), not linked half-empty for good.
-            if ((($src -split '/')[-1] -eq '.stores') -and -not $NoStores -and -not $env:DOT_STORES_FROM -and (Test-Path $lockFile) -and ((Get-Content $lockFile -Raw) -match '"into"\s*:\s*"\.stores"') -and (Test-Path $fetcher) `
+            if ((($src -split '/')[-1] -eq '.stores') -and -not $NoStores -and -not $env:GS_STORES_FROM -and (Test-Path $lockFile) -and ((Get-Content $lockFile -Raw) -match '"into"\s*:\s*"\.stores"') -and (Test-Path $fetcher) `
                     -and (-not (Test-Path $target) -or (Test-Path (Join-Path $target '.dot-pack')) -or (Test-Path (Join-Path $target '.manifest.json')))) {
                 & $fetcher $lockFile -Only '.stores'
                 if ($LASTEXITCODE -ne 0) { Warn $proj "fetching $src from content.lock.json failed" }
@@ -1246,7 +1247,7 @@ function Link-Content ($proj) {
             }
             if (-not (Test-Path $target)) {
                 if (($src -split '/')[-1] -eq '.stores') {
-                    Warn $proj "art stores missing: $src is in no repository, so maps draw low-detail art. Run bootstrap again without -NoStores, or set `$env:DOT_STORES_FROM (a folder or the URL of a .tar of pbr-library and model-library)"
+                    Warn $proj "art stores missing: $src is in no repository, so maps draw low-detail art. Run bootstrap again without -NoStores, or set `$env:GS_STORES_FROM (a folder or the URL of a .tar of pbr-library and model-library)"
                 } else {
                     Warn $proj "content missing: $src (clone $(($src -split '/')[0]) for $path)"
                 }
@@ -1577,7 +1578,7 @@ function Get-ExportTemplates ($tag) {
     $mainPath = Join-Path $dest $main
     if (Test-Path $mainPath) { Ok 'templates' "$tag already in $dest"; return $mainPath }
     $asset = "Godot_v$tag`_export_templates.tpz"
-    $root = if ($env:DOT_GODOT_BASE) { $env:DOT_GODOT_BASE } else { 'https://github.com/godotengine/godot-builds/releases/download' }
+    $root = if ($env:GS_GODOT_BASE) { $env:GS_GODOT_BASE } else { 'https://github.com/godotengine/godot-builds/releases/download' }
     $base = "$root/$tag"
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
     # Beside the destination, not in %TEMP%: the archive is 1.2 GB and %TEMP% is often the small drive.
@@ -1804,9 +1805,9 @@ function Export-Game ($want) {
     $natives = @(Get-ExportNatives $dir 'windows')
     $bare = @($natives | Where-Object { -not $_.Lib })
     foreach ($n in $bare) {
-        Err 'export' "$($n.Ext) lists no Windows x86_64 library, so the build would run without it. Run .\bootstrap.ps1 $proj to fetch it (`$env:DOT_NATIVES = 'none' exports without)."
+        Err 'export' "$($n.Ext) lists no Windows x86_64 library, so the build would run without it. Run .\bootstrap.ps1 $proj to fetch it (`$env:GS_NATIVES = 'none' exports without)."
     }
-    if ($bare.Count -gt 0 -and $env:DOT_NATIVES -ne 'none') { return $false }
+    if ($bare.Count -gt 0 -and $env:GS_NATIVES -ne 'none') { return $false }
 
     $exe = Get-ExportPath $proj
     $outDir = Split-Path $exe -Parent
@@ -1897,14 +1898,14 @@ function Play-Export ($want) {
 function Install-Tools {
     $ver = '0.2.1'
     $sum = 'f093eebeffd0871513042a49ecda5a0d2902e278225679ac857a583cfb6e2d9f'
-    $root = if ($env:DOT_TOOLS_PREFIX) { $env:DOT_TOOLS_PREFIX } else { Join-Path $env:LOCALAPPDATA 'fastgmad' }
+    $root = if ($env:GS_TOOLS_PREFIX) { $env:GS_TOOLS_PREFIX } else { Join-Path $env:LOCALAPPDATA 'fastgmad' }
     $dest = Join-Path $root $ver
     if (Test-Path (Join-Path $dest 'fastgmad.exe')) { Ok 'fastgmad' "already installed ($dest)"; return $true }
     $tmp = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
     New-Item -ItemType Directory -Force -Path $tmp | Out-Null
     $zip = Join-Path $tmp 'fastgmad_windows.zip'
     try {
-        if ($env:DOT_FASTGMAD_ZIP) { Copy-Item $env:DOT_FASTGMAD_ZIP $zip }
+        if ($env:GS_FASTGMAD_ZIP) { Copy-Item $env:GS_FASTGMAD_ZIP $zip }
         else {
             Say 'fastgmad' "downloading fastgmad $ver..."
             Invoke-DotDownload "https://github.com/WilliamVenner/fastgmad/releases/download/v$ver/fastgmad_windows.zip" $zip -Name 'fastgmad'
@@ -2009,9 +2010,9 @@ if ($script:minMode -and $script:selection.Count -eq 0) { Add-Selection '-Min' '
 $script:selection = @($script:selection | Select-Object -Unique)
 
 # What a sync would clone and link for this selection, from .gitignore files alone. A
-# project that is not cloned is read from $env:DOT_PLAN_FROM (default: the projects dir).
+# project that is not cloned is read from $env:GS_PLAN_FROM (default: the projects dir).
 function Show-Plan {
-    if (-not $env:DOT_PLAN_FROM) { $env:DOT_PLAN_FROM = $projectsDir }
+    if (-not $env:GS_PLAN_FROM) { $env:GS_PLAN_FROM = $projectsDir }
     $sel = if ($script:selection.Count -gt 0) { $script:selection -join ' ' } else { 'everything' }
     $tag = "$(if ($script:minMode) { ' (min: no content packs)' })$(if ($NoDeps) { ' (no deps)' })"
     Write-Output "selection: $sel$tag"

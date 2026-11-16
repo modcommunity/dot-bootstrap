@@ -22,7 +22,7 @@ git clone -q "$T/remote/new-name.git" "$T/p/renamed" 2>/dev/null
 git -C "$T/p/renamed" remote set-url origin "$T/remote/old-name.git"
 printf 'renamed\t%s\tnew-name,newer\ngone\t%s\n' "$T/remote/new-name.git" "$T/remote/no-such.git" > "$T/bs/projects.tsv"
 
-out="$(cd "$T" && DOT_PROJECTS="$T/p" NO_COLOR=1 ./bs/bootstrap.sh --only newer,gone 2>&1)"; rc=$?
+out="$(cd "$T" && GS_PROJECTS="$T/p" NO_COLOR=1 ./bs/bootstrap.sh --only newer,gone 2>&1)"; rc=$?
 check 'an alias selects the listed name' 'printf "%s" "$out" | grep -q "^renamed "'
 check 'the old origin is repointed'      '[ "$(git -C "$T/p/renamed" remote get-url origin)" = "$T/remote/new-name.git" ]'
 check 'the repoint is said'              'printf "%s" "$out" | grep -q "origin moved"'

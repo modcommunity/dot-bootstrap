@@ -2,7 +2,7 @@
 # A renamed repository's checkout, in bootstrap.sh: a sync moves a checkout still under
 # an old name (projects.tsv column 3) to the listed name, dirty tree and all, points the
 # links that went through the old name at the new one, and leaves the old name as a link.
-# It refuses, and clones no second copy, when the folder is in use or DOT_NO_RENAME=1;
+# It refuses, and clones no second copy, when the folder is in use or GS_NO_RENAME=1;
 # leaves both alone when both names exist; and leaves a foreign checkout under the old
 # name alone while cloning the listed one. Local bare remotes only; nothing leaves $T.
 # The sync also installs the Valve-origin hook, which runs tools/install-valve-hooks.sh and
@@ -60,7 +60,7 @@ old_tree() { # <projects dir>
 }
 run() { # <projects dir> <VAR=value or ""> [bootstrap arguments]
     local p="$1" e="$2"; shift 2
-    (cd "$T" && env DOT_PROJECTS="$p" DOT_CLOUD="$T/dot-cloud" DOT_NATIVES=none DOT_STORES_FROM=none NO_COLOR=1 DOT_JOBS=1 $e ./bs/bootstrap.sh "$@" 2>&1)
+    (cd "$T" && env GS_PROJECTS="$p" GS_CLOUD="$T/dot-cloud" GS_NATIVES=none GS_STORES_FROM=none NO_COLOR=1 GS_JOBS=1 $e ./bs/bootstrap.sh "$@" 2>&1)
 }
 
 # 1. The move: dirty work kept, links repointed, old names left as links, --check clean.
@@ -96,11 +96,11 @@ check 'in use: the reason is said'          'printf "%s" "$out" | grep -q "in us
 check 'in use: the addon still links'       '[ -f "$P/game-fc/addons/arena_weapons/w.gd" ]'
 check 'the others still moved'              '[ -d "$P/game-fc/.git" ] && [ -d "$P/new-maps/.git" ]'
 
-# 3. DOT_NO_RENAME=1 refuses every move and clones nothing beside them.
+# 3. GS_NO_RENAME=1 refuses every move and clones nothing beside them.
 P="$T/p3"; old_tree "$P"
-out="$(run "$P" DOT_NO_RENAME=1)"
-check 'DOT_NO_RENAME: nothing moved'        '[ -d "$P/game-old/.git" ] && [ -d "$P/arena-weapons/.git" ] && [ -d "$P/old-maps/.git" ]'
-check 'DOT_NO_RENAME: nothing cloned'       '[ ! -e "$P/game-fc" ] && [ ! -e "$P/fc-weapons" ] && [ ! -e "$P/new-maps" ]'
+out="$(run "$P" GS_NO_RENAME=1)"
+check 'GS_NO_RENAME: nothing moved'        '[ -d "$P/game-old/.git" ] && [ -d "$P/arena-weapons/.git" ] && [ -d "$P/old-maps/.git" ]'
+check 'GS_NO_RENAME: nothing cloned'       '[ ! -e "$P/game-fc" ] && [ ! -e "$P/fc-weapons" ] && [ ! -e "$P/new-maps" ]'
 
 # 4. Both names already there: neither is touched, and the old one is reported.
 P="$T/p4"; old_tree "$P"

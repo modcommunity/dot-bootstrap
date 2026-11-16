@@ -21,7 +21,7 @@ tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 fail=0
 bad() { echo "FAIL $*"; fail=1; }
 
-plan() { DOT_PROJECTS="$tmp/empty" DOT_PLAN_FROM="$sib" "$here/bootstrap.sh" --plan "$@" 2>&1; }
+plan() { GS_PROJECTS="$tmp/empty" GS_PLAN_FROM="$sib" "$here/bootstrap.sh" --plan "$@" 2>&1; }
 mkdir -p "$tmp/empty"
 
 listed() { grep -v '^[[:space:]]*#' "$tsv" | cut -f1 | grep -qxF "$1"; }
@@ -50,7 +50,7 @@ ps_regex_ok() { # the exact pattern bootstrap.ps1 uses for a link line
 ps_regex_ok || bad "bootstrap.ps1 Link-Content pattern lacks the ci form"
 have_pwsh=0; command -v pwsh >/dev/null && have_pwsh=1
 if [ $have_pwsh = 1 ]; then
-    ps_plan="$(DOT_PROJECTS="$tmp/empty" DOT_PLAN_FROM="$sib" pwsh -NoProfile -File "$here/bootstrap.ps1" -Plan 2>&1)"
+    ps_plan="$(GS_PROJECTS="$tmp/empty" GS_PLAN_FROM="$sib" pwsh -NoProfile -File "$here/bootstrap.ps1" -Plan 2>&1)"
     [ "$ps_plan" = "$default_plan" ] || { bad "bootstrap.ps1 -Plan differs from bootstrap.sh --plan"; diff <(echo "$default_plan") <(echo "$ps_plan") | head -10; }
 fi
 
@@ -133,10 +133,10 @@ out="$("$here/bootstrap.sh" --plan no-such-game 2>&1)"; rc=$?
 mkdir -p "$tmp/mg-wipeout/addons" "$tmp/mg-wipeout-maps/courses"
 printf '# bootstrap-link: mg-wipeout-maps/courses ci\n/courses\n' > "$tmp/mg-wipeout/.gitignore"
 git -C "$tmp/mg-wipeout" init -q
-DOT_PROJECTS="$tmp" "$here/bootstrap.sh" --links --only mg-wipeout --no-deps >/dev/null 2>&1
+GS_PROJECTS="$tmp" "$here/bootstrap.sh" --links --only mg-wipeout --no-deps >/dev/null 2>&1
 [ -L "$tmp/mg-wipeout/courses" ] && [ -d "$tmp/mg-wipeout/courses" ] || bad "bootstrap.sh did not link a 'ci' content line"
 rm "$tmp/mg-wipeout/courses"
-DOT_PROJECTS="$tmp" "$here/bootstrap.sh" --links --min --only mg-wipeout --no-deps >/dev/null 2>&1
+GS_PROJECTS="$tmp" "$here/bootstrap.sh" --links --min --only mg-wipeout --no-deps >/dev/null 2>&1
 [ -e "$tmp/mg-wipeout/courses" ] && bad "--links --min linked content"
 if [ $have_pwsh = 1 ]; then
     pwsh -NoProfile -Command "if ('# bootstrap-link: mg-wipeout-maps/courses ci' -notmatch '^# bootstrap-link: (\S+)(\s+ci)?\s*\$') { exit 1 }" \

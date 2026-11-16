@@ -11,9 +11,9 @@ set -u
 H="$(cd "$(dirname "$0")/.." && pwd)"
 T0="$(mktemp -d)"; trap 'rm -rf "$T0"' EXIT
 pass=0; fail=0
-# The sync installs the Valve-origin hook, which needs the dot-cloud guard (set DOT_CLOUD; default: sibling checkout).
-DOT_CLOUD="${DOT_CLOUD:-$H/../dot-cloud}"
-[ -f "$DOT_CLOUD/tools/check_valve_files.py" ] || { echo "FAIL: no dot-cloud guard at $DOT_CLOUD (set DOT_CLOUD)" >&2; exit 2; }
+# The sync installs the Valve-origin hook, which needs the dot-cloud guard (set GS_CLOUD; default: sibling checkout).
+GS_CLOUD="${GS_CLOUD:-${DOT_CLOUD:-$H/../dot-cloud}}"
+[ -f "$GS_CLOUD/tools/check_valve_files.py" ] || { echo "FAIL: no dot-cloud guard at $GS_CLOUD (set GS_CLOUD)" >&2; exit 2; }
 check() { if eval "$2"; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: [$impl] $1"; fi; }
 g() { git -C "$1" -c user.name=t -c user.email=t@t "${@:2}"; }
 
@@ -56,7 +56,7 @@ scenario() {
     
     run() { # run <names> <jobs>
         if [ "$impl" = sh ]; then
-            (cd "$T" && DOT_PROJECTS="$T/p" DOT_CLOUD="$DOT_CLOUD" DOT_RETRY_SLEEP=0 timeout 300 "$T/bs/bootstrap.sh" --only "$1" --no-deps --copy --no-stores --jobs "$2" 2>&1)
+            (cd "$T" && GS_PROJECTS="$T/p" GS_CLOUD="$GS_CLOUD" GS_RETRY_SLEEP=0 timeout 300 "$T/bs/bootstrap.sh" --only "$1" --no-deps --copy --no-stores --jobs "$2" 2>&1)
         else
             (cd "$T" && timeout 300 pwsh -NoProfile -NonInteractive -File "$T/bs/bootstrap.ps1" -Projects "$T/p" -Only "$1" -NoDeps -Copy -NoStores -Jobs "$2" 2>&1)
         fi

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Posts a screenshot and its motion to Nightly -> Review: the still, plus an mp4 made from "<still>.seq/NNN.png" (DotShotSeq).
 #   shot_post.sh KEY ENTRY STILL.png [--title T] [--look "what to look for"] [--metrics '{"fps":60}'] [--fps N] [--variant before|after] [--label L]
-# Env: QA_URL, QA_USER, QA_PASSWORD as for review-post.sh. Run tools/screenshot.sh with DOT_SHOT_FRAMES=16 DOT_SHOT_SECS=2 first.
+# Env: QA_URL, QA_USER, QA_PASSWORD as for review-post.sh. Run tools/screenshot.sh with GS_SHOT_FRAMES=16 GS_SHOT_SECS=2 first.
 set -euo pipefail
 [ $# -ge 3 ] || { sed -n 2,5p "$0"; exit 2; }
 key=$1; entry=$2; still=$3; shift 3
@@ -24,7 +24,7 @@ extra=(); [ -n "$variant" ] && extra+=(--variant "$variant"); [ -n "$look" ] && 
 seq=${still%.png}.seq
 if [ -d "$seq" ] && ls "$seq"/*.png >/dev/null 2>&1; then
   n=$(ls "$seq"/*.png | wc -l)
-  rate=${fps:-$(awk -v n="$n" -v s="${DOT_SHOT_SECS:-2}" 'BEGIN{r=n/s; if (r<4) r=4; printf "%d", r+0.5}')}
+  rate=${fps:-$(awk -v n="$n" -v s="${GS_SHOT_SECS:-${DOT_SHOT_SECS:-2}}" 'BEGIN{r=n/s; if (r<4) r=4; printf "%d", r+0.5}')}
   ffmpeg -v error -y -framerate "$rate" -i "$seq/%03d.png" -c:v libx264 -pix_fmt yuv420p -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" -movflags +faststart "$work/$label.mp4"
   "$poster" media "$key" "$entry" "$work/$label.mp4" --slot clip --label "$label" ${extra[@]+"${extra[@]}"} >/dev/null
   echo "shot_post: $label still + $n-frame mp4 -> $key/$entry"
