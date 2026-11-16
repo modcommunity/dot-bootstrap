@@ -1308,6 +1308,7 @@ function Link-Many ($targets) {
         NoStores = $NoStores; NoDeps = $NoDeps; Hub = $Hub; Jobs = $Jobs; Junction = $Junction
         minMode = $script:minMode; selection = $script:selection; godotWarned = $true
         useHttps = $script:useHttps; failed = $false
+        legacyAddonDirs = $legacyAddonDirs; renamedAddonDirs = $renamedAddonDirs
         linksMade = 0; linkedProjects = 0; junctionFailures = 0
     }
     foreach ($k in $vars.Keys) { $iss.Variables.Add((New-Object System.Management.Automation.Runspaces.SessionStateVariableEntry($k, $vars[$k], ''))) }
