@@ -2,7 +2,7 @@
 #   .\tools\fetch_lock.ps1 <content.lock.json> [-Root DIR] [-From BASE] [-Cdn URL] [-Cfg DIR] [-Except a,b] [-Only a,b] [-Packs DIR] [-List]
 # Same behaviour as fetch_lock.sh, which documents the lock, the item names (id, name half, into, kind, repo; globs) and the cfg/content
 # rules. Where from, first set wins: -From, $env:DOT_PACKS_FROM ('none' fetches nothing), -Cdn / $env:DOT_CDN_URL, DOT_CDN_URL in
-# dot-bootstrap\.env, the lock's origin and mirrors, https://dotgames.org. (-Skip is the older name of -Except.)
+# dot-bootstrap\.env, the lock's origin and mirrors, https://content.gamespice.net. (-Skip is the older name of -Except.)
 param([Parameter(Mandatory)][string]$Lock, [string]$Root, [string]$From, [string]$Cdn, [string]$Cfg, [string]$Packs,
       [Alias('Skip')][string[]]$Except = @(), [string[]]$Only = @(), [switch]$List)
 $ErrorActionPreference = 'Stop'
@@ -25,7 +25,7 @@ $doc = Get-Content -Raw $Lock | ConvertFrom-Json
 if ($doc.format -ne 1) { throw 'fetch_lock: unsupported lock format' }
 $repo = Split-Path -Leaf $lockDir
 if ($Packs) { New-Item -ItemType Directory -Force -Path $Packs | Out-Null; $Packs = (Resolve-Path $Packs).Path }
-$bases = if ($From) { @($From) } elseif ($doc.origin) { @($doc.origin) + @($doc.mirrors) } else { @('https://dotgames.org/content') }
+$bases = if ($From) { @($From) } elseif ($doc.origin) { @($doc.origin) + @($doc.mirrors) } else { @('https://content.gamespice.net/content') }
 $bases = @($bases | ForEach-Object { $_.TrimEnd('/') })
 
 function Get-Sha([string]$p) { (Get-FileHash -Algorithm SHA256 -LiteralPath $p).Hash.ToLower() }
@@ -43,8 +43,19 @@ function Expand-Gzip([string]$p) {
 }
 
 # The manifest hash expected from base $b: the entry's manifest_sha256_by_origin[$b] when present, else manifest_sha256 (as fetch_lock.sh).
+# Renamed CDN hosts, old=new, as fetch_lock.sh: $env:DOT_ORIGIN_ALIASES replaces the list (space separated); empty turns it off.
+$aliasList = if ($null -ne $env:DOT_ORIGIN_ALIASES) { $env:DOT_ORIGIN_ALIASES } else { 'https://dotgames.org=https://content.gamespice.net' }
+$Aliases = @($aliasList -split '\s+' | Where-Object { $_ -match '=' } | ForEach-Object { , ($_ -split '=', 2) })
+function Canon([string]$u) {
+    $u = $u.TrimEnd('/')
+    foreach ($a in $Aliases) {
+        $old = $a[0].TrimEnd('/')
+        if ($u -eq $old -or $u.StartsWith("$old/")) { return $a[1].TrimEnd('/') + $u.Substring($old.Length) }
+    }
+    $u
+}
 function Pin($p, [string]$b) {
-    if ($p.manifest_sha256_by_origin) { foreach ($o in $p.manifest_sha256_by_origin.PSObject.Properties) { if ($o.Name.TrimEnd('/') -eq $b) { return $o.Value } } }
+    if ($p.manifest_sha256_by_origin) { foreach ($o in $p.manifest_sha256_by_origin.PSObject.Properties) { if ((Canon $o.Name) -eq (Canon $b)) { return $o.Value } } }
     $p.manifest_sha256
 }
 

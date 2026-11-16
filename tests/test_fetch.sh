@@ -78,4 +78,17 @@ PY
 reset; "$F" "$T/repoB/content.lock.json" --cdn http://127.0.0.1:18102 >/dev/null 2>&1
 [ ! -f "$T/repoB/.alpha/f.txt" ]; ok "default pin still refuses on an origin without a by-origin hash" $?
 
+# a by-origin key naming a renamed host (old=new in $DOT_ORIGIN_ALIASES) still matches the base under its new name
+reset; python3 -I - "$T/repoA/content.lock.json" "$T/repoB/content.lock.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for p in d["packs"]:
+    p["manifest_sha256_by_origin"] = {"http://legacy.invalid:18101/content/": p["manifest_sha256"]}; p["manifest_sha256"] = "0" * 64
+json.dump(d, open(sys.argv[2], "w"))
+PY
+DOT_ORIGIN_ALIASES="http://legacy.invalid:18101=http://127.0.0.1:18101" "$F" "$T/repoB/content.lock.json" --cdn http://127.0.0.1:18101 >/dev/null 2>&1
+[ -f "$T/repoB/.alpha/f.txt" ] && [ -f "$T/repoB/.beta/f.txt" ]; ok "by-origin key under a legacy host name matches the renamed base" $?
+reset; DOT_ORIGIN_ALIASES="" "$F" "$T/repoB/content.lock.json" --cdn http://127.0.0.1:18101 >/dev/null 2>&1
+[ ! -f "$T/repoB/.alpha/f.txt" ]; ok "with no aliases the legacy key does not match" $?
+
 echo "test_fetch: $pass passed, $fail failed"; [ "$fail" = 0 ]

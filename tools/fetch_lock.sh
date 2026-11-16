@@ -7,7 +7,7 @@
 # mirrored to --packs DIR/<id>/<version>/ (manifest.json + objects/) when given, else left for DotCloudClient to mount.
 # WHERE FROM, first set wins: --from BASE (a folder or a full origin URL), $DOT_PACKS_FROM (`none` fetches nothing),
 #   --cdn URL / $DOT_CDN_URL, DOT_CDN_URL in dot-bootstrap/.env (beside this tools/ folder; one edit for every repo), the lock's
-#   own `origin` then its `mirrors`, https://dotgames.org. A CDN URL is the site root: "/content" is added unless it ends in it.
+#   own `origin` then its `mirrors`, https://content.gamespice.net. A CDN URL is the site root: "/content" is added unless it ends in it.
 # WHAT: ITEM is a pack id, its name half, its `into` folder, its kind or the repo (the lock's folder name); globs allowed
 #   (`gamemann/zz-*`). --only keeps matches, --skip/--except drops them. With --cfg DIR (default <lock folder>/cfg) the
 #   download lists drop too: a `remove:` entry in cfg/content/{addons,games}.yml (or cfg/server/content/), a
@@ -15,7 +15,8 @@
 #   kind "pack" it does not name. Names a lock does not pin are not fetched here (./server install-games does those).
 # PER-ENVIRONMENT HASHES: each site signs manifests with its own key, so one pack version has one manifest hash per site (prod, dev).
 #   manifest_sha256 is the lock origin's (prod by default and never changed for dev); an entry may add
-#   "manifest_sha256_by_origin": {"https://dev.dotgames.org/content": "<sha>"}, used when that base serves the manifest.
+#   "manifest_sha256_by_origin": {"https://dev.dotgames.org/content": "<sha>"}, used when that base serves the manifest. A key
+#   naming a renamed host matches its new name too ($DOT_ORIGIN_ALIASES, default https://dotgames.org=https://content.gamespice.net).
 # A token file path in $DOT_PACKS_TOKEN_FILE (never the token itself) is sent as a bearer.
 set -euo pipefail
 LOCK="${1:?usage: fetch_lock.sh <content.lock.json> [--root DIR] [--from BASE|--cdn URL] [--cfg DIR] [--skip IDs] [--only IDs] [--packs DIR] [--list]}"; shift
@@ -61,7 +62,7 @@ if cdn and not base:
     base = cdn.rstrip("/")
     if "://" in base and not base.endswith("/content"): base += "/content"
 if base == "none": print("fetch_lock: DOT_PACKS_FROM=none, nothing fetched"); sys.exit(0)
-bases = [base] if base else ([doc["origin"]] if doc.get("origin") else ["https://dotgames.org/content"]) + list(doc.get("mirrors", []))
+bases = [base] if base else ([doc["origin"]] if doc.get("origin") else ["https://content.gamespice.net/content"]) + list(doc.get("mirrors", []))
 bases = [b.rstrip("/") if "://" in b else "file://" + os.path.abspath(b) for b in bases]
 repo = os.path.basename(os.path.dirname(os.path.abspath(lock)))
 
@@ -195,8 +196,21 @@ def fetch(rel, dest, sha, retries=4, pg=None):
 def pinned(p):
     # The manifest hash to expect from a base: the entry's manifest_sha256_by_origin[base] when it has one (each site signs with
     # its own key, so one version has one hash per environment), else manifest_sha256 (the origin's). Prod pins stay the default.
-    by = {k.rstrip("/"): v for k, v in (p.get("manifest_sha256_by_origin") or {}).items()}
-    return lambda b: by.get(b, p["manifest_sha256"])
+    # Keys and bases go through canon(), so a key naming a renamed CDN host still matches the new name and back.
+    by = {canon(k): v for k, v in (p.get("manifest_sha256_by_origin") or {}).items()}
+    return lambda b: by.get(canon(b), p["manifest_sha256"])
+
+# Renamed CDN hosts, old=new (the game CDN dotgames.org became content.gamespice.net and stays served under both).
+# $DOT_ORIGIN_ALIASES replaces the list (space separated old=new); empty turns it off.
+ALIASES = [a.split("=", 1) for a in os.environ.get("DOT_ORIGIN_ALIASES", "https://dotgames.org=https://content.gamespice.net").split() if "=" in a]
+
+def canon(u):
+    u = u.rstrip("/")
+    for old, new in ALIASES:
+        old = old.rstrip("/")
+        if u == old or u.startswith(old + "/"):
+            return new.rstrip("/") + u[len(old):]
+    return u
 
 bad = 0
 for p in doc["packs"]:

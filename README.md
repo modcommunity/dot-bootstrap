@@ -140,7 +140,7 @@ The CDN is the first of these that is set:
 3. `--cdn URL` or `$DOT_CDN_URL`.
 4. `DOT_CDN_URL=` in `dot-bootstrap/.env` (copy `.env.example`; gitignored).
 5. The lock file's own `origin` and `mirrors`.
-6. `https://dotgames.org`.
+6. `https://content.gamespice.net`.
 
 Download lists in `cfg/content/addons.yml` and `games.yml` (and `cfg/server/content/`) are respected. Packs are only mirrored when `--packs DIR` is given; otherwise `DotCloudClient` mounts them at run time. The raw art stores of `zombie-zone-maps` are fetched once and kept; set `DOT_STORES_FROM=none` to skip them, or to a folder or `.tar` URL to use your own. On Windows the fetch scripts need PowerShell 7 (`pwsh`) or the Windows PowerShell 5.1 that ships with Windows 10 and later.
 
