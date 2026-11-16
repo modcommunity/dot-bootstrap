@@ -278,10 +278,12 @@ unresolved_links() {
 # every game linking dot-sql carries it; zombie-zone-maps/maps/maps, 2026-11-13). --copy-links would follow it forever, and
 # nothing can read it as a file, so it is safe to leave out of the copy: one project-relative path per line, no leading "./".
 # Found from find's own "File system loop detected; 'X' is part of ..." notice (C locale, so ASCII quotes); only a real link
-# counts. A loop through two links is not found here and still goes through unresolved_links.
+# counts. A link chain that never resolves (A -> B -> A, or a ring of three) has no directory loop: find reports it as
+# "Too many levels of symbolic links" instead, and that is found here too. Nothing can read either kind.
 loop_links() {
 	( cd "${1%/}/" && LC_ALL=C find -L . \( -path ./.git -o -path ./.godot -o -path ./screenshots \) -prune -o -print 2>&1 >/dev/null \
-		| sed -n "s/^find: File system loop detected; '\(.*\)' is part of the same file system loop as .*/\1/p" \
+		| sed -n -e "s/^find: File system loop detected; '\(.*\)' is part of the same file system loop as .*/\1/p" \
+			-e "s/^find: '\(.*\)': Too many levels of symbolic links\$/\1/p" \
 		| while IFS= read -r p; do [[ -L $p ]] && printf '%s\n' "${p#./}"; done ) || true
 }
 
@@ -430,7 +432,7 @@ sync_dir_once() {
 	while IFS= read -r ll; do
 		[[ -n $ll ]] || continue
 		loops+=("$ll"); xl+=(--exclude "/$ll")
-		echo "gpu.sh: WARNING $d/$ll is a link that loops into its own directory; left out of the copy to $BOX. Remove it (a repeated \`ln -s\` into a directory link makes these)." >&2
+		echo "gpu.sh: WARNING $d/$ll is a link that loops; left out of the copy to $BOX. Remove it (a repeated \`ln -s\` into a directory link makes these)." >&2
 	done < <(loop_links "$d")
 	bad=$(unresolved_except_loops "$d" "${loops[@]}")
 	[[ -z $bad ]] || $fail "$d has links that dangle or loop, so --copy-links cannot copy it to $BOX (rsync would stop with rc 23). Fix or remove them:
@@ -1387,7 +1389,7 @@ offer_on() {
 	while IFS= read -r ll; do
 		[[ -n $ll ]] || continue
 		loops+=("$ll"); ex+=(--exclude "/$ll")
-		echo "gpu.sh: WARNING $PROJ_DIR/$ll is a link that loops into its own directory; left out of the copy to $BOX. Remove it (a repeated \`ln -s\` into a directory link makes these)." >&2
+		echo "gpu.sh: WARNING $PROJ_DIR/$ll is a link that loops; left out of the copy to $BOX. Remove it (a repeated \`ln -s\` into a directory link makes these)." >&2
 	done < <(loop_links "$PROJ_DIR")
 	local bad; bad=$(unresolved_except_loops "$PROJ_DIR" "${loops[@]}")
 	if [[ -n $bad ]]; then
