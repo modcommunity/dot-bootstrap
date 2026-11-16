@@ -335,12 +335,17 @@ function Get-GitignorePath ($proj) {
     return $there
 }
 
+# Renamed addon directories, legacy -> current (bootstrap.sh's legacy_addon_dir): fc-weapons holds
+# addons/fc_weapons; its tags up to v1.4.51 and games not moved yet say addons/arena_weapons.
+$legacyAddonDirs = @{ 'arena_weapons' = 'fc_weapons' }
+$renamedAddonDirs = @{ 'arena_weapons' = 'fc_weapons'; 'fc_weapons' = 'arena_weapons' }
+
 # Which repository an addon comes from. bootstrap.sh's addon_source has the reasoning:
 # the name rule misses a game's own pack (zee_weapons is in zee-dot-weapons), so ask the
 # checkouts for the project that has the folder and does not ignore it.
 function Get-AddonSource ($addon) {
     $src = $addon -replace '_', '-'
-    # The listed name first (arena_weapons is in fc-weapons), then the raw, old one.
+    # The listed name first (fc_weapons and its legacy arena_weapons are in fc-weapons), then the raw, old one.
     $c = Get-Canon $src
     if (Test-Path (Join-Path $projectsDir "$c\addons\$addon")) { return $c }
     if (Test-Path (Join-Path $projectsDir "$src\addons\$addon")) { return $src }
@@ -1017,7 +1022,20 @@ function Link-Addons ($proj) {
         $target = Join-Path $projectsDir "$src\addons\$addon"
         $link   = Join-Path $addonDir $addon
 
-        if (-not (Test-Path $target)) { Err $proj "source missing: $src\addons\$addon"; continue }
+        # A renamed addon directory (bootstrap.sh's legacy_addon_dir has the reasoning): the name the
+        # game asks for is linked while the checkout holds it, the legacy one with a warning; the two
+        # sides of the rename are never aliased.
+        $other = $renamedAddonDirs[$addon]
+        if (-not (Test-Path $target)) {
+            if ($other -and (Test-Path (Join-Path $projectsDir "$(Get-AddonSource $other)\addons\$other"))) {
+                Err $proj "asks for addons/$addon, but $(Get-AddonSource $other) holds addons/${other}: move the game or the checkout to the same side of the rename"
+            } else { Err $proj "source missing: $src\addons\$addon" }
+            continue
+        }
+        if ($legacyAddonDirs.ContainsKey($addon)) {
+            $at = git -C (Join-Path $projectsDir $src) describe --tags --always 2>$null
+            Warn $proj "addons/$addon is a legacy name (deprecated; $src at $at still holds it): rename it to addons/$($legacyAddonDirs[$addon])"
+        }
 
         # Remove whatever is there. A stale junction, or -- the case that
         # actually bites -- a plain text file Git left behind in place of a

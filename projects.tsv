@@ -23,8 +23,11 @@
 # game-fatal-contact answers to game-arena and arena. The next sync moves a
 # checkout still under an old name to the new one (only a clean move: never over
 # an existing folder, never while a process works in it) and leaves a link at
-# the old name; games' .gitignore lines that still say /addons/arena_weapons or
-# "# bootstrap-link: g2gfast-maps/maps" resolve through this column.
+# the old name; games' .gitignore lines that still say the legacy /addons/arena_weapons or
+# "# bootstrap-link: g2gfast-maps/maps" resolve through this column. fc-weapons
+# holds addons/fc_weapons; a game whose .gitignore still names the legacy
+# /addons/arena_weapons is linked to it (with a deprecation warning) only while the
+# fc-weapons checkout still holds that directory, and is an error once it does not.
 # A checkout whose origin still names the old repository is repointed at the
 # URL here on the next sync (GitHub's redirect for a renamed repository is not
 # something to lean on: it ends the moment a repository takes the old name).

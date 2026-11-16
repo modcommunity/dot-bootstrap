@@ -233,7 +233,7 @@ alias_pairs() {
 }
 # The listed name for a name that may be an old one: arena-weapons -> fc-weapons. A name
 # that is neither listed nor another name comes back unchanged. Games' .gitignore lines
-# (/addons/arena_weapons, "# bootstrap-link: g2gfast-maps/maps") still say the old names,
+# (the legacy /addons/arena_weapons, "# bootstrap-link: g2gfast-maps/maps") still say old names,
 # so the addon rule and the content links go through this.
 canon() {
     projects | grep -qxF "$1" && { echo "$1"; return; }
@@ -302,8 +302,9 @@ optional_for() {
 # dot-server-deploy, which vendors a copy of everything, ignores /addons/ whole.
 addon_source() {
     local addon="$1" src="${1//_/-}" d
-    # The listed name first (arena_weapons is in fc-weapons), then the raw one: a machine
-    # whose checkout has not been renamed yet still has it under arena-weapons.
+    # The listed name first (fc_weapons and its legacy arena_weapons are in fc-weapons),
+    # then the raw one: a machine whose checkout has not been renamed yet still has it
+    # under arena-weapons.
     d="$(canon "$src")"
     if [ -d "$PROJECTS_DIR/$d/addons/$addon" ]; then echo "$d"; return 0; fi
     if [ -d "$PROJECTS_DIR/$src/addons/$addon" ]; then echo "$src"; return 0; fi
@@ -318,6 +319,15 @@ addon_source() {
     done
     echo "$src"
 }
+
+# An addon directory that was renamed: the legacy name for a current one, and back.
+# fc-weapons (Fatal Contact's weapons) holds addons/fc_weapons; its tags up to v1.4.51 and
+# games not moved yet still say addons/arena_weapons. A game is linked under the name its
+# .gitignore asks for while the fc-weapons checkout holds that name (the legacy one with a
+# warning naming the checkout's ref); a game and a checkout on different sides of the
+# rename are an error, never an alias, because each one's res:// paths name its own side.
+legacy_addon_dir() { case "$1" in fc_weapons) echo arena_weapons ;; esac; }
+current_addon_dir() { case "$1" in arena_weapons) echo fc_weapons ;; esac; }
 
 # --- Selecting -------------------------------------------------------------
 #
@@ -907,9 +917,17 @@ link_addons() {
     while read -r addon; do
         [ -n "$addon" ] || continue
         src="$(addon_source "$addon")"
+        local other; other="$(legacy_addon_dir "$addon")"; [ -n "$other" ] || other="$(current_addon_dir "$addon")"
         if [ ! -d "$PROJECTS_DIR/$src/addons/$addon" ]; then
-            err "$proj" "source missing: $src/addons/$addon"
+            if [ -n "$other" ] && [ -d "$PROJECTS_DIR/$(addon_source "$other")/addons/$other" ]; then
+                err "$proj" "asks for addons/$addon, but $(addon_source "$other") at $(git -C "$PROJECTS_DIR/$(addon_source "$other")" describe --tags --always 2>/dev/null) holds addons/$other: move the game or the checkout to the same side of the rename"
+            else
+                err "$proj" "source missing: $src/addons/$addon"
+            fi
             continue
+        fi
+        if [ -n "$(current_addon_dir "$addon")" ]; then
+            warn "$proj" "addons/$addon is a legacy name (deprecated; $src at $(git -C "$PROJECTS_DIR/$src" describe --tags --always 2>/dev/null) still holds it): rename it to addons/$(current_addon_dir "$addon")"
         fi
         # Replace unconditionally: a stale link, or a regular file left by a Git
         # checkout on a machine without symlink support, both have to go. That
