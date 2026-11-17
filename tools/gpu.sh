@@ -684,7 +684,7 @@ unwrap() {
 
 # Exit 1 unless the command is one a box can run from a copy of the project:
 #   [timeout N] ./game.sh [--no-parse] [--timeout N] test [suite...]        (UW_KIND=game)
-#   [timeout N] godot --headless --path . [--quit-after N] res://x.tscn | --script res://x.gd [-- args]   (UW_KIND=godot)
+#   [timeout N] godot --headless --path . [--quit-after N] [-d] res://x.tscn | --script res://x.gd [-- args]   (UW_KIND=godot)
 # either may follow `env K=V` words (names that carry a secret, a path or this box's settings stay local); run from a project's own directory. Anything else may depend on dev02 (dot-server-deploy's
 # data, the dev01 tunnels, a --godot binary that only exists here) or write results back into
 # the project (--import, --script tools, exports), so it stays in the local queue. On success
@@ -732,7 +732,7 @@ offer_eligible() {
 				--path) [[ "${1:-}" == . || "${1:-}" == "$PWD" ]] || return 1; path=1; shift ;;
 				--path=.|--path="$PWD") path=1 ;;
 				--quit-after|--fixed-fps|--max-fps) [[ ${1:-} =~ ^[0-9]+$ ]] || return 1; shift ;;
-				--verbose|--disable-render-loop|--no-header) ;;
+				--verbose|--disable-render-loop|--no-header|-d|--debug) ;;
 				--) tail=1 ;;
 				res://*.tscn) [[ $scene == 0 && $a =~ ^res://[A-Za-z0-9_./-]+$ && $a != *..* ]] || return 1; scene=1 ;;
 				--script) [[ $scene == 0 && ${1:-} =~ ^res://[A-Za-z0-9_./-]+\.gd$ && ${1:-} != *..* ]] || return 1; scene=1; shift ;;
