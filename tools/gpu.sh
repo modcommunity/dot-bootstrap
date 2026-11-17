@@ -10,6 +10,9 @@
 # real-GPU screenshots and frame timings run.
 #
 #   ./gpu.sh status                          GPU, load and who holds the lock, on each box
+#   ./gpu.sh janitor-install [box...]        install tools/janitor.sh as ~/gpu/janitor.sh plus a 10-minute cron entry (idempotent) on each
+#                                            suite box (default GPU_SUITE_BOXES): age/size based pruning of idle ws/, sib/ and caches that
+#                                            never touches a locked, recently touched or process-referenced workspace
 #   ./gpu.sh clean [--apply]                 list (or with --apply remove) the old ~/gpu/suite/<project>/ directories on each suite
 #                                            box: suites now run in ~/gpu/ws/<project>, so those are dead copies; never touches
 #                                            the <project>.lock/.ls-files/.import.log files or a project that is running
@@ -2027,6 +2030,19 @@ case "${1:-}" in
 				done' || echo "  (unreachable)"
 			# Per-worktree copies nobody used for GPU_CLEAN_DAYS (default 2) days: ws/<id>, shot/<project>.
 			"${SSHQ[@]}" "bash -c $(printf '%q' "$GUARD_FN"$'\n'"prune_stale ${GPU_CLEAN_DAYS:-2} $apply")" || echo "  (unreachable)"
+		done
+		;;
+	janitor-install)
+		# Same janitor ph has run since 11-07: stdin to `cat >` so no scp is needed; the cron line is added only when absent.
+		shift
+		jsrc=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/janitor.sh
+		[ -r "$jsrc" ] || die "janitor.sh not found next to gpu.sh"
+		for b in ${*:-${GPU_SUITE_BOXES:-ph staging02 staging}}; do
+			set_box "$b"
+			echo "== $BOX"
+			"${SSHQ[@]}" 'mkdir -p ~/gpu && cat > ~/gpu/janitor.sh.new && chmod +x ~/gpu/janitor.sh.new && mv ~/gpu/janitor.sh.new ~/gpu/janitor.sh
+				crontab -l 2>/dev/null | grep -qF "gpu/janitor.sh" || { crontab -l 2>/dev/null; echo "*/10 * * * * $HOME/gpu/janitor.sh"; } | crontab -
+				crontab -l | grep -F "gpu/janitor.sh"' < "$jsrc" || echo "  (unreachable)"
 		done
 		;;
 	capacity)
