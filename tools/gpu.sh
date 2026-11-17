@@ -2128,8 +2128,8 @@ case "${1:-}" in
 				opengl3|opengl3_es|--rendering-driver=opengl3*) gl=1; drv=(); [[ " $* " == *" --rendering-method"* ]] || drv=(--rendering-method gl_compatibility) ;;
 			esac
 		done
-		# --import needs no window: a windowed (Vulkan, Xvfb) --import crashes with signal 11 on game-g2gfast and
-		# game-playground on the laptop's 1660 Ti (2026-11-15), the same projects import fine with --headless.
+		# --import needs no window: a windowed (Vulkan, Xvfb) --import crashes with signal 11 on game-airdrift and
+		# game-playlot on the laptop's 1660 Ti (2026-11-15), the same projects import fine with --headless.
 		local imp=0
 		for a in "$@"; do [[ $a == --import ]] && imp=1; done
 		if [[ $imp == 1 && " $* " != *" --headless "* ]]; then
