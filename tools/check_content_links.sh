@@ -109,7 +109,7 @@ out="$(plan)"
 out="$(plan game-arena)"   # an old name selects the renamed game
 grep -qx 'clone game-fatal-contact' <<< "$out" && grep -qx 'clone fc-surf-dm-maps' <<< "$out" && grep -qx 'clone dot-core' <<< "$out" \
     && ! grep -qx 'clone mg-wipeout' <<< "$out" || bad "one game: want game-fatal-contact, its maps and addons, no other game"
-out="$(plan arena --games wipeout)"
+out="$(plan fc --games wipeout)"
 grep -qx 'clone mg-wipeout-maps' <<< "$out" && grep -qx 'clone fc-surf-dm-maps' <<< "$out" || bad "short names / --games selection"
 out="$(plan zees-games)"
 for g in $games; do grep -qx "clone $g" <<< "$out" || bad "group zees-games lacks $g"; done

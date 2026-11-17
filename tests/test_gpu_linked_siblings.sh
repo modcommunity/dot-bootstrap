@@ -3,7 +3,7 @@
 # A link one level down is relinked only when it names a WHOLE sibling repo (games/zz -> ../../zz-maps); a link to a
 # folder inside one (maps/imported_dm -> ../../dm-maps/maps, whose content is git-ignored and so never staged, or
 # addons/dot_x -> ../../dot-x/addons/dot_x) stays a --copy-links copy. Regression: 2026-11-10 crackhouse and
-# dm-morpheus were "not found" on ph because maps/imported_dm was relinked to a staged arena-dm-maps with no maps/.
+# dm-morpheus were "not found" on ph because maps/imported_dm was relinked to a staged fc-dm-maps with no maps/.
 # No boxes needed. Leaves its small scratch tree in $TMPDIR.
 set -u
 here=$(cd "$(dirname "$0")/.." && pwd)

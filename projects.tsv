@@ -20,7 +20,7 @@
 # optional third column lists other names for it, comma-separated, which every
 # selection, --play and --export accept. A renamed repository is listed, and
 # cloned, under its NEW name, and its old names go in this column:
-# game-fatal-contact answers to game-arena and arena. The next sync moves a
+# game-fatal-contact answers to its old FC names. The next sync moves a
 # checkout still under an old name to the new one (only a clean move: never over
 # an existing folder, never while a process works in it) and leaves a link at
 # the old name; games' .gitignore lines that still say the legacy /addons/arena_weapons or

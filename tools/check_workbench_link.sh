@@ -24,9 +24,9 @@ for g in $games dot-game-template; do
 done
 
 mkdir -p "$tmp/empty"
-plan="$(GS_PROJECTS="$tmp/empty" GS_PLAN_FROM="$sib" "$here/bootstrap.sh" --plan arena 2>&1)"
-grep -qx 'clone dot-workbench' <<<"$plan" || bad "plan arena does not clone dot-workbench"
-grep -qx 'link game-fatal-contact addon dot_workbench' <<<"$plan" || bad "plan arena does not link dot_workbench"
+plan="$(GS_PROJECTS="$tmp/empty" GS_PLAN_FROM="$sib" "$here/bootstrap.sh" --plan fc 2>&1)"
+grep -qx 'clone dot-workbench' <<<"$plan" || bad "plan fc does not clone dot-workbench"
+grep -qx 'link game-fatal-contact addon dot_workbench' <<<"$plan" || bad "plan fc does not link dot_workbench"
 
 # A real run for dot-workbench itself (small): clone, then its four links.
 mkdir -p "$tmp/src" "$tmp/out"

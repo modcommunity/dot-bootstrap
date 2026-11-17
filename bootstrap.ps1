@@ -10,12 +10,12 @@
         .\bootstrap.ps1 -Status         report each repository, change nothing
         .\bootstrap.ps1 -Check          verify the list against the disk
         .\bootstrap.ps1 -List           what can be played
-        .\bootstrap.ps1 -Play arena     play one, offline, no server needed
-        .\bootstrap.ps1 -Export arena   build a RELEASE executable of any game into <game>\build\windows (a game with no export_presets gets a default preset; downloads the matching export template into .godot-bin, checksum-verified)
-        .\bootstrap.ps1 -PlayExport arena [-PlayArgs '+bot_quota 16 --map dm_atrium']   start that build (exporting first when there is none): offline; FC also 8 players, profiler overlay, `profiler_record` in the console records 60 s (F10: 10 s); -PlayArgs go to the game and win; -Export with it rebuilds first
+        .\bootstrap.ps1 -Play fc     play one, offline, no server needed
+        .\bootstrap.ps1 -Export fc   build a RELEASE executable of any game into <game>\build\windows (a game with no export_presets gets a default preset; downloads the matching export template into .godot-bin, checksum-verified)
+        .\bootstrap.ps1 -PlayExport fc [-PlayArgs '+bot_quota 16 --map dm_atrium']   start that build (exporting first when there is none): offline; FC also 8 players, profiler overlay, `profiler_record` in the console records 60 s (F10: 10 s); -PlayArgs go to the game and win; -Export with it rebuilds first
         .\bootstrap.ps1 -Links -Copy    copy the addons instead of linking them
         .\bootstrap.ps1 -Ssh            clone over SSH (to push from this machine); HTTPS is the default
-        .\bootstrap.ps1 -Only arena,wipeout     only these, plus the addon and map repos they need
+        .\bootstrap.ps1 -Only fc,wipeout     only these, plus the addon and map repos they need
         .\bootstrap.ps1 -Only 'mg-*' -NoDeps    only these, and nothing they need
         .\bootstrap.ps1 -NoStores              do not fetch the raw art stores (about 1.6 GB, once, kept); maps draw low-detail art. Or $env:GS_STORES_FROM = 'none'
         $env:GS_NATIVES = 'none'               skip the native libraries a game pins (# bootstrap-natives: in its .gitignore); GDScript runs
@@ -23,17 +23,17 @@
         .\bootstrap.ps1 -Import                 import every game headless (the editor can crash on a first import); -Only narrows it
         .\bootstrap.ps1 -GetGodot               download the latest stable Godot into .godot-bin beside this script, then carry on (sync, and -Import if given); every mode that runs Godot looks there
         .\bootstrap.ps1 -DiscardGenerated       when an update is blocked, restore every modified .import/.uid file and retry
-        .\bootstrap.ps1 game-arena mg-wipeout  the same as -Only (names, short forms, wildcards)
-        .\bootstrap.ps1 -Games arena,wipeout -Addons dot-core   games and/or addons by kind
+        .\bootstrap.ps1 game-fatal-contact mg-wipeout  the same as -Only (names, short forms, wildcards)
+        .\bootstrap.ps1 -Games fc,wipeout -Addons dot-core   games and/or addons by kind
         .\bootstrap.ps1 zees-games             every game, with the addons and content it needs
         .\bootstrap.ps1 -ZeesGamesMin          every game, base repository + addons only
         .\bootstrap.ps1 mg-wipeout -Min        -Min: no maps, weapon, monster or other content packs
         .\bootstrap.ps1 -Plan [selection]      print what would be cloned and linked, change nothing
 
     -Only works with every mode (sync, -Links, -Status). A name is a project
-    from projects.tsv, or its short form (arena = game-arena, wipeout =
+    from projects.tsv, or its short form (fc = game-fatal-contact, wipeout =
     mg-wipeout, core = dot-core), or another name projects.tsv lists for it
-    (fatal-contact and final-contact = game-arena, airdrift = game-g2gfast,
+    (fatal-contact and final-contact = game-fatal-contact, airdrift = game-g2gfast,
     playlot = game-playground), or a wildcard. Set $env:GS_ONLY to make a
     selection stick. Addons are copied (or linked) into the named projects only.
     Selecting a game also selects the addons it requires and the content it links
@@ -64,7 +64,7 @@
 
     Directory junctions were the answer to that -- no elevation, no Developer
     Mode -- and MEASURED, Godot does not follow them. On Windows 11 with Godot
-    4.7.2 the eight junctions in game-arena\addons existed and Explorer walked
+    4.7.2 the eight junctions in game-fatal-contact\addons existed and Explorer walked
     them, and Godot registered not one class_name from any of them. So this
     script COPIES the addon folders by default; -Junction opts back in. The cost
     is that a copy does not track its source, so -Links must be re-run after a
@@ -142,7 +142,7 @@ $script:linkedProjects = 0
 # Junctions were the original design and the reasoning was sound -- no elevation,
 # no Developer Mode, and the filesystem resolves them before Godot sees them.
 # Measured, the last clause is false. On Windows 11 with Godot 4.7.2 the eight
-# junctions in game-arena\addons existed, Explorer walked them, and Godot
+# junctions in game-fatal-contact\addons existed, Explorer walked them, and Godot
 # registered not one class_name from any of them: every Dot* identifier came back
 # "not declared in the current scope" and seventy-odd scripts failed to parse.
 # Copying the same folders fixed it outright.
@@ -265,14 +265,14 @@ function Get-Projects {
         }
 }
 
-# The listed name an other name (third column) stands for: arena -> game-fatal-contact.
+# The listed name an other name (third column) stands for: g2gfast -> game-airdrift.
 function Get-AliasTarget ($n) {
     $hit = Get-Projects | Where-Object { $_.Aliases -contains $n } | Select-Object -First 1
     if ($hit) { return $hit.Name }
     return $null
 }
 
-# The listed name for a name that may be an old one (arena-weapons -> fc-weapons); any
+# The listed name for a name that may be an old one (g2gfast -> game-airdrift); any
 # other name comes back unchanged. Games' .gitignore lines still say the old names.
 function Get-Canon ($n) {
     if (Get-Projects | Where-Object { $_.Name -eq $n }) { return $n }
@@ -330,7 +330,7 @@ function Get-GitignorePath ($proj) {
     if ((Test-Path $here) -or -not $env:GS_PLAN_FROM) { return $here }
     $there = Join-Path $env:GS_PLAN_FROM "$proj\.gitignore"
     if (Test-Path $there) { return $there }
-    # A tree whose checkouts still have their old names (game-arena for game-fatal-contact).
+    # A tree whose checkouts still have their old names (game-g2gfast for game-airdrift).
     $p = Get-Projects | Where-Object { $_.Name -eq $proj } | Select-Object -First 1
     if ($p) { foreach ($o in $p.Aliases) { $g = Join-Path $env:GS_PLAN_FROM "$o\.gitignore"; if (Test-Path $g) { return $g } } }
     return $there
@@ -1241,7 +1241,7 @@ function Link-Content ($proj) {
                     Warn $proj "staging $src from $from failed (no pbr-library in it)"
                 }
             } elseif ((($src -split '/')[-1] -ne '.stores') -and $src.Contains('/') -and (Test-Path $lockFile) -and (Test-Path $fetcher)) {
-                # Content kept out of git (arena-dm-maps' maps) is pinned in the repo's lock under the linked folder.
+                # Content kept out of git (fc-dm-maps' maps) is pinned in the repo's lock under the linked folder.
                 & $fetcher $lockFile -Only (($src -split '/', 2)[1] + '/*')
                 if ($LASTEXITCODE -ne 0) { Warn $proj "fetching $src from content.lock.json failed" }
             }

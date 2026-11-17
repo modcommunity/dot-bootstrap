@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # A game that was pushed while an addon it needs was only merged locally: a fresh clone then fails to parse
-# (game-arena asked for dot_audio 14, DotHurtSound, and GitHub had 13; the editor named only the last script
+# (game-fatal-contact asked for dot_audio 14, DotHurtSound, and GitHub had 13; the editor named only the last script
 # of the extends chain). Local links hide it, so this compares what is PUBLISHED on both sides:
 #   1. every game's origin/main requires.floor.json against each addon's origin/main <addon>_api.gd LEVEL
 #   2. every project whose local main is ahead of origin/main (merged, never pushed)

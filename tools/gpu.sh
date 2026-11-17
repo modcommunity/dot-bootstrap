@@ -155,7 +155,7 @@ die() { echo "gpu.sh: $*" >&2; exit 2; }
 # MemoryMax is re-set at every start to what they use now + available - reserve, so together they cannot eat
 # into the reserve (the laptop owner keeps >= 4 GB). SUITE_VARIANTS: how many copies of one worktree a box may
 # run at once (ws/<project>, ws/<project>~2, ...), so `hv shard` can spread one worktree's suites over its slots.
-# Measured 2026-11-08 under a sharded 13-suite game-arena run (cgroup memory.peak/cpu.stat per suite, ~/gpu/suite/stats.tsv):
+# Measured 2026-11-08 under a sharded 13-suite game-fatal-contact run (cgroup memory.peak/cpu.stat per suite, ~/gpu/suite/stats.tsv):
 # every suite peaked at 1.05-1.1 GB (game.sh's own import is the peak; the suites themselves are below it) and used
 # 0.3-1.1 cores (headless_bots 499 CPU s in 840 s, bottricks 216 in 218); a whole-repo `game.sh test` reaches ~3.8 GB
 # RSS. So slots are bound by threads (staging02 12, the laptop 16 shared with its owner) and, on the laptop, by
@@ -832,7 +832,7 @@ tool_job() {
 
 # Real-time suites: THE one list. These measure the netcode against wall time (ENet and the relay keep wall
 # time while the game ticks), so a box that cannot hold the tick rate on one thread gives a false failure, not a
-# result. ph runs one thread about 4x slower than dev02 (2026-11-09: game-arena headless_lossy paced 43-88% of real
+# result. ph runs one thread about 4x slower than dev02 (2026-11-09: game-fatal-contact headless_lossy paced 43-88% of real
 # time there and prints NOT A MEASUREMENT), so these are never offered to ph: only to GPU_REALTIME_BOXES (default
 # staging02), and when that is busy or down they wait for a dev02 slot (exit 75, as for any job no box took).
 # Shell patterns matched against each suite name (`game.sh test <suite>`) or scene base name (godot res://x/<suite>.tscn).
@@ -913,9 +913,9 @@ linked_siblings() {
 	# A link one level down (games/zombie-zone-maps -> ../../zombie-zone-maps, a whole sibling repo) must not
 	# be expanded by --copy-links either: it is excluded from the copy and relinked to the staged sibling.
 	# Prints the link's path relative to the project and its target as the link reads from its own directory.
-	# Only a link to the WHOLE repo: a link to a folder inside one (maps/imported_dm -> ../../arena-dm-maps/maps,
+	# Only a link to the WHOLE repo: a link to a folder inside one (maps/imported_dm -> ../../fc-dm-maps/maps,
 	# addons/dot_x -> ../../dot-x/addons/dot_x) keeps being copied with --copy-links, because the staged sibling
-	# carries only git ls-files -co and that folder's content may be git-ignored (arena-dm-maps' maps/*, fetched
+	# carries only git ls-files -co and that folder's content may be git-ignored (fc-dm-maps' maps/*, fetched
 	# from content.lock): relinked, the box saw an empty maps/ and crackhouse/dm-morpheus "not found" (2026-11-10).
 	while IFS= read -r l; do
 		t=$(readlink "$l") || continue
@@ -943,7 +943,7 @@ stage_sibling() {
 	else
 		( cd "$src" && find . -type f -not -path './.godot/*' -not -path './.git/*' -printf '%P\0' ) >"$list"
 	fi
-	# A game sibling's addons/ are git-excluded links into the dot-* repos (game-arena/addons/dot_core ->
+	# A game sibling's addons/ are git-excluded links into the dot-* repos (game-fatal-contact/addons/dot_core ->
 	# ../../dot-core/...): git ls-files omits them, and a tool that runs the game from the staged copy (dsd's
 	# pack_requires derives requires.json with addons/dot_core/tools/dot_requires.gd) found no addon there.
 	# find -L lists what the links point at, rsync --copy-links ships it (hard-linked per version, so one copy per box).
@@ -1172,7 +1172,7 @@ echo "$free $slots $avail $state"') _ $SUITE_SLOTS $DESKTOP_GUARD $SUITE_RESERVE
 # Makes ws/<project>/<project> on a box before the first copy, and for a worktree whose
 # workspace has no .godot yet, seeds it with a copy of the repository's .godot (the main
 # checkout's workspace, else the newest workspace of another worktree of the same repo):
-# a cold import of game-arena is ~3 min and ~600 MB per new worktree, the copy makes it
+# a cold import of game-fatal-contact is ~3 min and ~600 MB per new worktree, the copy makes it
 # incremental. A copy, not hardlinks: Godot rewrites its cache files in place. The source is
 # skipped while a suite holds its lock, and the class/uid caches are dropped so the import
 # that REMOTE_SUITE runs first rebuilds them for this tree. Never fails the offer.
@@ -1369,7 +1369,7 @@ offer_on() {
 		kv=$(stage_sibling "$n") || back_to_queue "staging $n on $BOX failed"
 		sibs+=("$kv")
 	done
-	# The repository a worktree belongs to (~/wt/game-arena-x -> game-arena), for seeding its .godot.
+	# The repository a worktree belongs to (~/wt/game-fatal-contact-x -> game-fatal-contact), for seeding its .godot.
 	local repo=
 	repo=$(git -C "$PROJ_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && repo=$(basename "$(dirname "$repo")") || repo=
 	[[ $repo =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] || repo=
@@ -2242,7 +2242,7 @@ case "${1:-}" in
 		# screenshot tool that names its files), output lines prefixed [box]; "{box}" in an argument becomes
 		# the box name. For a windowed benchmark or a shot set that should be measured on both cards, e.g.
 		#   tools/gpu.sh both ./game.sh perf --out .godot/perf/{box}.json      (each box against its own GPU's baseline)
-		#   tools/gpu.sh both tools/gpu.sh run game-arena --quit-after 600 res://tools/client_bench.tscn
+		#   tools/gpu.sh both tools/gpu.sh run game-fatal-contact --quit-after 600 res://tools/client_bench.tscn
 		# Exit: the highest of the per-box exit codes.
 		shift
 		boxes=${GPU_BOTH_BOXES:-staging staging02}

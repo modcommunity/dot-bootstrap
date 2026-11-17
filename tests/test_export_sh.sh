@@ -24,7 +24,7 @@ done
 for flag in '--export|--play-export) ARGS' '--list|--play|--export|--play-export|' '    --export)' '    --play-export)'; do
     check "bootstrap.sh handles $flag" 'grep -qF -- "$flag" "$H/bootstrap.sh"'
 done
-check 'the help shows both modes' '[ "$(sed -n 3,48p "$H/bootstrap.sh" | grep -c -- "--export arena\|--play-export arena")" = 2 ]'
+check 'the help shows both modes' '[ "$(sed -n 3,48p "$H/bootstrap.sh" | grep -c -- "--export fc\|--play-export fc")" = 2 ]'
 
 check 'game: short name' '[ "$(resolve_game arena)" = game-arena ]'
 check 'game: another name from projects.tsv' '[ "$(resolve_game fatal-contact)" = game-arena ]'

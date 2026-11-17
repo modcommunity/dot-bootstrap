@@ -10,13 +10,13 @@
 #   ./bootstrap.sh --status        report each repository, change nothing
 #   ./bootstrap.sh --check         verify the list against the disk, change nothing
 #   ./bootstrap.sh --list          what can be played
-#   ./bootstrap.sh --play arena    play one, offline, no server needed
-#   ./bootstrap.sh --export arena  build a RELEASE executable of any game into <game>/build/linux (a game with no export_presets gets a default preset; downloads the matching export template once, checksum-verified)
-#   ./bootstrap.sh --play-export arena [args]  start that build (exporting first when there is none): offline; FC also 8 players, profiler overlay, `profiler_record` in the console records 60 s (F10: 10 s); args after the name go to the game and win (+bot_quota 16 --map dm_atrium)
+#   ./bootstrap.sh --play fc    play one, offline, no server needed
+#   ./bootstrap.sh --export fc  build a RELEASE executable of any game into <game>/build/linux (a game with no export_presets gets a default preset; downloads the matching export template once, checksum-verified)
+#   ./bootstrap.sh --play-export fc [args]  start that build (exporting first when there is none): offline; FC also 8 players, profiler overlay, `profiler_record` in the console records 60 s (F10: 10 s); args after the name go to the game and win (+bot_quota 16 --map dm_atrium)
 #   ./bootstrap.sh --links --copy  copy the addons instead of linking them
 #   GS_NATIVES=none ./bootstrap.sh skip the native libraries a game pins (# bootstrap-natives:); GDScript runs
 #   ./bootstrap.sh --ssh           clone over SSH (to push from this machine); HTTPS is the default
-#   ./bootstrap.sh --only arena,wipeout   only these, plus the addon and map repos they need
+#   ./bootstrap.sh --only fc,wipeout   only these, plus the addon and map repos they need
 #   ./bootstrap.sh --no-stores              skip the raw art stores (about 1.6 GB, fetched once and kept); maps draw low-detail art
 #   ./bootstrap.sh --only 'mg-*' --no-deps  only these, and nothing they need
 #   ./bootstrap.sh --jobs N              repositories synced and games imported at once (default: the CPU count; GS_JOBS; 1 = one at a time)
@@ -24,7 +24,7 @@
 #   ./bootstrap.sh --get-godot          download the latest stable Godot into .godot-bin beside this script; with --import, a selection or --discard-generated it carries on (sync, link, then import)
 #   ./bootstrap.sh --discard-generated   when an update is blocked, restore every modified .import/.uid file and retry
 #   ./bootstrap.sh game-fatal-contact mg-wipeout    the same as --only (names, short forms, globs)
-#   ./bootstrap.sh --games arena,wipeout --addons dot-core   games and/or addons by kind
+#   ./bootstrap.sh --games fc,wipeout --addons dot-core   games and/or addons by kind
 #   ./bootstrap.sh zees-games               every game, with the addons and content it needs
 #   ./bootstrap.sh --zees-games-min         every game, base repository + addons only
 #   ./bootstrap.sh mg-wipeout --min         --min: no maps, weapon, monster or other content packs
@@ -33,8 +33,8 @@
 # --only works with every mode (sync, --links, --status). A name is a project
 # from projects.tsv, or its short form (fatal-contact = game-fatal-contact, wipeout =
 # mg-wipeout, core = dot-core), or another name projects.tsv lists for it, old names
-# included (arena and game-arena = game-fatal-contact, g2gfast = game-airdrift,
-# playground = game-playlot, arena-weapons = fc-weapons), or a glob. A sync moves a
+# included (the old FC names = game-fatal-contact, g2gfast = game-airdrift,
+# playground = game-playlot, the old FC weapons name = fc-weapons), or a glob. A sync moves a
 # checkout still under an old name to the new one (see "Renamed checkouts"). Set GS_ONLY to make a selection stick. Addons
 # are linked (or copied) into the named projects only. Selecting a game also selects
 # the addons it requires and the content it links (maps, courses, optional weapon and
@@ -221,17 +221,17 @@ export GIT_TERMINAL_PROMPT="${GIT_TERMINAL_PROMPT:-0}"
 # name<TAB>url, comments and blank lines dropped.
 projects() { grep -v '^[[:space:]]*#' "$LIST" | grep -v '^[[:space:]]*$' | cut -f1; }
 url_for()  { grep -v '^[[:space:]]*#' "$LIST" | awk -F'\t' -v p="$1" '$1==p{print $2; exit}'; }
-# The listed name an other name (third column) stands for: fatal-contact -> game-arena.
+# The listed name an other name (third column) stands for: g2gfast -> game-airdrift.
 alias_target() {
     grep -v '^[[:space:]]*#' "$LIST" | awk -F'\t' -v a="$1" \
         '{ n = split($3, x, ","); for (i = 1; i <= n; i++) if (x[i] == a) { print $1; exit } }'
 }
-# Every listed name with each of its other names: "fc-weapons<TAB>arena-weapons".
+# Every listed name with each of its other names: "game-airdrift<TAB>g2gfast".
 alias_pairs() {
     grep -v '^[[:space:]]*#' "$LIST" | awk -F'\t' \
         '{ n = split($3, x, ","); for (i = 1; i <= n; i++) if (x[i] != "") print $1 "\t" x[i] }'
 }
-# The listed name for a name that may be an old one: arena-weapons -> fc-weapons. A name
+# The listed name for a name that may be an old one: g2gfast -> game-airdrift. A name
 # that is neither listed nor another name comes back unchanged. Games' .gitignore lines
 # (the legacy /addons/arena_weapons, "# bootstrap-link: g2gfast-maps/maps") still say old names,
 # so the addon rule and the content links go through this.
@@ -277,7 +277,7 @@ links_for() {
 gi_path() {
     if [ -f "$PROJECTS_DIR/$1/.gitignore" ]; then echo "$PROJECTS_DIR/$1/.gitignore"
     elif [ -n "$PLAN_FROM" ]; then
-        # A tree whose checkouts still have their old names (dev02's game-arena).
+        # A tree whose checkouts still have their old names (a tree from before the FC rename).
         local o
         [ -f "$PLAN_FROM/$1/.gitignore" ] || while IFS=$'\t' read -r _ o; do
             [ -n "$o" ] && [ -f "$PLAN_FROM/$o/.gitignore" ] && { echo "$PLAN_FROM/$o/.gitignore"; return; }
@@ -1075,7 +1075,7 @@ content_links_for() {
 }
 
 # A maps repo's lock pins its art stores only when an item goes `into` ".stores"; a lock that pins just the maps
-# (arena-dm-maps) must fall through to $GS_STORES_FROM instead of fetching nothing.
+# (fc-dm-maps) must fall through to $GS_STORES_FROM instead of fetching nothing.
 lock_lists_stores() {
     [ -f "$1" ] && grep -Eq '"into"[[:space:]]*:[[:space:]]*"\.stores"' "$1"
 }
@@ -1098,7 +1098,7 @@ link_content() {
             "$PROJECTS_DIR/dot-map-convert/tools/stage_stores.sh" "$PROJECTS_DIR/${src%%/*}" || warn "$proj" "staging $src from $GS_STORES_FROM failed"
         elif [ "${src##*/}" != ".stores" ] && [ "$src" != "${src%%/*}" ] && [ -f "$PROJECTS_DIR/${src%%/*}/content.lock.json" ] \
                 && [ -x "$REPO_DIR/tools/fetch_lock.sh" ]; then
-            # Content kept out of git (arena-dm-maps' maps) is pinned in the repo's lock under the linked folder.
+            # Content kept out of git (fc-dm-maps' maps) is pinned in the repo's lock under the linked folder.
             "$REPO_DIR/tools/fetch_lock.sh" "$PROJECTS_DIR/${src%%/*}/content.lock.json" --only "${src#*/}/*" \
                 || warn "$proj" "fetching $src from content.lock.json failed"
         fi
