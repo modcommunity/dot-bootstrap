@@ -33,7 +33,7 @@
 # --only works with every mode (sync, --links, --status). A name is a project
 # from projects.tsv, or its short form (fatal-contact = game-fatal-contact, wipeout =
 # mg-wipeout, core = dot-core), or another name projects.tsv lists for it, old names
-# included (the old FC names = game-fatal-contact, g2gfast = game-airdrift,
+# included (the old FC names = game-fatal-contact, the old Airdrift names = game-airdrift,
 # playground = game-playlot, the old FC weapons name = fc-weapons), or a glob. A sync moves a
 # checkout still under an old name to the new one (see "Renamed checkouts"). Set GS_ONLY to make a selection stick. Addons
 # are linked (or copied) into the named projects only. Selecting a game also selects
@@ -69,8 +69,8 @@
 #
 # The version of this script that this one replaces carried its own manifest of
 # projects AND of the addons each one needs. Both went stale: it listed 19 of
-# the 33 repositories, and the fourteen it had lost included game-playground
-# and game-g2gfast -- two of the five games -- and the whole movement and NPC
+# the 33 repositories, and the fourteen it had lost included playlot
+# and airdrift -- two of the five games -- and the whole movement and NPC
 # half of the family. That is this family's most-repeated bug, and it has now
 # happened to setup.sh, to tools/check.sh, to tools/package_check.sh and here.
 #
@@ -221,19 +221,19 @@ export GIT_TERMINAL_PROMPT="${GIT_TERMINAL_PROMPT:-0}"
 # name<TAB>url, comments and blank lines dropped.
 projects() { grep -v '^[[:space:]]*#' "$LIST" | grep -v '^[[:space:]]*$' | cut -f1; }
 url_for()  { grep -v '^[[:space:]]*#' "$LIST" | awk -F'\t' -v p="$1" '$1==p{print $2; exit}'; }
-# The listed name an other name (third column) stands for: g2gfast -> game-airdrift.
+# The listed name an other name (third column) stands for: a legacy id -> its current name.
 alias_target() {
     grep -v '^[[:space:]]*#' "$LIST" | awk -F'\t' -v a="$1" \
         '{ n = split($3, x, ","); for (i = 1; i <= n; i++) if (x[i] == a) { print $1; exit } }'
 }
-# Every listed name with each of its other names: "game-airdrift<TAB>g2gfast".
+# Every listed name with each of its other names: "<name><TAB><legacy id>".
 alias_pairs() {
     grep -v '^[[:space:]]*#' "$LIST" | awk -F'\t' \
         '{ n = split($3, x, ","); for (i = 1; i <= n; i++) if (x[i] != "") print $1 "\t" x[i] }'
 }
-# The listed name for a name that may be an old one: g2gfast -> game-airdrift. A name
+# The listed name for a name that may be an old one: a legacy id -> its current name. A name
 # that is neither listed nor another name comes back unchanged. Games' .gitignore lines
-# (the legacy /addons/arena_weapons, "# bootstrap-link: g2gfast-maps/maps") still say old names,
+# (the legacy /addons/arena_weapons, "# bootstrap-link: <legacy id>-maps/maps") still say old names,
 # so the addon rule and the content links go through this.
 canon() {
     projects | grep -qxF "$1" && { echo "$1"; return; }
@@ -246,7 +246,7 @@ on_disk() {
     [ ! -e "$PROJECTS_DIR/$c" ] && [ "$c" != "$1" ] && [ -d "$PROJECTS_DIR/$1" ] && c="$1"
     echo "$c"
 }
-# The same for a path whose first part is a project: g2gfast-maps/maps -> airdrift-maps/maps.
+# The same for a path whose first part is a project: <legacy id>-maps/maps -> airdrift-maps/maps.
 canon_path() { local h="${1%%/*}"; printf '%s%s\n' "$(on_disk "$h")" "${1#"$h"}"; }
 # owner/repo of a GitHub URL, SSH or HTTPS, so the two forms compare equal.
 repo_path() { printf '%s' "$1" | sed -e 's#^git@github.com:##' -e 's#^https://github.com/##' -e 's#\.git$##'; }
@@ -603,7 +603,7 @@ resolve_blocked_pull() {
 #
 # A repository renamed on GitHub is listed under its new name, and its checkout is
 # moved to that name, so that what is on disk and what this prints are the names the
-# repositories have (a laptop said "game-playground-maps cloned" for playlot-maps).
+# repositories have (a laptop said an old name cloned for playlot-maps).
 # The old names stay in projects.tsv's third column, so they keep selecting it.
 #
 # The move happens only when it is safe: the old directory is a real checkout (not a
@@ -1053,12 +1053,12 @@ fetch_natives() {
     done <<< "$(natives_for "$proj")"
 }
 
-# A project may also need a CONTENT directory from another repository: game-g2gfast's
-# maps/imported is g2gfast-maps/maps. Same rule as the addons, so bootstrap still holds
+# A project may also need a CONTENT directory from another repository: game-airdrift's
+# maps/imported is airdrift-maps/maps. Same rule as the addons, so bootstrap still holds
 # no list: the project's .gitignore says it, as a comment line directly above the
 # ignored path,
 #
-#     # bootstrap-link: g2gfast-maps/maps
+#     # bootstrap-link: airdrift-maps/maps
 #     /maps/imported
 #
 # Without this a fresh clone of the game had only its three built-in maps, and nothing
@@ -1068,7 +1068,7 @@ content_links_for() {
     local gi; gi="$(gi_path "$1")"
     [ -f "$gi" ] || return 0
     local path src
-    # The source through canon: games still name g2gfast-maps/maps, which is airdrift-maps.
+    # The source through canon: games may still name a legacy id (g2gfast-maps/maps, legacy id), which is airdrift-maps.
     while IFS=$'\t' read -r path src; do
         [ -n "$path" ] && printf '%s\t%s\n' "$path" "$(canon_path "$src")"
     done < <(awk '/^# bootstrap-link: /{src=$3; next} src!="" && /^\//{print $0 "\t" src} {src=""}' "$gi")

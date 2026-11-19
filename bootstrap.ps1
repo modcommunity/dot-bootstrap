@@ -33,8 +33,8 @@
     -Only works with every mode (sync, -Links, -Status). A name is a project
     from projects.tsv, or its short form (fc = game-fatal-contact, wipeout =
     mg-wipeout, core = dot-core), or another name projects.tsv lists for it
-    (fatal-contact and final-contact = game-fatal-contact, airdrift = game-g2gfast,
-    playlot = game-playground), or a wildcard. Set $env:GS_ONLY to make a
+    (fatal-contact and final-contact = game-fatal-contact, airdrift = game-airdrift,
+    playlot = game-playlot), or a wildcard. Set $env:GS_ONLY to make a
     selection stick. Addons are copied (or linked) into the named projects only.
     Selecting a game also selects the addons it requires and the content it links
     (maps, courses, optional weapon and monster packs) unless -Min. With no
@@ -265,14 +265,14 @@ function Get-Projects {
         }
 }
 
-# The listed name an other name (third column) stands for: g2gfast -> game-airdrift.
+# The listed name an other name (third column) stands for: a legacy id -> its current name.
 function Get-AliasTarget ($n) {
     $hit = Get-Projects | Where-Object { $_.Aliases -contains $n } | Select-Object -First 1
     if ($hit) { return $hit.Name }
     return $null
 }
 
-# The listed name for a name that may be an old one (g2gfast -> game-airdrift); any
+# The listed name for a name that may be an old one (a legacy id -> its current name); any
 # other name comes back unchanged. Games' .gitignore lines still say the old names.
 function Get-Canon ($n) {
     if (Get-Projects | Where-Object { $_.Name -eq $n }) { return $n }
@@ -289,7 +289,7 @@ function Get-OnDisk ($n) {
     return $c
 }
 
-# The same for repo/path: g2gfast-maps/maps -> airdrift-maps/maps.
+# The same for repo/path: <legacy id>-maps/maps -> airdrift-maps/maps.
 function Get-OnDiskPath ($p) {
     $parts = $p -split '/', 2
     $head = Get-OnDisk $parts[0]
@@ -330,7 +330,7 @@ function Get-GitignorePath ($proj) {
     if ((Test-Path $here) -or -not $env:GS_PLAN_FROM) { return $here }
     $there = Join-Path $env:GS_PLAN_FROM "$proj\.gitignore"
     if (Test-Path $there) { return $there }
-    # A tree whose checkouts still have their old names (game-g2gfast for game-airdrift).
+    # A tree whose checkouts still have their old names (a legacy id for its current name).
     $p = Get-Projects | Where-Object { $_.Name -eq $proj } | Select-Object -First 1
     if ($p) { foreach ($o in $p.Aliases) { $g = Join-Path $env:GS_PLAN_FROM "$o\.gitignore"; if (Test-Path $g) { return $g } } }
     return $there
@@ -1194,7 +1194,7 @@ function Fetch-Natives ($proj) {
 }
 
 # A CONTENT directory from another repository, declared in the project's .gitignore as a
-# comment line directly above the ignored path ("# bootstrap-link: g2gfast-maps/maps" over
+# comment line directly above the ignored path ("# bootstrap-link: <legacy id>-maps/maps" over
 # "/maps/imported"). bootstrap.sh's link_content has the reasoning. Copied by default and
 # junctioned with -Junction, exactly like the addons.
 function Link-Content ($proj) {
