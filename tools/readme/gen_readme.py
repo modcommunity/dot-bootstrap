@@ -11,6 +11,8 @@ profile(): the effective defaults a server starts with). Words come from docs/re
   items: {id: {role: .., blurb: .., poses: {bite: "caption"}}}
   summary_before: "## Using it"    where a missing block is inserted
   items_before: "## Credits"
+  quality: "..."                   optional override of the 'Quality and ongoing improvement' section text (a default
+                                   is emitted otherwise); quality_before: "## Credits" is where it is inserted
 
 Two regions of README.md are replaced between their markers (added if missing):
   <!-- gen_readme:summary --> ... <!-- /gen_readme:summary -->   thumbnail, name and summary columns per item
@@ -27,6 +29,9 @@ import subprocess
 import sys
 
 import yaml
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import stale_renders  # noqa: E402
 
 ROOT = os.getcwd()
 IMG_DIR = "docs/img"
@@ -53,6 +58,22 @@ def splice(text, tag, content, before=None):
         i = text.index(before)
         return text[:i] + block + "\n\n" + text[i:]
     return text.rstrip("\n") + "\n\n" + block + "\n"
+
+
+QUALITY_HEADING = "## Quality and ongoing improvement"
+QUALITY_DEFAULT = (
+    "The models, textures, sounds and animations in this pack are being improved over time, and some of them are "
+    "low quality today. Improvement is driven by the Nightly queue, a work queue where agents pick up items, and by "
+    "a visual judge loop that views rendered frames and files defects until each asset passes repeated clean "
+    "reviews. Known defects are filed there and fixed in later releases, and the screenshots in this README are "
+    "regenerated as the assets improve."
+)
+
+
+def quality_section(words):
+    """readme.yml may override the text with a `quality:` key; every pack gets the section either way."""
+    text = " ".join(str(words.get("quality") or QUALITY_DEFAULT).split())
+    return QUALITY_HEADING + "\n\n" + text
 
 
 def cell(v):
@@ -116,6 +137,10 @@ def main():
     old = open(path, encoding="utf-8").read()
     new = splice(old, "summary", summary, before=words.get("summary_before", "## Using it"))
     new = splice(new, "items", body, before=words.get("items_before", "## Credits"))
+    if check and "<!-- gen_readme:quality -->" not in old:
+        print("gen_readme: README.md has no '%s' section; run tools/gen_readme.sh --text" % QUALITY_HEADING, file=sys.stderr)
+        sys.exit(1)
+    new = splice(new, "quality", quality_section(words), before=words.get("quality_before", "## Credits"))
     # Owner rule: no repo-name H1 first line (GitHub already shows the name). Strip one if present.
     first = new.split("\n", 1)[0]
     if first.startswith("# "):
@@ -124,6 +149,7 @@ def main():
             print("gen_readme: README.md starts with an H1 (%s); remove it" % first, file=sys.stderr)
             sys.exit(1)
     if check:
+        stale_renders.warn(ROOT)
         if new != old:
             print("gen_readme: README.md is out of date; run tools/gen_readme.sh --text", file=sys.stderr)
             sys.exit(1)
