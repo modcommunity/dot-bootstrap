@@ -1,6 +1,6 @@
-The first thing to run. It clones the projects of the Gamespice family (games, addons, maps), links each addon into the projects that use it, and gets you to a running game. Part of the [dot-*](https://github.com/gamespice-platform) family.
+The first thing to run. It clones the projects of the [**GameSpice**](https://gamespice.net) family (games, addons, maps), links each addon into the projects that use it, and gets you to a running game. Part of the [dot-*](https://github.com/gamespice-platform) family.
 
-Each Gamespice project is its own Git repository on purpose: an addon is used by copying its `addons/<name>/` folder. These scripts are the one place that knows which repositories exist and which addons each one needs.
+Each GameSpice project is its own Git repository on purpose: an addon is used by copying its `addons/<name>/` folder. These scripts are the one place that knows which repositories exist and which addons each one needs.
 
 | File | Platform |
 | --- | --- |
