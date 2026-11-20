@@ -20,7 +20,8 @@ Two regions of README.md are replaced between their markers (added if missing):
 Everything else (pitch, usage, credits) is left exactly as written. Image links are raw.githubusercontent.com URLs on
 main for the origin remote, so the README renders on GitHub and in the GameSpice store alike.
 
-If docs/banner.png exists the first line is the linked banner (readme.yml: banner_url, banner_name, banner_kind).
+If docs/banner.png exists the first line is the linked banner (readme.yml: banner_url, banner_name, banner_kind;
+banner_style: raw = plain unlinked raw.githubusercontent.com image, alt "<banner_name> banner").
 
   gen_readme.py [--check]     --check: exit 1 if README.md is out of date, write nothing
 """
@@ -128,6 +129,8 @@ def banner_line(words):
     if not os.path.exists(os.path.join(ROOT, "docs/banner.png")):
         return None
     name = words.get("banner_name") or display_name(os.path.basename(ROOT))
+    if words.get("banner_style") == "raw":  # readme.yml banner_style: raw -> plain image, no link, no kind suffix
+        return "![%s banner](%sdocs/banner.png)" % (name, raw_base())
     kind = words.get("banner_kind", "GameSpice addon")
     url = words.get("banner_url") or raw_base().replace("raw.githubusercontent.com", "github.com").replace("/main/", "")
     return "[![%s - %s](docs/banner.png)](%s)" % (name, kind, url)
@@ -161,7 +164,7 @@ def main():
     banner = banner_line(words)
     if banner:
         lines = new.split("\n")
-        if lines[0].startswith("[![") and "docs/banner.png" in lines[0]:
+        if lines[0].startswith(("[![", "![")) and "docs/banner.png" in lines[0]:
             lines = lines[1:]
         new = banner + "\n\n" + "\n".join(lines).lstrip("\n")
     if check:
