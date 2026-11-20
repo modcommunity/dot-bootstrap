@@ -34,6 +34,7 @@ import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import stale_renders  # noqa: E402
+from display_name import display_name  # noqa: E402
 
 ROOT = os.getcwd()
 IMG_DIR = "docs/img"
@@ -126,7 +127,7 @@ def banner_line(words):
     """First README line: the banner image linking to the asset page. None when the repo has no docs/banner.png."""
     if not os.path.exists(os.path.join(ROOT, "docs/banner.png")):
         return None
-    name = words.get("banner_name") or os.path.basename(ROOT)
+    name = words.get("banner_name") or display_name(os.path.basename(ROOT))
     kind = words.get("banner_kind", "GameSpice addon")
     url = words.get("banner_url") or raw_base().replace("raw.githubusercontent.com", "github.com").replace("/main/", "")
     return "[![%s - %s](docs/banner.png)](%s)" % (name, kind, url)
