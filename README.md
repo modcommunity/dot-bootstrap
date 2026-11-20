@@ -1,4 +1,4 @@
-The first thing to run. It clones the projects of the [**GameSpice**](https://gamespice.net) family (games, addons, maps), links each addon into the projects that use it, and gets you to a running game. Part of the [dot-*](https://github.com/gamespice-platform) family.
+The first thing to run. It clones the projects of the [**GameSpice**](https://gamespice.net) family (games, addons, maps), links each addon into the projects that use it, and gets you to a running game. Part of the [GameSpice](https://github.com/gamespice-platform) family.
 
 Each GameSpice project is its own Git repository on purpose: an addon is used by copying its `addons/<name>/` folder. These scripts are the one place that knows which repositories exist and which addons each one needs.
 
@@ -83,7 +83,7 @@ It shows as `<title> (local)` and plays solo only. See [dot-map docs/content.md]
 
 ### Art for converted maps
 
-Some games draw converted maps with shared textures and models that are in no repository. Without them the maps still play with low-detail stand-ins and the load screen says "Low-detail art". Players get the art as dot-cloud slices from a server that publishes them. A developer stages it once (about 2 GB):
+Some games draw converted maps with shared textures and models that are in no repository. Without them the maps still play with low-detail stand-ins and the load screen says "Low-detail art". Players get the art as GameSpice Cloud slices from a server that publishes them. A developer stages it once (about 2 GB):
 
 ```bash
 dot-map-convert/tools/stage_stores.sh zombie-zone-maps --from dev02:godot/zombie-zone-maps/.stores --game game-zombie-zone
@@ -103,7 +103,7 @@ There are no hard-coded lists in the scripts, because lists in several places go
 | `# bootstrap-optional` above an addon line | An optional pack. Linked by default, skipped with `--min`. |
 | `# bootstrap-natives: <repo> <tag>` above an addon line | A native library. Bootstrap fetches that release and checks its `SHA256SUMS` before linking. |
 
-`dot-workbench` is in `projects.tsv` and is linked into every game and `dot-game-template`.
+`gs-workbench` is in `projects.tsv` and is linked into every game and `gs-game-template`.
 
 ## Windows copies, Linux links
 
@@ -172,7 +172,7 @@ These are for people working on the family itself.
 | --- | --- |
 | `shadowed_methods.py` | Finds public `func`s whose name a native Godot class already defines, which GDScript silently binds to the engine version. Run `--self-test` first. Needs `godot`. |
 | `check_pushed_floors.sh` | Compares each game's published `requires.floor.json` with each addon's published API level, so a fresh clone parses. |
-| `check_workbench_link.sh` | Checks that every game links dot-workbench. |
+| `check_workbench_link.sh` | Checks that every game links GameSpice Workbench. |
 | `install-valve-hooks.sh` | See above. |
 | `fetch_all.sh`, `make_fetch_scripts.sh` | See "Fetching content". |
 | `gpu.sh`, `heavy`, `realtime_suites.conf` | Run heavy jobs on the shared GPU and build boxes. The comments in each file explain the options. |

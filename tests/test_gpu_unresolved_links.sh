@@ -76,7 +76,7 @@ f' 2>&1); rc=$?
 		*) [[ $rc == 75 && $out == *QUEUED* ]] && ok "offer_on check, $t tree: sent back to the queue" || bad "offer_on check, $t tree: rc=$rc out=$out" ;;
 	esac
 done
-# 4. the dot-sql case: games/addons/dot_sql -> the dot-sql repo's addons/dot_sql, which holds dot_sql -> itself. The loop
+# 4. the GameSpice SQL case: games/addons/dot_sql -> the GameSpice SQL repo's addons/dot_sql, which holds dot_sql -> itself. The loop
 # lives inside the other link's target, so only find -L reaches it. It is found, excluded, and rsync (--copy-links, the
 # gpu.sh options) then copies the rest and not the loop; a second tree has a loop AND a dangling link, which still queues.
 mkdir -p "$root/dot-sql/addons/dot_sql/core" "$root/game/addons" "$root/game2/addons"

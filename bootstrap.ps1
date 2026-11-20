@@ -298,9 +298,9 @@ function Get-OnDiskPath ($p) {
 }
 
 # The addons a project needs linked in, read out of its own .gitignore. A
-# project's own addon is never in there -- dot-net ignores dot_core and ships
+# project's own addon is never in there -- GameSpice Net ignores dot_core and ships
 # dot_net -- which is exactly the distinction wanted. A bare "/addons/" means
-# "ignore the lot" (dot-server-deploy vendors its own with setup.sh) and
+# "ignore the lot" (GameSpice Server Deploy vendors its own with setup.sh) and
 # names nothing to link.
 function Get-LinksFor ($proj) {
     $gi = Get-GitignorePath $proj
@@ -1097,14 +1097,14 @@ function Link-Addons ($proj) {
     Say $proj "$verb $made addon(s)" 'DarkGray'
 }
 
-# A native library an addon can load ("# bootstrap-natives: dot-sim v0.1.0" above
+# A native library an addon can load ("# bootstrap-natives: GameSpice Sim v0.1.0" above
 # /addons/dot_sim in the game's .gitignore). bootstrap.sh's fetch_natives has the
 # reasoning: the release's zip for this machine, checksum checked, unpacked at the addon
 # repository's root before the links (so a copy carries it), a stamp to skip it next
 # time, a local build kept, and a warning (GDScript runs) when there is none.
 # $env:GS_NATIVES = 'none' skips it; $env:GS_NATIVES_BASE replaces the GitHub base.
 # An optional third field is the library directory inside the addon (default bin):
-# "# bootstrap-natives: dot-net v0.1.29 native/bin" for dot-net's runtime-loaded core.
+# "# bootstrap-natives: GameSpice Net v0.1.29 native/bin" for GameSpice Net's runtime-loaded core.
 function Get-NativesFor ($proj) {
     $gi = Get-GitignorePath $proj
     if (-not (Test-Path $gi)) { return }
@@ -1121,7 +1121,7 @@ function Get-NativesFor ($proj) {
 }
 
 # True when $libDir already holds a library for $plat: a non-empty $plat folder (dot-sim)
-# or a Godot-named file such as libx.windows.template_release.x86_64.dll (dot-net).
+# or a Godot-named file such as libx.windows.template_release.x86_64.dll (GameSpice Net).
 function Test-NativeBuiltHere ($libDir, $plat) {
     $platDir = Join-Path $libDir $plat
     if ((Test-Path $platDir) -and (Get-ChildItem $platDir -ErrorAction SilentlyContinue)) { return $true }
@@ -1537,7 +1537,7 @@ function Play-Game ($want) {
 
     # --offline is what the clients that have a networked mode read to skip it;
     # the ones that do not have one ignore an unknown user argument. Either way
-    # this needs no server, no dot-cloud and no downloads.
+    # this needs no server, no GameSpice Cloud and no downloads.
     Write-Host "$bin --path $dir -- --offline" -ForegroundColor Cyan
     & $bin --path $dir -- --offline
 }
@@ -1726,7 +1726,7 @@ function Get-ExportNatives ($dir, $os) {
     }
 }
 
-# A library an addon loads itself at run time from a .cfg (dot-net's snapshot core,
+# A library an addon loads itself at run time from a .cfg (GameSpice Net's snapshot core,
 # addons\dot_net\native\dot_net_native.cfg). The export never carries it, so Export-Game
 # copies the .cfg and its release library into <out>\<cfg name>\, where DotNetNative
 # looks beside the executable. One object per addons\*\native\*.cfg holding an
@@ -1879,7 +1879,7 @@ function Play-Export ($want) {
 
 # A CONTENT SIGNING KEYPAIR, for a developer who wants to PUBLISH packs locally.
 #
-# dot-cloud refuses unsigned manifests, and it should: a mounted pack can contain
+# GameSpice Cloud refuses unsigned manifests, and it should: a mounted pack can contain
 # scripts, so a client that mounts unsigned content runs whatever the server sent.
 # That means publishing needs a private key, and a private key is the one thing a
 # clone can never carry -- keys\ is gitignored in dot-server-deploy precisely so it
@@ -1891,7 +1891,7 @@ function Play-Export ($want) {
 # show as a local modification to a committed file. That is the honest trade and the
 # reason this is opt-in rather than part of a plain sync: overwriting it silently
 # would leave somebody wondering why their client rejects the team's packs.
-# fastgmad, the community addon-archive (.gma) extractor that dot-map's BSP importer shells
+# fastgmad, the community addon-archive (.gma) extractor that GameSpice Map's BSP importer shells
 # out to. Opt-in for the same reason as -ContentKeys: a plain sync needs git and nothing
 # else. Pinned to one release and refused unless its SHA-256 matches. Installed under
 # %LOCALAPPDATA%\fastgmad\<version> with the helper DLLs beside it; add that folder to PATH

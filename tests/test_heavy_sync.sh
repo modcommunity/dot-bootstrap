@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tools/check_heavy_sync.sh: in sync when only comments / the dot-bootstrap conf fallback differ, drift on any code change.
+# tools/check_heavy_sync.sh: in sync when only comments / the GameSpice Bootstrap conf fallback differ, drift on any code change.
 set -u
 here=$(cd "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT

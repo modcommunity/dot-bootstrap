@@ -112,7 +112,7 @@ check 'natives: the release key is read, the debug one is not' '[ "$(printf "%s\
 check 'natives: no library for this platform is empty' '[ "$(printf "%s\n" "$out" | sed -n 3p)" = "c.gdextension	" ]'
 check 'natives: no addons folder is nothing' '[ -z "$(export_natives "$T/empty" linux)" ]'
 
-# A library an addon loads itself from a .cfg (dot-net's) is copied beside the export by hand.
+# A library an addon loads itself from a .cfg (GameSpice Net's) is copied beside the export by hand.
 r="$T/shr"; mkdir -p "$r/addons/dot_net/native/bin" "$r/addons/other/native" "$r/addons/plain/native"
 printf '[configuration]\nentry_symbol = "x_init"\n[libraries]\nlinux.debug.x86_64 = "bin/libn.linux.template_debug.x86_64.so"\nlinux.release.x86_64 = "bin/libn.linux.template_release.x86_64.so"\n' > "$r/addons/dot_net/native/dot_net_native.cfg"
 echo rel > "$r/addons/dot_net/native/bin/libn.linux.template_release.x86_64.so"

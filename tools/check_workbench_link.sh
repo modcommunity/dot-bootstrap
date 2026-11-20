@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# dot-workbench travels with the games: every game and the template ignores /addons/dot_workbench,
+# GameSpice Workbench travels with the games: every game and the template ignores /addons/dot_workbench,
 # a plan clones dot-workbench and links it, and a real (local, offline) bootstrap run links it into
 # a fresh projects directory. Changes nothing outside a temp directory under ~/.cache.
 #

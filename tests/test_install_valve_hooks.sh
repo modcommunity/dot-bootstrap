@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests tools/install-valve-hooks.sh against the real dot-cloud guard.
+# Tests tools/install-valve-hooks.sh against the real GameSpice Cloud guard.
 #   GUARD_SRC=/path/to/dot-cloud/tools/check_valve_files.py tests/test_install_valve_hooks.sh
 # Defaults to the sibling dot-cloud checkout. Fails loudly when the guard cannot be found.
 set -uo pipefail

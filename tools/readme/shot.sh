@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# dot-bootstrap tools/readme/shot.sh: the README studio run, called by a pack's tools/readme_shot.sh from the pack root.
+# GameSpice Bootstrap tools/readme/shot.sh: the README studio run, called by a pack's tools/readme_shot.sh from the pack root.
 #
 #   ../dot-bootstrap/tools/readme/shot.sh [--ids a,b]    studio PNGs into screenshots/readme/, and the READMEDATA line
 #   ../dot-bootstrap/tools/readme/shot.sh --data         only the READMEDATA line (headless, no GPU needed)

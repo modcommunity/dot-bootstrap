@@ -4,7 +4,7 @@
 #
 #   tools/install-valve-hooks.sh [--check] [PROJECTS_DIR]
 #
-# The guard is dot-cloud's tools/check_valve_files.py. Its --install-hook writes the hook, which
+# The guard is GameSpice Cloud's tools/check_valve_files.py. Its --install-hook writes the hook, which
 # runs `--git --staged` on every commit and refuses a staged .vpk, .vtf, .vmt, .mdl, .vvd, .vtx,
 # .phy, .ani or textures/orig file. Nothing is copied here: the hook names the guard in the
 # dot-cloud checkout beside the repositories, so updating dot-cloud updates the guard everywhere.

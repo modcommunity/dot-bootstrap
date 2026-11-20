@@ -105,7 +105,7 @@ Check 'natives: the release key is read, the debug one is not' ($n[1].Lib -eq 'b
 Check 'natives: no library for this platform is empty' ($n[2].Ext -eq 'c.gdextension' -and $n[2].Lib -eq '')
 Check 'natives: the other platform reads its own' ((@(Get-ExportNatives $ng 'linux')[0]).Lib -eq 'liba.so')
 
-# A library an addon loads itself from a .cfg (dot-net's) is copied beside the export by hand.
+# A library an addon loads itself from a .cfg (GameSpice Net's) is copied beside the export by hand.
 $rg = Join-Path $env:T 'rgame'
 New-Item -ItemType Directory -Force -Path (Join-Path $rg 'addons/dot_net/native/bin'), (Join-Path $rg 'addons/other/native'), (Join-Path $rg 'addons/plain/native') | Out-Null
 Set-Content -Path (Join-Path $rg 'addons/dot_net/native/dot_net_native.cfg') -Value "[configuration]`nentry_symbol = `"x_init`"`n[libraries]`nwindows.debug.x86_64 = `"bin/libn.windows.template_debug.x86_64.dll`"`nwindows.release.x86_64 = `"bin/libn.windows.template_release.x86_64.dll`""

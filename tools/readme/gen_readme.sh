@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# dot-bootstrap tools/readme/gen_readme.sh: regenerate a pack's README gallery. A pack's tools/gen_readme.sh execs this
+# GameSpice Bootstrap tools/readme/gen_readme.sh: regenerate a pack's README gallery. A pack's tools/gen_readme.sh execs this
 # from the pack root.
 #
 #   tools/gen_readme.sh                  capture every item on a GPU box, refresh the data, convert, rewrite README.md

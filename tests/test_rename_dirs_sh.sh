@@ -20,7 +20,7 @@ mkdir -p "$T/bs/tools" "$T/remote" "$T/dot-cloud/tools"
 cp "$H/bootstrap.sh" "$T/bs/"
 cp "$H/tools/install-valve-hooks.sh" "$T/bs/tools/"
 cat > "$T/dot-cloud/tools/check_valve_files.py" <<'PY'
-# Stand-in for dot-cloud's guard: --install-hook writes a pre-commit hook that names this file.
+# Stand-in for GameSpice Cloud's guard: --install-hook writes a pre-commit hook that names this file.
 import os, subprocess, sys
 if len(sys.argv) != 3 or sys.argv[1] != "--install-hook": sys.exit(2)
 repo = sys.argv[2]

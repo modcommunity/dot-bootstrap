@@ -277,8 +277,8 @@ unresolved_links() {
 }
 
 # Links that loop back into their own directory (addons/dot_sql/dot_sql -> .../addons/dot_sql, made by an `ln -s <dir>
-# addons/dot_x` run twice: the second run puts the link INSIDE the first link's target, i.e. inside the dot-sql repo, so
-# every game linking dot-sql carries it; zombie-zone-maps/maps/maps, 2026-11-13). --copy-links would follow it forever, and
+# addons/dot_x` run twice: the second run puts the link INSIDE the first link's target, i.e. inside the GameSpice SQL repo, so
+# every game linking GameSpice SQL carries it; zombie-zone-maps/maps/maps, 2026-11-13). --copy-links would follow it forever, and
 # nothing can read it as a file, so it is safe to leave out of the copy: one project-relative path per line, no leading "./".
 # Found from find's own "File system loop detected; 'X' is part of ..." notice (C locale, so ASCII quotes); only a real link
 # counts. A link chain that never resolves (A -> B -> A, or a ring of three) has no directory loop: find reports it as
@@ -697,7 +697,7 @@ offer_eligible() {
 	PROJ_DIR=$PWD
 	if [[ "$PWD" == "$WT_ROOT"/* && "${PWD#"$WT_ROOT"/}" != */* ]]; then project="${PWD#"$WT_ROOT"/}"
 	else [[ "$PWD" == "$ROOT/$project" && "$project" != */* ]] || return 1; fi
-	# A tool job (UW_KIND=tool) also runs in a repo with no project.godot (dot-map-convert); suites and godot runs need one.
+	# A tool job (UW_KIND=tool) also runs in a repo with no project.godot (GameSpice Map Convert); suites and godot runs need one.
 	local has_godot=0; [[ -f "$PWD/project.godot" ]] && has_godot=1
 	[[ $has_godot == 1 || -e "$PWD/.git" ]] || return 1
 	unwrap "$@"

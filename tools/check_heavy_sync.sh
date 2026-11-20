@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One source for `heavy`: nightly-env bin/heavy (installed as /usr/local/bin/heavy). tools/heavy here is the scrubbed
 # public copy (the same file as nightly's scripts/heavy/heavy). This checks that tools/heavy has the same CODE as a
-# reference copy; full-line comments (the scrubbed ones) and the private-only dot-bootstrap conf fallback path are
+# reference copy; full-line comments (the scrubbed ones) and the private-only GameSpice Bootstrap conf fallback path are
 # ignored. Read-only: it never writes to any installed file.
 #   check_heavy_sync.sh [REFERENCE...]   default: $HEAVY_REFERENCE, else /usr/local/bin/heavy
 # Exit 0 in sync, 1 drift (diff shown), 2 reference unreadable. To fix drift: copy the public nightly copy over tools/heavy.

@@ -32,7 +32,7 @@
 #
 # --only works with every mode (sync, --links, --status). A name is a project
 # from projects.tsv, or its short form (fatal-contact = game-fatal-contact, wipeout =
-# mg-wipeout, core = dot-core), or another name projects.tsv lists for it, old names
+# mg-wipeout, core = GameSpice Core), or another name projects.tsv lists for it, old names
 # included (the old FC names = game-fatal-contact, the old Airdrift names = game-airdrift,
 # playground = game-playlot, the old FC weapons name = fc-weapons), or a glob. A sync moves a
 # checkout still under an old name to the new one (see "Renamed checkouts"). Set GS_ONLY to make a selection stick. Addons
@@ -257,12 +257,12 @@ missing_repo() {
 }
 
 # The addons a project needs linked in, read out of its own .gitignore. A
-# project's own addon is never in there -- dot-net ignores dot_core and ships
+# project's own addon is never in there -- GameSpice Net ignores dot_core and ships
 # dot_net -- which is exactly the distinction wanted.
 links_for() {
     local gi; gi="$(gi_path "$1")"
     [ -f "$gi" ] || return 0
-    # /addons/ on its own means "ignore the lot" (dot-server-deploy vendors
+    # /addons/ on its own means "ignore the lot" (GameSpice Server Deploy vendors
     # its addons with setup.sh) and names nothing to link.
     local all; all="$(grep -oE '^/addons/[a-z0-9_]+$' "$gi" 2>/dev/null | sed 's|^/addons/||')"
     if [ "$MIN" = "1" ]; then
@@ -294,12 +294,12 @@ optional_for() {
     awk '/^# bootstrap-optional/{o=1; next} o && /^\/addons\//{sub("^/addons/",""); print} {o=0}' "$gi"
 }
 
-# Which repository an addon comes from. dot_user_avatar -> dot-user-avatar covers every
-# dot-* addon, but not a game's own pack: zee_weapons lives in zee-dot-weapons, and the
+# Which repository an addon comes from. dot_user_avatar -> GameSpice User Avatar covers every
+# gs-* addon, but not a game's own pack: zee_weapons lives in zee-dot-weapons, and the
 # name rule sent every game that used it looking for a zee-weapons nobody has. Rather
 # than a table of exceptions, ask the checkouts: the owner is the project that HAS the
 # folder and does not ignore it -- every consumer ignores it, linked or copied, and
-# dot-server-deploy, which vendors a copy of everything, ignores /addons/ whole.
+# GameSpice Server Deploy, which vendors a copy of everything, ignores /addons/ whole.
 addon_source() {
     local addon="$1" src="${1//_/-}" d
     # The listed name first (fc_weapons and its legacy arena_weapons are in fc-weapons),
@@ -948,13 +948,13 @@ link_addons() {
     say "$proj" "${DIM}$([ "$COPY_ADDONS" = "1" ] && echo copied || echo linked) $made addon(s)${OFF}"
 }
 
-# A native library an addon can load (a GDExtension; dot-sim's Rust motor, snapshot
+# A native library an addon can load (a GDExtension; GameSpice Sim's Rust motor, snapshot
 # codec and bot sight scan). It is built, never committed, so a clone has only the
 # GDScript twins -- correct, and slower. The game pins the release whose library it
 # wants, in its .gitignore, as a comment line above the addon (above any
 # bootstrap-optional line):
 #
-#     # bootstrap-natives: dot-sim v0.1.0
+#     # bootstrap-natives: GameSpice Sim v0.1.0
 #     /addons/dot_sim
 #
 # and this fetches that release's zip for this machine (SHA256SUMS.natives, checked)
@@ -967,8 +967,8 @@ link_addons() {
 # skips the lot; GS_NATIVES_BASE replaces https://github.com/gamespice-platform.
 #
 # An optional third field names the library directory inside the addon when it is not
-# bin/ -- dot-net's runtime-loaded snapshot core keeps its flat, Godot-named files in
-# native/bin/ ("# bootstrap-natives: dot-net v0.1.29 native/bin"). The stamp goes there,
+# bin/ -- GameSpice Net's runtime-loaded snapshot core keeps its flat, Godot-named files in
+# native/bin/ ("# bootstrap-natives: GameSpice Net v0.1.29 native/bin"). The stamp goes there,
 # and a library for this platform already in it (committed, or built here) is kept.
 # Prints "<repo>\t<tag>\t<addon>\t<libdir>" per pin.
 natives_for() {
@@ -1197,7 +1197,7 @@ check_list() {
     done <<< "$(projects)"
 
     # An addon a project links must come from a project the list names, or a sync
-    # prints "source missing" and ends with errors (dot-mobile was copied into two
+    # prints "source missing" and ends with errors (GameSpice Mobile was copied into two
     # games but never listed, so it was never cloned).
     local gp ad src
     while read -r gp; do
@@ -1322,7 +1322,7 @@ play_game() {
 
     # --offline is what the clients that have a networked mode read to skip it;
     # the ones that do not have one ignore an unknown user argument. Either way
-    # this needs no server, no dot-cloud and no downloads.
+    # this needs no server, no GameSpice Cloud and no downloads.
     echo "${CYN}$bin --path $PROJECTS_DIR/$proj -- --offline${OFF}"
     exec "$bin" --path "$PROJECTS_DIR/$proj" -- --offline "${@:2}"
 }
@@ -1533,7 +1533,7 @@ export_natives() {
     done <<< "$(find -L "$dir/addons" -maxdepth 3 -name '*.gdextension' 2>/dev/null | sort)"
 }
 
-# A library an addon loads itself at run time from a .cfg (dot-net's snapshot core:
+# A library an addon loads itself at run time from a .cfg (GameSpice Net's snapshot core:
 # addons/dot_net/native/dot_net_native.cfg, see its docs/native.md). The export never
 # carries it, so export_game copies the .cfg and its release library into
 # <out>/<cfg name>/, the place DotNetNative looks beside the executable. One line per
@@ -1728,7 +1728,7 @@ fi
 content_keys() {
     # A CONTENT SIGNING KEYPAIR, for a developer who wants to PUBLISH packs locally.
     #
-    # dot-cloud refuses unsigned manifests, and it should: a mounted pack can contain
+    # GameSpice Cloud refuses unsigned manifests, and it should: a mounted pack can contain
     # scripts, so a client that mounts unsigned content runs whatever the server sent.
     # That means publishing needs a private key, and a private key is the one thing a
     # clone can never carry -- `keys/` is gitignored in dot-server-deploy precisely so
@@ -1784,8 +1784,8 @@ PY
 
 FASTGMAD_VERSION="0.2.1"
 install_tools() {
-    # fastgmad, the community addon-archive (.gma) extractor that dot-map-convert's BSP importer
-    # (dotbsp/gma.py in dot-map-convert) shells out to. Opt-in rather than part of a plain sync,
+    # fastgmad, the community addon-archive (.gma) extractor that GameSpice Map Convert's BSP importer
+    # (dotbsp/gma.py in GameSpice Map Convert) shells out to. Opt-in rather than part of a plain sync,
     # because a plain sync needs git and nothing else, and this is a download of a binary.
     # Pinned to one release and refused unless its SHA-256 matches the value below, which
     # was checked against the release's own digest: the importer runs this on archives
