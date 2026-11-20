@@ -20,6 +20,8 @@ Two regions of README.md are replaced between their markers (added if missing):
 Everything else (pitch, usage, credits) is left exactly as written. Image links are raw.githubusercontent.com URLs on
 main for the origin remote, so the README renders on GitHub and in the GameSpice store alike.
 
+If docs/banner.png exists the first line is the linked banner (readme.yml: banner_url, banner_name, banner_kind).
+
   gen_readme.py [--check]     --check: exit 1 if README.md is out of date, write nothing
 """
 import json
@@ -120,6 +122,16 @@ def render(words, data, base):
     return "\n".join(summary) + "\n", "\n".join(body)
 
 
+def banner_line(words):
+    """First README line: the banner image linking to the asset page. None when the repo has no docs/banner.png."""
+    if not os.path.exists(os.path.join(ROOT, "docs/banner.png")):
+        return None
+    name = words.get("banner_name") or os.path.basename(ROOT)
+    kind = words.get("banner_kind", "GameSpice addon")
+    url = words.get("banner_url") or raw_base().replace("raw.githubusercontent.com", "github.com").replace("/main/", "")
+    return "[![%s - %s](docs/banner.png)](%s)" % (name, kind, url)
+
+
 def main():
     check = "--check" in sys.argv
     wpath = os.path.join(ROOT, "docs/readme/readme.yml")
@@ -144,6 +156,13 @@ def main():
         if check:
             print("gen_readme: README.md starts with an H1 (%s); remove it" % first, file=sys.stderr)
             sys.exit(1)
+    # A repo with docs/banner.png starts with the linked banner image (readme.yml: banner_url, banner_name, banner_kind).
+    banner = banner_line(words)
+    if banner:
+        lines = new.split("\n")
+        if lines[0].startswith("[![") and "docs/banner.png" in lines[0]:
+            lines = lines[1:]
+        new = banner + "\n\n" + "\n".join(lines).lstrip("\n")
     if check:
         stale_renders.warn(ROOT)
         if new != old:
