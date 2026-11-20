@@ -395,7 +395,7 @@ sync_tree() {
 	fi
 	(( SECONDS - t0 < 2 )) || echo "gpu.sh: waited $((SECONDS - t0)) s for another job's copy of $name to $BOX" >&2
 	box_lock "$name" || { exec {fd}<&-; return 1; }
-	h=$(tree_hash "$dir" "${paths[@]}") || { box_unlock; exec {fd}<&-; echo "gpu.sh: cannot hash $dir" >&2; return 1; }
+	h=$(tree_hash "$dir" "${paths[@]}") || { box_unlock; exec {fd}<&-; echo "gpu.sh: cannot hash $dir: $(cd "$dir" && find -L . -name .git -prune -o -name .godot -prune -o -printf '' 2>&1 | head -2 | tr '\n' ' ')(fix the tree; every box would fail the same way)" >&2; return 3; }
 	st=$("${SSHQ[@]}" "cat gpu/ws/$src/.tree-hash 2>/dev/null" </dev/null) || st=
 	if [[ $st == "$h" ]]; then
 		echo "gpu.sh: $name (tree ${h:0:12}) is already on $BOX; no upload" >&2
@@ -1604,7 +1604,7 @@ shot_on() {
 	if [[ -z $reply ]]; then mark_down "$down" >/dev/null; exit 76; else rm -f "$down"; fi
 	[[ $reply == OK ]] || { [[ ${GPU_OFFER_VERBOSE:-0} == 1 ]] && echo "gpu.sh: $BOX: $reply" >&2; exit 75; }
 	local rs=(-e "$RSH")
-	sync_tree "$SHOT_DIR" "$project" "shot/$project" || { echo "gpu.sh: copying $project to $BOX failed" >&2; exit 75; }
+	sync_tree "$SHOT_DIR" "$project" "shot/$project" || { rc=$?; echo "gpu.sh: copying $project to $BOX failed" >&2; (( rc != 3 )) || { echo "gpu.sh: ERROR the tree cannot be hashed, so no box can take it; NOT falling back to llvmpipe" >&2; exit 3; }; exit 75; }
 	for d in "${SHOT_STAGE[@]}"; do
 		"${SSHQ[@]}" "mkdir -p $(printf '%q' "$d")" && rsync -az "${rs[@]}" "$d/" "$HOST:$d/" || exit 75
 	done
