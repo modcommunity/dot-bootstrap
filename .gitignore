@@ -14,3 +14,6 @@ Thumbs.db
 
 # Per-machine CDN override (see .env.example)
 /.env
+
+# Local dated backups of edited tools.
+tools/*.bak-*
