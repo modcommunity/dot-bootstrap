@@ -14,13 +14,13 @@ The repositories are public, so you need no credentials to clone or pull. The sc
 
 ```bash
 git clone https://github.com/gamespice-platform/bootstrap.git
-cd dot-bootstrap
+cd bootstrap
 ./bootstrap.sh
 ```
 
 ```powershell
 git clone https://github.com/gamespice-platform/bootstrap.git
-cd dot-bootstrap
+cd bootstrap
 Set-ExecutionPolicy RemoteSigned -Scope CurrentUser   # once, if PowerShell refuses
 .\bootstrap.ps1
 ```
@@ -138,7 +138,7 @@ The CDN is the first of these that is set:
 1. `--from` (a full origin URL or a folder).
 2. `$GS_PACKS_FROM` (`none` fetches nothing).
 3. `--cdn URL` or `$GS_CDN_URL`.
-4. `GS_CDN_URL=` in `dot-bootstrap/.env` (copy `.env.example`; gitignored).
+4. `GS_CDN_URL=` in `bootstrap/.env` (copy `.env.example`; gitignored).
 5. The lock file's own `origin` and `mirrors`.
 6. `https://content.gamespice.net`.
 
